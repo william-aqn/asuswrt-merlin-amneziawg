@@ -165,11 +165,12 @@ setup_firewall(){
             domain=$(echo "$domain" | tr -d ' \r')
             [ -z "$domain" ] && continue
             echo "$domain" | grep -q '^#' && continue
-            domain=$(echo "$domain" | sed 's/^\.//')
+            domain=$(echo "$domain" | sed 's/^\.//;s/:@[^ ]*$//')
+            echo "$domain" | grep -q '[^a-zA-Z0-9._-]' && continue
             chunk_line="${chunk_line}${domain}/"
             chunk_count=$((chunk_count + 1))
             domain_count=$((domain_count + 1))
-            if [ $chunk_count -ge 80 ]; then
+            if [ $chunk_count -ge 20 ]; then
                 echo "${chunk_line}${IPSET_NAME}" >> "$DNSMASQ_AWG_CONF"
                 chunk_line="ipset=/"
                 chunk_count=0
