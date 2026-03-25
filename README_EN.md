@@ -220,6 +220,10 @@ A: Add CIDR ranges in Custom IPs field, e.g. `149.154.160.0/20,91.108.4.0/22` fo
 
 **r0otx** -- [github.com/r0otx](https://github.com/r0otx)
 
+## Disclaimer
+
+This project is a technical tool for network security and privacy. The author is not responsible for any use of this software that violates the laws of any jurisdiction. Users are solely responsible for compliance with applicable legislation.
+
 ## License
 
 MIT License
