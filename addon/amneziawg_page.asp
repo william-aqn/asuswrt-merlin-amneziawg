@@ -998,8 +998,8 @@ function initAutocompleteIp(){
 
                 <div style="background:#1a1a2e; border:1px solid #91071f; border-radius:4px; padding:10px 14px; margin-top:10px; font-size:12px; color:#e0a050;">
                     <b>Важно:</b> Для работы VPN Geo устройства должны использовать роутер как DNS-сервер.<br>
-                    iPhone: Настройки &gt; Wi-Fi &gt; (i) &gt; DNS &gt; Вручную &gt; только <script>document.write(location.hostname)</script><br>
-                    macOS/Windows: укажите <script>document.write(location.hostname)</script> как DNS в настройках сети. Отключите DNS-over-HTTPS в браузере.
+                    iPhone: Настройки &gt; Wi-Fi &gt; (i) &gt; DNS &gt; Вручную &gt; только <% nvram_get("lan_ipaddr"); %><br>
+                    macOS/Windows: укажите <% nvram_get("lan_ipaddr"); %> как DNS в настройках сети. Отключите DNS-over-HTTPS в браузере.
                 </div>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
