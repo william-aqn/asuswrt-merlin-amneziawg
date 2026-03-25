@@ -1,5 +1,8 @@
 # AmneziaWG for Asuswrt-Merlin
 
+![2026-03-25 12 34 03](https://github.com/user-attachments/assets/0ecdf3bc-f58e-4628-8a92-5f2af5cbd2ce)
+
+
 [[русский]](README.md) [[english]](README_EN.md)
 
 VPN-клиент с обходом DPI-блокировок на базе [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) с веб-интерфейсом для роутеров ASUS на прошивке [Asuswrt-Merlin](https://www.asuswrt-merlin.net/). Маршрутизация по устройствам и выборочная маршрутизация через GeoIP/GeoSite.
@@ -25,6 +28,9 @@ VPN-клиент с обходом DPI-блокировок на базе [Amnez
 Другие aarch64 роутеры с Merlin тоже должны работать.
 
 </details>
+
+<img width="768" height="817" alt="AmneziaWG" src="https://github.com/user-attachments/assets/12297a4f-938b-40c8-88a6-b3219940007e" />
+
 
 ## Возможности
 
