@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.0"
+AWG_VERSION="1.1.1"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -361,16 +361,21 @@ setup_firewall(){
     if [ $domain_count -gt 0 ] || [ "$has_geo" = true ]; then
         service restart_dnsmasq >/dev/null 2>&1
         wait_for "nslookup localhost 127.0.0.1 >/dev/null 2>&1" 10
-        # Pre-resolve domains in background (ipset populates on-demand anyway)
+        # Pre-resolve domains to populate ipset
         if [ -f "$DNSMASQ_AWG_CONF" ]; then
-            (awk -F/ '/^ipset=/{for(i=2;i<NF;i++)print $i}' "$DNSMASQ_AWG_CONF" | while read -r domain; do
+            local bg_count=0
+            awk -F/ '/^ipset=/{for(i=2;i<NF;i++)print $i}' "$DNSMASQ_AWG_CONF" | while read -r domain; do
                 [ -z "$domain" ] && continue
                 nslookup "$domain" 127.0.0.1 >/dev/null 2>&1 &
                 bg_count=$((bg_count + 1))
                 [ $bg_count -ge 10 ] && { wait; bg_count=0; }
-            done; wait; conntrack -F 2>/dev/null; log_msg "Pre-resolve complete") &
+            done
+            wait
         fi
     fi
+
+    # --- Always flush conntrack so devices reconnect through VPN ---
+    conntrack -F 2>/dev/null
 
     # --- Setup cron ---
     if [ "$(get_setting awg_geo_autoupdate)" = "1" ]; then
@@ -648,7 +653,7 @@ do_stop(){
     [ -n "$awg_pid" ] && kill "$awg_pid" 2>/dev/null
     rm -f /var/run/amneziawg/"$IFACE".sock
 
-    service restart_dnsmasq >/dev/null 2>&1 &
+    service restart_dnsmasq >/dev/null 2>&1
 
     log_msg "Stopped"
     update_status
