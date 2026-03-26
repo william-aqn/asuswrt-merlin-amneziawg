@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.0.7"
+AWG_VERSION="1.0.8"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -572,9 +572,6 @@ do_start(){
     ip link set "$IFACE" mtu 1280
     ip link set "$IFACE" up
 
-    # Tunnel is connected, update status early so UI sees it
-    update_status
-
     # DNS: ensure queries go through dnsmasq
     if ! grep -q "^nameserver 127.0.0.1" /tmp/resolv.conf 2>/dev/null; then
         local old_dns=$(cat /tmp/resolv.conf 2>/dev/null)
@@ -865,7 +862,9 @@ do_update(){
     wait_for "! pidof amneziawg-go >/dev/null 2>&1" 10
     opkg install "$tmp"
     rm -f "$tmp"
-    do_start
+    # Run install_page and start from the NEW script
+    /jffs/addons/amneziawg/amneziawg.sh install_page
+    /jffs/addons/amneziawg/amneziawg.sh start
     log_msg "Update complete"
 }
 

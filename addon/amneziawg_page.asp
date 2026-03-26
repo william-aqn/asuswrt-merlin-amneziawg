@@ -161,12 +161,40 @@ function showVersionInfo(currentIgnored, latest, hasUpdateIgnored){
 }
 
 function doUpdate(){
-    if(!confirm('Update AmneziaWG to latest version?\nThe tunnel will be restarted.')) return;
+    if(!confirm('Update AmneziaWG to latest version?\nVPN will be stopped during update.')) return;
+    var badge = document.getElementById('awg_badge');
+    badge.className = 'awg-status connecting';
+    badge.innerHTML = '&#9679; Updating...';
     var log = document.getElementById('awg_log');
-    if(log) log.innerHTML = 'Updating... Please wait.';
+    if(log) log.innerHTML = 'Downloading and installing update...';
+    if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
+
     document.form.action_script.value = "start_awgdoupdate";
     document.form.submit();
-    setTimeout(function(){ location.reload(); }, 60000);
+
+    // Poll until update completes (VPN restarts with new version)
+    var attempts = 0;
+    setTimeout(function(){
+        var poll = setInterval(function(){
+            attempts++;
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', '/user/awg_status.htm?_=' + Date.now(), true);
+            xhr.timeout = 3000;
+            xhr.onload = function(){
+                try {
+                    var s = JSON.parse(xhr.responseText);
+                    if(s.running || attempts >= 90){
+                        clearInterval(poll);
+                        location.reload();
+                    }
+                } catch(e){
+                    if(attempts >= 90){ clearInterval(poll); location.reload(); }
+                }
+            };
+            xhr.onerror = function(){ if(attempts >= 90){ clearInterval(poll); location.reload(); } };
+            xhr.send();
+        }, 2000);
+    }, 5000);
 }
 
 function loadSettings(){
@@ -478,7 +506,7 @@ function awgAction(action){
                 var s = JSON.parse(xhr.responseText);
                 // For start: wait until running AND has public key (fully ready)
                 // For stop: wait until not running
-                var ready = isStop ? !s.running : (s.running && s.public_key && s.public_key !== '' && s.public_key !== '(none)');
+                var ready = (s.running === expect);
                 if(ready || attempts >= 90){
                     clearInterval(poll);
                     updateStatusUI(s);
