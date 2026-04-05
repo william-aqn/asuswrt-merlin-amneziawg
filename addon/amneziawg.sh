@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.3"
+AWG_VERSION="1.1.4"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -868,6 +868,10 @@ do_update(){
     release_json=$(curl -sfL "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
     local ipk_url
     ipk_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "$pkg_arch" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/".*//')
+    if [ -z "$ipk_url" ]; then
+        local base_arch=$(echo "$pkg_arch" | sed 's/-.*//')
+        ipk_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "${base_arch}" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/".*//')
+    fi
     if [ -z "$ipk_url" ]; then
         log_msg "ERROR: No package found for $pkg_arch"
         return 1

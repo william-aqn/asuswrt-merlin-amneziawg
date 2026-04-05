@@ -51,8 +51,13 @@ fi
 VERSION=$(echo "$RELEASE_JSON" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//' | sed 's/".*//')
 echo "Latest version: $VERSION"
 
-# Find matching .ipk asset
+# Find matching .ipk asset (exact arch, then fallback to base arch)
 IPK_URL=$(echo "$RELEASE_JSON" | grep '"browser_download_url"' | grep "$PKG_ARCH" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//' | sed 's/".*//')
+if [ -z "$IPK_URL" ]; then
+    # Fallback: armv7-3.2 -> try armv7, aarch64-3.10 -> try aarch64
+    BASE_ARCH=$(echo "$PKG_ARCH" | sed 's/-.*//')
+    IPK_URL=$(echo "$RELEASE_JSON" | grep '"browser_download_url"' | grep "${BASE_ARCH}" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//' | sed 's/".*//')
+fi
 if [ -z "$IPK_URL" ]; then
     echo "ERROR: No .ipk found for $PKG_ARCH in release $VERSION"
     exit 1
