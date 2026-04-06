@@ -166,7 +166,7 @@ download_geoip_service(){
     svc=$(echo "$svc" | tr -d ' ' | tr '[:upper:]' '[:lower:]')
     [ -z "$svc" ] && return 1
     local tmp="$GEO_DIR/geoip/.dl_${svc}.tmp"
-    if curl -sfLk --connect-timeout 10 --max-time 30 "${V2FLY_GEOIP_BASE}/${svc}.txt" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    if curl -sfL --connect-timeout 10 --max-time 30 "${V2FLY_GEOIP_BASE}/${svc}.txt" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
         grep -v ":" "$tmp" > "$GEO_DIR/geoip/v2fly_${svc}.cidr"
         rm -f "$tmp"
         [ -s "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] || { rm -f "$GEO_DIR/geoip/v2fly_${svc}.cidr"; return 1; }
@@ -202,9 +202,7 @@ download_all_geo(){
     log_msg "Downloading v2fly domain database..."
     update_status
     local tmp_yml="$GEO_DIR/v2fly_all.yml.tmp"
-    if curl -sfL "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" \
-        -o "$tmp_yml" 2>/dev/null || \
-       curl -sfLk "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" \
+    if curl -sfL --connect-timeout 10 --max-time 120 "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" \
         -o "$tmp_yml" 2>/dev/null; then
         if [ -s "$tmp_yml" ]; then
             mv "$tmp_yml" "$GEO_DIR/v2fly_all.yml"
@@ -1022,8 +1020,7 @@ do_watchdog(){
 check_update(){
     local repo="r0otx/asuswrt-merlin-amneziawg"
     local latest
-    latest=$(curl -sfL "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v//;s/".*//')
-    [ -z "$latest" ] && latest=$(curl -sfLk "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v//;s/".*//')
+    latest=$(curl -sfL --connect-timeout 10 --max-time 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v//;s/".*//')
     if [ -z "$latest" ]; then
         echo "{\"current\":\"$AWG_VERSION\",\"latest\":\"\",\"update\":false,\"error\":\"Cannot reach GitHub\"}"
         return
@@ -1048,8 +1045,7 @@ do_update(){
     fi
 
     local release_json
-    release_json=$(curl -sfL "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
-    [ -z "$release_json" ] && release_json=$(curl -sfLk "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
+    release_json=$(curl -sfL --connect-timeout 10 --max-time 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
     local ipk_url
     ipk_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "$pkg_arch" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/".*//')
     if [ -z "$ipk_url" ]; then
@@ -1062,7 +1058,7 @@ do_update(){
     fi
 
     local tmp="/tmp/amneziawg_update.ipk"
-    if ! curl -sfL "$ipk_url" -o "$tmp" && ! curl -sfLk "$ipk_url" -o "$tmp"; then
+    if ! curl -sfL --connect-timeout 10 --max-time 120 "$ipk_url" -o "$tmp"; then
         log_msg "ERROR: Download failed"
         return 1
     fi
