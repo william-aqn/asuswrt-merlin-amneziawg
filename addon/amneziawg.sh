@@ -26,6 +26,9 @@ LOCKDIR="/tmp/.awg_lock"
 V2FLY_GEOIP_BASE="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text"
 GEOIP_SERVICES="telegram google facebook twitter netflix cloudflare fastly cloudfront"
 
+# Ensure Entware binaries are in PATH (not set when called from httpd/service-event)
+export PATH="/opt/bin:/opt/sbin:$PATH"
+
 # --- Helpers ---
 
 log_msg(){
