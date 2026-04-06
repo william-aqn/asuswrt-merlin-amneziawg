@@ -89,7 +89,7 @@
     font-size: 12px;
 }
 .awg-ac-wrap { position:relative; display:inline-block; width:95%; }
-.awg-ac-list { position:absolute; top:100%; left:0; right:0; max-height:200px; overflow-y:auto; border:1px solid #444; border-top:none; z-index:999; display:none; border-radius:0 0 4px 4px; }
+.awg-ac-list { position:absolute; top:100%; left:0; right:0; max-height:200px; overflow-y:auto; border:1px solid #444; border-top:none; z-index:999; display:none; border-radius:0 0 4px 4px; background:#2f3a3e; }
 .awg-ac-list div { padding:4px 8px; cursor:pointer; font-size:12px; }
 .awg-ac-list div:hover, .awg-ac-list div.selected { background:#666; color:#fff; }
 .awg-ac-list::-webkit-scrollbar { width:5px; }
