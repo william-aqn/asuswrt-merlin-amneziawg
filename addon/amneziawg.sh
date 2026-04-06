@@ -51,9 +51,22 @@ get_endpoint(){
     awk -F'[ =:]+' '/^Endpoint/{print $2}' "$CONF" 2>/dev/null
 }
 
-disable_rp_filter(){
+save_and_set_rp_filter(){
     for iface in all awg0 br0; do
-        echo 0 > "/proc/sys/net/ipv4/conf/$iface/rp_filter" 2>/dev/null
+        local f="/proc/sys/net/ipv4/conf/$iface/rp_filter"
+        [ -f "$f" ] && cat "$f" > "/tmp/.awg_rp_$iface" 2>/dev/null
+        echo 2 > "$f" 2>/dev/null
+    done
+}
+
+restore_rp_filter(){
+    for iface in all awg0 br0; do
+        local saved="/tmp/.awg_rp_$iface"
+        local f="/proc/sys/net/ipv4/conf/$iface/rp_filter"
+        if [ -f "$saved" ]; then
+            cat "$saved" > "$f" 2>/dev/null
+            rm -f "$saved"
+        fi
     done
 }
 
@@ -649,7 +662,7 @@ do_start(){
     ip route add 128.0.0.0/1 dev "$IFACE" table $RT_TABLE 2>/dev/null
     [ -n "$lan_net" ] && ip route add "$lan_net" dev br0 table $RT_TABLE 2>/dev/null
 
-    disable_rp_filter
+    save_and_set_rp_filter
 
     # Base iptables
     iptables -I INPUT -i "$IFACE" -j ACCEPT
@@ -699,6 +712,8 @@ do_stop(){
     local endpoint
     endpoint=$(get_endpoint)
     [ -n "$endpoint" ] && ip route del "$endpoint" 2>/dev/null
+
+    restore_rp_filter
 
     # Stop daemon
     ip link set "$IFACE" down 2>/dev/null
