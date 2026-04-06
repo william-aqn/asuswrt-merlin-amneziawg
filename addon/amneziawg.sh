@@ -57,11 +57,44 @@ disable_rp_filter(){
     done
 }
 
-# Wait for condition, max N seconds. Usage: wait_for "command" timeout
-wait_for(){
-    local cmd="$1" max="${2:-10}" i=0
+# Wait for process to exit. Usage: wait_for_pid_exit <name> <timeout>
+wait_for_pid_exit(){
+    local pname="$1" max="${2:-10}" i=0
     while [ $i -lt $max ]; do
-        eval "$cmd" && return 0
+        pidof "$pname" >/dev/null 2>&1 || return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# Wait for DNS resolver. Usage: wait_for_dns <timeout>
+wait_for_dns(){
+    local max="${1:-10}" i=0
+    while [ $i -lt $max ]; do
+        nslookup localhost 127.0.0.1 >/dev/null 2>&1 && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# Wait for network interface IP. Usage: wait_for_iface_ip <iface> <timeout>
+wait_for_iface_ip(){
+    local iface="$1" max="${2:-10}" i=0
+    while [ $i -lt $max ]; do
+        ip -4 addr show "$iface" 2>/dev/null | grep -q "inet " && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# Wait for interface to appear. Usage: wait_for_iface <iface> <timeout>
+wait_for_iface(){
+    local iface="$1" max="${2:-10}" i=0
+    while [ $i -lt $max ]; do
+        ip link show "$iface" >/dev/null 2>&1 && return 0
         sleep 1
         i=$((i + 1))
     done
@@ -369,7 +402,7 @@ setup_firewall(){
     # --- Restart dnsmasq if geo active ---
     if [ $domain_count -gt 0 ] || [ "$has_geo" = true ]; then
         service restart_dnsmasq >/dev/null 2>&1
-        wait_for "nslookup localhost 127.0.0.1 >/dev/null 2>&1" 10
+        wait_for_dns 10
         # Pre-resolve domains to populate ipset
         if [ -f "$DNSMASQ_AWG_CONF" ]; then
             local bg_count=0
@@ -565,7 +598,7 @@ do_start(){
     # Wait for network to be ready (br0 up with IP), important on boot
     if ! ip -4 addr show br0 2>/dev/null | grep -q "inet "; then
         log_msg "Waiting for network (br0)..."
-        wait_for "ip -4 addr show br0 2>/dev/null | grep -q 'inet '" 30
+        wait_for_iface_ip br0 30
         if ! ip -4 addr show br0 2>/dev/null | grep -q "inet "; then
             log_msg "ERROR: Network not ready (br0 has no IP after 30s)"
             return 1
@@ -586,7 +619,7 @@ do_start(){
     # Start userspace daemon
     mkdir -p /var/run/amneziawg
     "$AWG_GO" "$IFACE" >/dev/null 2>&1
-    if ! wait_for "ip link show $IFACE >/dev/null 2>&1" 5; then
+    if ! wait_for_iface "$IFACE" 5; then
         log_msg "ERROR: amneziawg-go failed to create interface"
         update_status; release_lock; return 1
     fi
@@ -674,14 +707,14 @@ do_stop(){
     awg_pid=$(pidof amneziawg-go 2>/dev/null)
     if [ -n "$awg_pid" ]; then
         kill "$awg_pid" 2>/dev/null
-        wait_for "! pidof amneziawg-go >/dev/null 2>&1" 5
+        wait_for_pid_exit amneziawg-go 5
         # Force kill if still alive (crashed/stuck process)
         pidof amneziawg-go >/dev/null 2>&1 && kill -9 "$(pidof amneziawg-go)" 2>/dev/null
     fi
     rm -f /var/run/amneziawg/"$IFACE".sock
 
     service restart_dnsmasq >/dev/null 2>&1 &
-    wait_for "nslookup localhost 127.0.0.1 >/dev/null 2>&1" 10
+    wait_for_dns 10
 
     log_msg "Stopped"
     update_status
@@ -845,7 +878,7 @@ do_watchdog(){
     if [ -n "$reason" ]; then
         log_msg "WATCHDOG: $reason, restarting"
         do_stop 2>/dev/null
-        wait_for "! pidof amneziawg-go >/dev/null 2>&1" 10
+        wait_for_pid_exit amneziawg-go 10
         do_start
     fi
 }
@@ -899,14 +932,14 @@ do_update(){
     fi
 
     do_stop 2>/dev/null
-    wait_for "! pidof amneziawg-go >/dev/null 2>&1" 10
+    wait_for_pid_exit amneziawg-go 10
     # Block auto-start during opkg install (S99amneziawg is triggered by opkg)
     touch /tmp/.awg_no_autostart
     opkg install "$tmp" || opkg install --force-architecture "$tmp"
     rm -f "$tmp"
     # Stop VPN if opkg's init script started it
     do_stop 2>/dev/null
-    wait_for "! pidof amneziawg-go >/dev/null 2>&1" 10
+    wait_for_pid_exit amneziawg-go 10
     rm -f /tmp/.awg_no_autostart
     # Install page from new version
     /jffs/addons/amneziawg/amneziawg.sh install_page
@@ -921,9 +954,9 @@ do_service_event(){
     case "$event" in
         awgstart)       do_start ;;
         awgstop)        do_stop ;;
-        awgrestart)     do_stop; wait_for "! pidof amneziawg-go >/dev/null 2>&1" 10; do_start ;;
+        awgrestart)     do_stop; wait_for_pid_exit amneziawg-go 10; do_start ;;
         awgsaveconf)
-            wait_for "[ -n \"$(get_setting awg_privatekey)\" ]" 5
+            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_privatekey)" ]; do sleep 1; _wt=$((_wt+1)); done
             generate_config
             update_geo_if_needed
             is_running && setup_firewall
@@ -949,7 +982,7 @@ do_service_event(){
 case "$1" in
     start)          do_start ;;
     stop)           do_stop ;;
-    restart)        do_stop; wait_for "! pidof amneziawg-go >/dev/null 2>&1" 10; do_start ;;
+    restart)        do_stop; wait_for_pid_exit amneziawg-go 10; do_start ;;
     status)         update_status ;;
     update_geo)     update_geo_lists; is_running && setup_firewall; update_status ;;
     check_update)   check_update ;;
