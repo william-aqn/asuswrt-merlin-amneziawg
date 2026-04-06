@@ -281,6 +281,12 @@ setup_firewall(){
         ip_count=$((ip_count + $(wc -l < "$f")))
     done
 
+    # Check ipset fill level
+    local ipset_entries
+    ipset_entries=$(ipset list "$IPSET_NAME" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
+    [ -n "$ipset_entries" ] && [ "$ipset_entries" -ge 131072 ] 2>/dev/null && \
+        log_msg "WARNING: ipset $IPSET_NAME full ($ipset_entries/131072), some geo routes may be missing"
+
     # --- Extract v2fly domains from downloaded database ---
     local geo_v2fly=$(get_setting awg_geo_v2fly)
     if [ -n "$geo_v2fly" ] && [ -f "$GEO_DIR/v2fly_all.yml" ]; then
