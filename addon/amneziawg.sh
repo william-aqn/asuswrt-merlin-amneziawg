@@ -268,6 +268,10 @@ setup_firewall(){
 
     # --- Create ipset ---
     ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem 131072 timeout 86400 2>/dev/null
+    if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
+        log_msg "ERROR: ipset $IPSET_NAME creation failed, geo routing disabled"
+        has_geo=false
+    fi
 
     # --- Load GeoIP subnets into ipset (bulk) ---
     local ip_count=0
@@ -417,10 +421,14 @@ setup_firewall(){
             log_msg "Default: all -> VPN"
             ;;
         vpn_geo)
-            iptables -t mangle -A "$AWG_CHAIN" \
-                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
-            has_geo=true
-            log_msg "Default: geo -> VPN"
+            if ipset list "$IPSET_NAME" >/dev/null 2>&1; then
+                iptables -t mangle -A "$AWG_CHAIN" \
+                    -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
+                has_geo=true
+                log_msg "Default: geo -> VPN"
+            else
+                log_msg "WARNING: ipset missing, geo default policy not applied"
+            fi
             ;;
         direct|*)
             log_msg "Default: direct"
