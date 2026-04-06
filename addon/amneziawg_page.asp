@@ -100,6 +100,9 @@ var custom_settings = <% get_custom_settings(); %>;
 var statusTimer = null;
 var v2flyList = [];
 var v2flyIpList = ['telegram','google','facebook','twitter','netflix','cloudflare','apple','amazon','microsoft','github','openai','stripe','fastly','akamai','oracle','bing','cloudfront','digitalocean','discord','dropbox','github','hetzner','linode','linkedin','meta','pinterest','reddit','signal','slack','snapchat','spotify','steam','tiktok','twitch','uber','vultr','whatsapp','yahoo','yandex','zoom'];
+function escHtml(s){
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 function loadV2flyCategories(){
     var xhr = new XMLHttpRequest();
     xhr.open('GET', '/user/v2fly_categories.htm?_=' + Date.now(), true);
@@ -153,7 +156,7 @@ function showVersionInfo(currentIgnored, latest, hasUpdateIgnored){
             if(current) vi.textContent = 'v' + current;
             if(latest && current && latest !== current){
                 ub.style.display = 'inline';
-                ub.innerHTML = '<input type="button" class="button_gen" value="Update to v' + latest + '" onclick="doUpdate();" style="font-size:11px; padding:2px 10px;">';
+                ub.innerHTML = '<input type="button" class="button_gen" value="Update to v' + escHtml(latest) + '" onclick="doUpdate();" style="font-size:11px; padding:2px 10px;">';
             }
         } catch(e){}
     };
@@ -278,6 +281,23 @@ function saveSettings(){
     custom_settings.awg_geo_custom_ips = document.getElementById('geo_custom_ips').value;
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
 
+    // Basic validation
+    var pk = document.getElementById('awg_privatekey').value;
+    var pubk = document.getElementById('awg_peer_pubkey').value;
+    var ep = document.getElementById('awg_peer_endpoint').value;
+    if(!pk || !pubk || !ep){
+        alert('Required: Private Key, Peer Public Key, and Endpoint.');
+        return;
+    }
+    if(pk.length !== 44 || pubk.length !== 44){
+        alert('Invalid key format. Keys must be 44 characters (base64).');
+        return;
+    }
+    if(ep.indexOf(':') === -1){
+        alert('Endpoint must include port (e.g. server:51820).');
+        return;
+    }
+
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = "start_awgsaveconf";
     document.form.submit();
@@ -305,8 +325,8 @@ function addClientRow(ip, name, policy){
     var tr = document.createElement('tr');
     policy = policy || 'vpn_all';
     tr.innerHTML =
-        '<td><input type="text" class="client_ip input_25_table" value="' + ip + '" placeholder="192.168.1.100"></td>' +
-        '<td><input type="text" class="client_name input_25_table" value="' + name + '" placeholder="iPhone, PS5, TV..."></td>' +
+        '<td><input type="text" class="client_ip input_25_table" value="' + escHtml(ip) + '" placeholder="192.168.1.100"></td>' +
+        '<td><input type="text" class="client_name input_25_table" value="' + escHtml(name) + '" placeholder="iPhone, PS5, TV..."></td>' +
         '<td><select class="client_policy input_option" onchange="updateGeoVisibility();" style="width:100%;">' +
             '<option value="vpn_all"' + (policy==='vpn_all'?' selected':'') + '>VPN (All)</option>' +
             '<option value="vpn_geo"' + (policy==='vpn_geo'?' selected':'') + '>VPN (Geo)</option>' +
@@ -324,7 +344,7 @@ function serializeClients(){
         var ip = rows[i].querySelector('.client_ip').value.trim();
         var name = rows[i].querySelector('.client_name').value.trim();
         var policy = rows[i].querySelector('.client_policy').value;
-        if(ip) parts.push(ip + ',' + name + ',' + policy);
+        if(ip) parts.push(ip + ',' + name.replace(/[,;]/g, ' ') + ',' + policy);
     }
     return parts.join(';');
 }
@@ -488,6 +508,9 @@ function awgAction(action){
 
     // Stop periodic refresh while action runs
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
+    document.getElementById('btn_start').disabled = true;
+    document.getElementById('btn_stop').disabled = true;
+    document.getElementById('btn_restart').disabled = true;
 
     // Show transitional status
     badge.className = 'awg-status connecting';
@@ -510,12 +533,15 @@ function awgAction(action){
                     clearInterval(poll);
                     updateStatusUI(s);
                     statusTimer = setInterval(refreshStatus, 5000);
+                    document.getElementById('btn_start').disabled = false;
+                    document.getElementById('btn_stop').disabled = false;
+                    document.getElementById('btn_restart').disabled = false;
                 }
             } catch(e){
-                if(attempts >= 90){ clearInterval(poll); refreshStatus(); }
+                if(attempts >= 90){ clearInterval(poll); refreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; }
             }
         };
-        xhr.onerror = function(){ if(attempts >= 90){ clearInterval(poll); refreshStatus(); } };
+        xhr.onerror = function(){ if(attempts >= 90){ clearInterval(poll); refreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
         xhr.send();
     }, 2000);
 }
@@ -565,19 +591,19 @@ function updateStatusUI(s){
     }
 
     info.innerHTML = '';
-    if(s.interface_addr) info.innerHTML += 'Address: ' + s.interface_addr + '<br>';
-    if(s.public_key) info.innerHTML += 'Public Key: ' + s.public_key.substring(0,12) + '...<br>';
-    if(s.listen_port) info.innerHTML += 'Listen Port: ' + s.listen_port + '<br>';
+    if(s.interface_addr) info.innerHTML += 'Address: ' + escHtml(s.interface_addr) + '<br>';
+    if(s.public_key) info.innerHTML += 'Public Key: ' + escHtml(s.public_key.substring(0,12)) + '...<br>';
+    if(s.listen_port) info.innerHTML += 'Listen Port: ' + escHtml(s.listen_port) + '<br>';
 
     var html = '';
     if(s.peers && s.peers.length > 0){
         for(var i = 0; i < s.peers.length; i++){
             var p = s.peers[i];
             html += '<tr>';
-            html += '<td>' + (p.endpoint || '-') + '</td>';
-            html += '<td>' + (p.allowed_ips || '-') + '</td>';
-            html += '<td>' + (p.transfer_rx || '0 B') + ' / ' + (p.transfer_tx || '0 B') + '</td>';
-            html += '<td>' + (p.latest_handshake || 'never') + '</td>';
+            html += '<td>' + escHtml(p.endpoint || '-') + '</td>';
+            html += '<td>' + escHtml(p.allowed_ips || '-') + '</td>';
+            html += '<td>' + escHtml(p.transfer_rx || '0 B') + ' / ' + escHtml(p.transfer_tx || '0 B') + '</td>';
+            html += '<td>' + escHtml(p.latest_handshake || 'never') + '</td>';
             html += '</tr>';
         }
     }
