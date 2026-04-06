@@ -5,7 +5,7 @@
 # =============================================================
 
 REPO="r0otx/asuswrt-merlin-amneziawg"
-TMP_DIR="/tmp/amneziawg_install"
+TMP_DIR=""
 
 echo ""
 echo "============================================"
@@ -49,6 +49,10 @@ if [ -z "$RELEASE_JSON" ]; then
 fi
 
 VERSION=$(echo "$RELEASE_JSON" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//' | sed 's/".*//')
+# Validate version string
+case "$VERSION" in
+    *[!0-9.]*) echo "ERROR: Invalid version format: $VERSION"; exit 1 ;;
+esac
 echo "Latest version: $VERSION"
 
 # Find matching .ipk asset (exact arch, then fallback to base arch)
@@ -63,11 +67,18 @@ if [ -z "$IPK_URL" ]; then
     exit 1
 fi
 
+# Validate URL is from GitHub
+case "$IPK_URL" in
+    https://github.com/*) ;;
+    *) echo "ERROR: Unexpected download URL: $IPK_URL"; exit 1 ;;
+esac
+
 IPK_FILE=$(basename "$IPK_URL")
 echo "Package: $IPK_FILE"
 
 # Download
-mkdir -p "$TMP_DIR"
+TMP_DIR=$(mktemp -d /tmp/amneziawg_install.XXXXXX) || { echo "ERROR: Cannot create temp directory"; exit 1; }
+trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 echo "Downloading..."
 if ! curl -sfL "$IPK_URL" -o "$TMP_DIR/$IPK_FILE"; then
     echo "ERROR: Download failed"
