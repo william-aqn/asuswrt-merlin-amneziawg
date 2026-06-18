@@ -680,6 +680,11 @@ function onStatusFail(){
 
 function updateStatusUI(s){
     awgLoaded = true;
+    // Always show the current version (from the local status file) — independent of the
+    // GitHub update-check, which can fail (api.github.com rate-limit/block) and used to
+    // leave the header version blank.
+    var vi = document.getElementById('awg_version_info');
+    if(vi && s.version) vi.innerHTML = '<a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="color:inherit;text-decoration:none;" title="GitHub репозиторий">v' + escHtml(s.version) + '</a>';
     var badge = document.getElementById('awg_badge');
     var info = document.getElementById('awg_info');
     var peers = document.getElementById('awg_peers');
