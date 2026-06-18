@@ -1,0 +1,95 @@
+name: Build and Release
+
+# Builds the userspace AmneziaWG packages (amneziawg-go + awg) for every
+# supported router architecture and publishes them as a GitHub Release.
+#
+#   * Push a tag like  v1.1.7   -> builds and creates/updates that release
+#   * "Run workflow" (manual)   -> builds and uploads the .ipk as run artifacts
+#
+# No kernel module is built: this is a pure userspace package. The awg CLI is
+# linked statically against musl so it runs on the router's older glibc.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # amneziawg-tools (awg) — pinned to the same tag as the Dockerfiles
+  AWG_TOOLS_TAG: v1.0.20260223
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Build amneziawg-go (aarch64 + ARM32)
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go.git
+          echo "amneziawg-go commit: $(git -C amneziawg-go rev-parse HEAD)"
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          cd amneziawg-go
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64       go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go-arm5"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go-arm"
+
+      - name: Build awg (aarch64, static musl)
+        run: |
+          set -eux
+          curl -fL --retry 3 --retry-delay 5 https://musl.cc/aarch64-linux-musl-cross.tgz | tar xz -C /opt
+          export PATH="/opt/aarch64-linux-musl-cross/bin:$PATH"
+          git clone --depth 1 --branch "$AWG_TOOLS_TAG" https://github.com/amnezia-vpn/amneziawg-tools.git tools-arm64
+          make -C tools-arm64/src CC=aarch64-linux-musl-gcc LDFLAGS=-static PLATFORM_CFLAGS=""
+          cp tools-arm64/src/awg "$GITHUB_WORKSPACE/output/awg" 2>/dev/null || cp tools-arm64/src/wg "$GITHUB_WORKSPACE/output/awg"
+          chmod +x "$GITHUB_WORKSPACE/output/awg"
+          file "$GITHUB_WORKSPACE/output/awg"
+
+      - name: Build awg-arm (ARM32, static musl)
+        run: |
+          set -eux
+          curl -fL --retry 3 --retry-delay 5 https://musl.cc/arm-linux-musleabi-cross.tgz | tar xz -C /opt
+          export PATH="/opt/arm-linux-musleabi-cross/bin:$PATH"
+          git clone --depth 1 --branch "$AWG_TOOLS_TAG" https://github.com/amnezia-vpn/amneziawg-tools.git tools-arm
+          make -C tools-arm/src CC=arm-linux-musleabi-gcc LDFLAGS=-static PLATFORM_CFLAGS=""
+          cp tools-arm/src/awg "$GITHUB_WORKSPACE/output/awg-arm" 2>/dev/null || cp tools-arm/src/wg "$GITHUB_WORKSPACE/output/awg-arm"
+          chmod +x "$GITHUB_WORKSPACE/output/awg-arm"
+          file "$GITHUB_WORKSPACE/output/awg-arm"
+
+      - name: Build .ipk packages
+        run: |
+          set -eux
+          # build-ipk.sh calls gtar (GNU tar); Ubuntu's tar is GNU tar
+          sudo ln -sf "$(command -v tar)" /usr/local/bin/gtar
+          ./build-ipk.sh
+          ls -lh output/*.ipk
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: amneziawg-ipk
+          path: output/*.ipk
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" output/*.ipk --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" output/*.ipk --title "$GITHUB_REF_NAME" --generate-notes
+          fi
