@@ -1055,6 +1055,7 @@ function initAutocompleteIp(){
                     <span style="font-size:20px; font-weight:bold; letter-spacing:1px;">AmneziaWG</span>
                     <span style="font-size:13px; font-weight:normal;">VPN Client</span>
                     <a href="https://t.me/asusxray" target="_blank" style="margin-left:auto; font-size:12px; text-decoration:none;" title="Telegram-чат">💬 Telegram</a>
+                    <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" title="GitHub репозиторий" style="font-size:12px; text-decoration:none;"><img src="https://img.shields.io/github/v/release/william-aqn/asuswrt-merlin-amneziawg?logo=github&label=release" alt="GitHub" style="height:18px; display:block;" onerror="this.onerror=null; this.outerHTML='🐙 GitHub';"></a>
                     <span id="awg_version_info" style="font-size:11px; opacity:0.6;"></span>
                     <span id="awg_update_btn" style="display:none;"></span>
                 </div>
