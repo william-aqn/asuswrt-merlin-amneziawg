@@ -159,8 +159,9 @@ function showVersionInfo(currentIgnored, latest, hasUpdateIgnored){
             if(!vi) return;
             if(current) vi.innerHTML = '<a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="color:inherit;text-decoration:none;" title="GitHub репозиторий">v' + escHtml(current) + '</a>';
             if(latest && current && latest !== current){
+                awgLatestVersion = latest;
                 ub.style.display = 'inline';
-                ub.innerHTML = '<input type="button" class="button_gen" value="Update to v' + escHtml(latest) + '" onclick="doUpdate();" style="font-size:11px; padding:2px 10px;">';
+                ub.innerHTML = '<input type="button" class="button_gen" value="Update to v' + escHtml(latest) + '" onclick="openUpdateModal();" style="font-size:11px; padding:2px 10px;">';
             }
         } catch(e){}
     };
@@ -168,7 +169,6 @@ function showVersionInfo(currentIgnored, latest, hasUpdateIgnored){
 }
 
 function doUpdate(){
-    if(!confirm('Update AmneziaWG?\nVPN will be stopped. After update click Start.')) return;
     var badge = document.getElementById('awg_badge');
     badge.className = 'awg-status connecting';
     badge.innerHTML = '&#9679; Updating...';
@@ -201,6 +201,74 @@ function doUpdate(){
             xhr.send();
         }, 2000);
     }, 5000);
+}
+
+var awgLatestVersion = '';
+
+function openUpdateModal(){
+    var m = document.getElementById('awg_update_modal');
+    if(!m){ doUpdate(); return; }
+    var title = document.getElementById('awg_modal_title');
+    var body = document.getElementById('awg_modal_body');
+    if(title) title.textContent = awgLatestVersion ? ('Обновление до v' + awgLatestVersion) : 'Обновление';
+    if(body) body.innerHTML = '<div style="opacity:0.7;">Загрузка списка изменений…</div>';
+    m.style.display = 'block';
+    loadChangelog(function(text, ok){
+        if(!body) return;
+        if(ok && text){ body.innerHTML = mdToHtml(text); body.scrollTop = 0; }
+        else { body.innerHTML = '<div style="opacity:0.7;">Не удалось загрузить список изменений. Можно продолжить обновление.</div>'; }
+    });
+}
+
+function closeUpdateModal(){
+    var m = document.getElementById('awg_update_modal');
+    if(m) m.style.display = 'none';
+}
+
+function confirmUpdate(){
+    closeUpdateModal();
+    doUpdate();
+}
+
+// Load changelog: prefer the latest from the repo (jsDelivr mirror — current even if
+// the local copy lags), fall back to the copy shipped on the router.
+function loadChangelog(cb){
+    var remote = 'https://cdn.jsdelivr.net/gh/william-aqn/asuswrt-merlin-amneziawg@main/CHANGELOG.md';
+    var x = new XMLHttpRequest();
+    try { x.open('GET', remote, true); } catch(e){ loadLocalChangelog(cb); return; }
+    x.timeout = 6000;
+    x.onload = function(){ if(x.status === 200 && x.responseText){ cb(x.responseText, true); } else { loadLocalChangelog(cb); } };
+    x.onerror = function(){ loadLocalChangelog(cb); };
+    x.ontimeout = function(){ loadLocalChangelog(cb); };
+    x.send();
+}
+
+function loadLocalChangelog(cb){
+    var x = new XMLHttpRequest();
+    x.open('GET', '/user/awg_changelog.htm?_=' + Date.now(), true);
+    x.timeout = 4000;
+    x.onload = function(){ cb(x.responseText || '', x.status === 200 && !!x.responseText); };
+    x.onerror = function(){ cb('', false); };
+    x.ontimeout = function(){ cb('', false); };
+    x.send();
+}
+
+// Minimal Markdown -> HTML for the changelog (headings, bullets, bold, code, links).
+function mdToHtml(md){
+    var lines = String(md).split(/\r?\n/), out = [];
+    for(var i = 0; i < lines.length; i++){
+        var ln = escHtml(lines[i])
+            .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+            .replace(/`([^`]+?)`/g, '<code style="background:rgba(255,255,255,0.12); padding:0 4px; border-radius:3px;">$1</code>')
+            .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" style="color:#5db0ff;">$1</a>');
+        if(/^###\s+/.test(ln)) out.push('<div style="font-weight:bold; font-size:14px; margin:12px 0 4px; color:#ff6b6b;">' + ln.replace(/^###\s+/, '') + '</div>');
+        else if(/^##\s+/.test(ln)) out.push('<div style="font-weight:bold; font-size:16px; margin:14px 0 6px;">' + ln.replace(/^##\s+/, '') + '</div>');
+        else if(/^#\s+/.test(ln)) out.push('<div style="font-weight:bold; font-size:18px; margin:6px 0 8px;">' + ln.replace(/^#\s+/, '') + '</div>');
+        else if(/^[-*]\s+/.test(ln)) out.push('<div style="margin:3px 0 3px 16px;">• ' + ln.replace(/^[-*]\s+/, '') + '</div>');
+        else if(ln.trim() === '') out.push('<div style="height:6px;"></div>');
+        else out.push('<div>' + ln + '</div>');
+    }
+    return out.join('');
 }
 
 function loadSettings(){
@@ -1198,6 +1266,21 @@ function initAutocompleteIp(){
 </tr>
 </table>
 </form>
+
+<!-- Update modal: changelog + confirm -->
+<div id="awg_update_modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); z-index:10000;">
+    <div style="background:#2b3338; color:#e0e0e0; width:90%; max-width:680px; margin:4% auto; border:1px solid #444; border-radius:8px; box-shadow:0 6px 40px rgba(0,0,0,0.6); display:flex; flex-direction:column; max-height:84vh;">
+        <div style="padding:14px 18px; border-bottom:1px solid #444; display:flex; align-items:center;">
+            <span id="awg_modal_title" style="font-size:16px; font-weight:bold;">Обновление</span>
+            <span style="margin-left:auto; cursor:pointer; font-size:22px; line-height:1; opacity:0.6;" onclick="closeUpdateModal();" title="Закрыть">&times;</span>
+        </div>
+        <div id="awg_modal_body" style="padding:14px 18px; overflow-y:auto; font-size:12px; line-height:1.5;"></div>
+        <div style="padding:12px 18px; border-top:1px solid #444; text-align:right;">
+            <input type="button" class="button_gen" value="Отмена" onclick="closeUpdateModal();">
+            <input type="button" class="button_gen" value="Обновить" onclick="confirmUpdate();" style="margin-left:8px;">
+        </div>
+    </div>
+</div>
 
 <div id="footer"></div>
 </body>

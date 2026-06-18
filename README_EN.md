@@ -30,50 +30,7 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
-### 1.1.17 -- 2026-06-18
-- **Added an in-UI description of the Apply vs Force Apply buttons** (live apply without dropping the tunnel vs a full VPN restart)
-
-### 1.1.16 -- 2026-06-18
-- **"Stopping…" status during stop/restart** — a page refresh during a stop could briefly show "Connected"; now it shows "Stopping…" immediately
-
-### 1.1.15 -- 2026-06-18
-- **GeoIP is driven by the "GeoIP Service Lists" UI field** (it was hardcoded and the field ignored); the field is pre-filled with the defaults
-- **Removing a service/category now drops its routes**: stale GeoIP / GeoSite / custom-domain files are no longer kept or applied
-- **Telegram link** moved to the header (next to the version)
-
-### 1.1.14 -- 2026-06-18
-- **GeoIP/GeoSite downloads via mirrors.** When `raw.githubusercontent.com` or the GitHub CDN are unreachable (RU), lists are now fetched through mirrors (jsDelivr etc.). Previously GeoIP failed (0/8) when blocked.
-
-### 1.1.13 -- 2026-06-18
-- **Install & update work via mirrors** when the GitHub release CDN is unreachable (common in RU): the online installer and the in-UI updater fall back to mirrors and **verify the package SHA256** (tamper protection)
-- **Device names with spaces** in Device Rules are no longer truncated
-
-### 1.1.12 -- 2026-06-18
-- **Route self-healing**: the watchdog (every 5 min) detects dropped VPN policy routes (e.g. after a firewall restart) and re-applies them automatically — even if the firewall-start hook didn't fire
-- **Version in the header** is now a link to the repository
-- **Telegram chat link** in the UI footer
-
-### 1.1.11 -- 2026-06-18
-- **Force Apply button** — saves settings and does a full VPN restart: applies WireGuard parameter changes too (keys, endpoint, obfuscation, MTU — which plain Apply doesn't) and fully rebuilds routes/firewall/geo
-- **Fixed startup on routers that don't autoload `tun`** (e.g. RT-AC68U) — the `tun` module now loads reliably (`modprobe` wasn't found due to PATH)
-
-### 1.1.10 -- 2026-06-18
-- **More reliable GeoSite/routing**: on a firewall-restart event (and on geo-list updates) the VPN policy routes are now fully rebuilt, not just the iptables rules. Previously a firewall restart could drop the VPN routing table, breaking GeoSite/the tunnel until a manual restart. (diagnosis: Artem Shlyakhtin)
-
-### 1.1.9 -- 2026-06-18
-- **Configurable MTU** -- MTU field in the Interface section (default 1280)
-- **GeoIP fixed** for cloudflare/cloudfront etc. (a busybox `tr` bug mangled service names)
-- **Router header status icons** work again on the addon page (JS function-name clash with the firmware)
-- **Connection status** no longer flickers on poll timeout and shows "Connecting" across a page refresh
-- **Config import** now clears old fields (no leftover values like a stale S4)
-- **UI**: long AllowedIPs lists no longer stretch the page; I1–I5 inputs aren't truncated; assorted validation/robustness fixes
-
-### 1.1.8 -- 2026-06-18
-- **IPv6 DNS blocking (filter-AAAA)** -- new "Prevent IPv6 Leaks" toggle (on by default): dnsmasq stops returning AAAA records so dual-stack domains can't bypass the IPv4 geo routing (adapted from [PR #15](https://github.com/advocdiaboly/asuswrt-merlin-amneziawg/pull/15))
-
-### 1.1.7 -- 2026-06-18
-- **H1-H4 header validation** -- dashes are now allowed in values ([PR #13](https://github.com/r0otx/asuswrt-merlin-amneziawg/pull/13))
-- **Online installer** -- pre-installs `coreutils-mktemp` (busybox `mktemp` may be missing or limited)
+See [CHANGELOG.md](CHANGELOG.md) for the full changelog.
 
 ## Features
 

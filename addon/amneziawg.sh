@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.17"
+AWG_VERSION="1.1.18"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1004,6 +1004,7 @@ do_install_page(){
     chmod +x "$ADDON_DIR/amneziawg.sh"
 
     [ -f "/tmp/amneziawg_page.asp" ] && cp /tmp/amneziawg_page.asp "$ADDON_DIR/amneziawg_page.asp"
+    [ -f "/tmp/CHANGELOG.md" ] && cp /tmp/CHANGELOG.md "$ADDON_DIR/CHANGELOG.md"
 
     # Clean old page slots before requesting a new one
     for f in /www/user/user*.asp; do
@@ -1039,6 +1040,7 @@ do_install_page(){
     grep -q "amneziawg" /jffs/scripts/services-start || echo "/jffs/addons/amneziawg/amneziawg.sh mount_ui &" >> /jffs/scripts/services-start
 
     [ -f "$GEO_DIR/v2fly_categories.txt" ] && cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
+    [ -f "$ADDON_DIR/CHANGELOG.md" ] && cp "$ADDON_DIR/CHANGELOG.md" /www/user/awg_changelog.htm 2>/dev/null
 
     log_msg "Page installed: $am_webui_page"
     echo "Installed. Access: VPN > AmneziaWG"
@@ -1057,6 +1059,7 @@ do_mount_ui(){
     fi
 
     [ -f "$GEO_DIR/v2fly_categories.txt" ] && cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
+    [ -f "$ADDON_DIR/CHANGELOG.md" ] && cp "$ADDON_DIR/CHANGELOG.md" /www/user/awg_changelog.htm 2>/dev/null
     update_status
 
     if [ "$(get_setting awg_autostart)" = "1" ]; then
