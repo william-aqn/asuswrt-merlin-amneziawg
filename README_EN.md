@@ -26,6 +26,12 @@ Other aarch64 Merlin routers should also work.
 
 </details>
 
+## Changelog
+
+### 2026-06-18
+- **H1-H4 header validation** -- dashes are now allowed in values ([PR #13](https://github.com/r0otx/asuswrt-merlin-amneziawg/pull/13))
+- **Online installer** -- pre-installs `coreutils-mktemp` (busybox `mktemp` may be missing or limited)
+
 ## Features
 
 - **AmneziaWG protocol** -- WireGuard with DPI obfuscation (Jc, Jmin, Jmax, S1-S4, H1-H4, I1-I5)
@@ -52,7 +58,7 @@ Other aarch64 Merlin routers should also work.
 ### Quick install (one command)
 
 ```shell
-curl -sfL https://raw.githubusercontent.com/r0otx/asuswrt-merlin-amneziawg/main/install-online.sh | sh
+curl -sfL https://raw.githubusercontent.com/william-aqn/asuswrt-merlin-amneziawg/main/install-online.sh | sh
 ```
 
 The script auto-detects router architecture, downloads the latest package from GitHub releases and installs it.

@@ -32,6 +32,12 @@ VPN-клиент с обходом DPI-блокировок на базе [Amnez
 <img width="768" height="817" alt="AmneziaWG" src="https://github.com/user-attachments/assets/12297a4f-938b-40c8-88a6-b3219940007e" />
 
 
+## Changelog
+
+### 2026-06-18
+- **Валидация заголовков H1-H4** -- теперь в значениях допускается дефис ([PR #13](https://github.com/r0otx/asuswrt-merlin-amneziawg/pull/13))
+- **Онлайн-установщик** -- предварительно устанавливает `coreutils-mktemp` (busybox `mktemp` может отсутствовать или быть урезанным)
+
 ## Возможности
 
 - **Протокол AmneziaWG** -- WireGuard с обфускацией DPI (Jc, Jmin, Jmax, S1-S4, H1-H4, I1-I5)
@@ -58,7 +64,7 @@ VPN-клиент с обходом DPI-блокировок на базе [Amnez
 ### Быстрая установка (одна команда)
 
 ```shell
-curl -sfL https://raw.githubusercontent.com/r0otx/asuswrt-merlin-amneziawg/main/install-online.sh | sh
+curl -sfL https://raw.githubusercontent.com/william-aqn/asuswrt-merlin-amneziawg/main/install-online.sh | sh
 ```
 
 Скрипт автоматически определит архитектуру роутера, скачает нужный пакет из последнего релиза и установит.
