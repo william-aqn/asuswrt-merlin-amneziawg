@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.23"
+AWG_VERSION="1.1.24"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -204,7 +204,10 @@ download_geoip_service(){
     if fetch_with_mirrors "${V2FLY_GEOIP_BASE}/${svc}.txt" "$tmp" 30 && [ -s "$tmp" ]; then
         grep -v ":" "$tmp" > "$GEO_DIR/geoip/v2fly_${svc}.cidr"
         rm -f "$tmp"
-        [ -s "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] || { rm -f "$GEO_DIR/geoip/v2fly_${svc}.cidr"; return 1; }
+        # Reject garbage (e.g. a proxy HTML error page): require at least one IPv4 line
+        if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$GEO_DIR/geoip/v2fly_${svc}.cidr" 2>/dev/null; then
+            rm -f "$GEO_DIR/geoip/v2fly_${svc}.cidr"; return 1
+        fi
         return 0
     fi
     rm -f "$tmp"
@@ -364,7 +367,9 @@ cleanup_firewall(){
 
     # Remove dnsmasq config
     rm -f "$DNSMASQ_AWG_CONF"
-    [ -f "$DNSMASQ_INCLUDE" ] && sed -i "\|${DNSMASQ_AWG_CONF}|d" "$DNSMASQ_INCLUDE"
+    # Fixed-string removal (the path contains '.', which a sed regex would treat as
+    # any-char and could match an unrelated line).
+    [ -f "$DNSMASQ_INCLUDE" ] && grep -vF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.tmp" 2>/dev/null && mv "${DNSMASQ_INCLUDE}.tmp" "$DNSMASQ_INCLUDE"
 
     # Remove cron
     cru d awg_geo_update 2>/dev/null
@@ -458,10 +463,9 @@ setup_firewall(){
             svc=$(echo "$svc" | tr -d ' ')
             [ -z "$svc" ] && continue
             awk -v cat="$svc" '
-                /^  - name: / { name=$NF; found=(name==cat); next }
+                /^  - name: / { if(found) exit; name=$NF; found=(name==cat); next }
                 found && /^      - "domain:/ { sub(/.*"domain:/,""); sub(/".*/,""); print }
                 found && /^      - "full:/ { sub(/.*"full:/,""); sub(/".*/,""); print }
-                found && /^  - name: / { if(found) exit }
             ' "$GEO_DIR/v2fly_all.yml" > "$GEO_DIR/domains/v2fly_${svc}.txt"
         done
     fi
@@ -706,7 +710,7 @@ validate_uint(){
 }
 
 validate_header(){
-    echo "$1" | grep -qE '^[0-9-]+$' || return 1
+    echo "$1" | grep -qE '^[0-9]([0-9-]*[0-9])?$' || return 1
     return 0
 }
 
@@ -718,6 +722,7 @@ validate_ip(){
 # --- Generate awg0.conf ---
 
 generate_config(){
+    umask 077   # private key + config must not be world-readable
     mkdir -p "$AWG_DIR"
 
     local privkey=$(get_setting awg_privatekey)
@@ -767,6 +772,8 @@ generate_config(){
     [ -n "$jmax" ] && { validate_uint "$jmax" || { log_msg "ERROR: Invalid Jmax: $jmax"; return 1; }; }
     [ -n "$s1" ] && { validate_uint "$s1" || { log_msg "ERROR: Invalid S1: $s1"; return 1; }; }
     [ -n "$s2" ] && { validate_uint "$s2" || { log_msg "ERROR: Invalid S2: $s2"; return 1; }; }
+    [ -n "$s3" ] && { validate_uint "$s3" || { log_msg "ERROR: Invalid S3: $s3"; return 1; }; }
+    [ -n "$s4" ] && { validate_uint "$s4" || { log_msg "ERROR: Invalid S4: $s4"; return 1; }; }
     [ -n "$h1" ] && { validate_header "$h1" || { log_msg "ERROR: Invalid H1: $h1"; return 1; }; }
     [ -n "$h2" ] && { validate_header "$h2" || { log_msg "ERROR: Invalid H2: $h2"; return 1; }; }
     [ -n "$h3" ] && { validate_header "$h3" || { log_msg "ERROR: Invalid H3: $h3"; return 1; }; }
@@ -1040,9 +1047,11 @@ EOF
     local stopping=false
     [ -f "$STOPPING_FLAG" ] && stopping=true
 
-    cat > "$STATUS_FILE" << STATUSEOF
+    # Write atomically (temp + rename) so the UI never reads a half-written file.
+    cat > "${STATUS_FILE}.tmp" << STATUSEOF
 {"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"log":"${log_text}"}
 STATUSEOF
+    mv "${STATUS_FILE}.tmp" "$STATUS_FILE" 2>/dev/null
 }
 
 # --- Install/Mount/Uninstall ---
@@ -1071,24 +1080,28 @@ do_install_page(){
 
     echo "{\"running\":false,\"starting\":false,\"stopping\":false,\"version\":\"${AWG_VERSION}\",\"peers\":[],\"log\":\"Installed.\"}" > "$STATUS_FILE"
 
-    [ ! -f /jffs/scripts/service-event ] && echo "#!/bin/sh" > /jffs/scripts/service-event && chmod +x /jffs/scripts/service-event
+    [ ! -f /jffs/scripts/service-event ] && echo "#!/bin/sh" > /jffs/scripts/service-event
+    chmod +x /jffs/scripts/service-event 2>/dev/null
     if ! grep -q "amneziawg" /jffs/scripts/service-event; then
         echo 'echo "$2" | grep -q "^awg" && /jffs/addons/amneziawg/amneziawg.sh "service_event" "$1" "$2"' >> /jffs/scripts/service-event
     fi
 
     # WAN event hook
-    [ ! -f /jffs/scripts/wan-event ] && echo "#!/bin/sh" > /jffs/scripts/wan-event && chmod +x /jffs/scripts/wan-event
+    [ ! -f /jffs/scripts/wan-event ] && echo "#!/bin/sh" > /jffs/scripts/wan-event
+    chmod +x /jffs/scripts/wan-event 2>/dev/null
     if ! grep -q "amneziawg" /jffs/scripts/wan-event; then
         echo '/jffs/addons/amneziawg/amneziawg.sh wan_event "$1" "$2"  # AmneziaWG' >> /jffs/scripts/wan-event
     fi
 
     # Firewall restart hook
-    [ ! -f /jffs/scripts/firewall-start ] && echo "#!/bin/sh" > /jffs/scripts/firewall-start && chmod +x /jffs/scripts/firewall-start
+    [ ! -f /jffs/scripts/firewall-start ] && echo "#!/bin/sh" > /jffs/scripts/firewall-start
+    chmod +x /jffs/scripts/firewall-start 2>/dev/null
     if ! grep -q "amneziawg" /jffs/scripts/firewall-start; then
         echo '/jffs/addons/amneziawg/amneziawg.sh firewall_restart  # AmneziaWG' >> /jffs/scripts/firewall-start
     fi
 
-    [ ! -f /jffs/scripts/services-start ] && echo "#!/bin/sh" > /jffs/scripts/services-start && chmod +x /jffs/scripts/services-start
+    [ ! -f /jffs/scripts/services-start ] && echo "#!/bin/sh" > /jffs/scripts/services-start
+    chmod +x /jffs/scripts/services-start 2>/dev/null
     grep -q "amneziawg" /jffs/scripts/services-start || echo "/jffs/addons/amneziawg/amneziawg.sh mount_ui &" >> /jffs/scripts/services-start
 
     [ -f "$GEO_DIR/v2fly_categories.txt" ] && cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
@@ -1130,7 +1143,7 @@ do_uninstall(){
 
     local page=$(ls /www/user/ 2>/dev/null | while read f; do grep -l "AmneziaWG" "/www/user/$f" 2>/dev/null; done | head -1)
     [ -n "$page" ] && rm -f "$page"
-    rm -f "$STATUS_FILE" /www/user/v2fly_categories.htm
+    rm -f "$STATUS_FILE" /www/user/v2fly_categories.htm /www/user/awg_changelog.htm /www/user/awg_update.htm /www/user/awg_log.htm
 
     rm -rf "$ADDON_DIR"
 
@@ -1248,10 +1261,10 @@ do_update(){
     # unreachable in some regions). SHA256 is verified below, so a mirror can't
     # substitute a tampered package.
     local tmp="/tmp/amneziawg_update.ipk"
-    local dl_ok=0 prefix
+    local dl_ok=0 prefix used_mirror=0
     for prefix in "" "https://ghproxy.net/" "https://gh-proxy.com/"; do
         if curl -sfL --connect-timeout 10 --max-time 180 --retry 2 "${prefix}${ipk_url}" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
-            dl_ok=1; break
+            dl_ok=1; [ -n "$prefix" ] && used_mirror=1; break
         fi
     done
     if [ "$dl_ok" != 1 ]; then
@@ -1268,13 +1281,23 @@ do_update(){
             rm -f "$tmp"
             return 1
         fi
+    elif [ "$used_mirror" = 1 ]; then
+        # No published digest to verify a mirror-sourced package — refuse rather than
+        # trust an unauthenticated proxy (a direct github.com download is TLS-trusted).
+        log_msg "ERROR: mirror download without a SHA256 to verify — refusing to update"
+        rm -f "$tmp"
+        return 1
     fi
 
     do_stop 2>/dev/null
     wait_for_pid_exit amneziawg-go 10
     # Block auto-start during opkg install (S99amneziawg is triggered by opkg)
     touch /tmp/.awg_no_autostart
-    opkg install "$tmp" || opkg install --force-architecture "$tmp"
+    if ! opkg install "$tmp" && ! opkg install --force-architecture "$tmp"; then
+        log_msg "ERROR: opkg install failed — staying on the current version"
+        rm -f "$tmp" /tmp/.awg_no_autostart
+        return 1
+    fi
     rm -f "$tmp"
     # Stop VPN if opkg's init script started it
     do_stop 2>/dev/null
