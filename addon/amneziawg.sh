@@ -163,7 +163,7 @@ human_size(){
 # Download a single GeoIP service list (IPv4 only)
 download_geoip_service(){
     local svc="$1"
-    svc=$(echo "$svc" | tr -d ' ' | tr '[:upper:]' '[:lower:]')
+    svc=$(echo "$svc" | tr -d ' ' | tr 'A-Z' 'a-z')
     [ -z "$svc" ] && return 1
     local tmp="$GEO_DIR/geoip/.dl_${svc}.tmp"
     if curl -sfL --connect-timeout 10 --max-time 30 "${V2FLY_GEOIP_BASE}/${svc}.txt" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
