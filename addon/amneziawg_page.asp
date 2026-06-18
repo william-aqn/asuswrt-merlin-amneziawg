@@ -65,7 +65,7 @@
 
 .awg-btn { margin: 0 4px; }
 
-#awg_peers_table { width: 100%; }
+#awg_peers_table { width: 100%; table-layout: fixed; }
 #awg_peers_table thead td {
     font-weight: bold;
     text-transform: uppercase;
@@ -75,6 +75,8 @@
 #awg_peers_table tbody td {
     padding: 6px 8px;
     font-size: 12px;
+    word-break: break-all;
+    overflow-wrap: anywhere;
 }
 
 #awg_client_table { width: 100%; margin-top: 6px; }
