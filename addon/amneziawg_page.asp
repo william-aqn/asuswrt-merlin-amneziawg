@@ -1349,6 +1349,8 @@ function initAutocompleteIp(){
                 <div id="awg_log" class="awg-log">Waiting for data...</div>
                 <div style="text-align:right; font-size:11px; opacity:0.5; margin-top:4px;">
                     <a href="https://github.com/r0otx/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; r0otx</a>
+                    &nbsp;&middot;&nbsp;
+                    <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">mod by DCRM</a>
                 </div>
 
             </td></tr>
