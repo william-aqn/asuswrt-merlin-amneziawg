@@ -82,16 +82,46 @@ esac
 IPK_FILE=$(basename "$IPK_URL")
 echo "Package: $IPK_FILE"
 
+# Expected SHA256 from the GitHub API (verifies downloads, including via mirror)
+EXPECTED_SHA=$(echo "$RELEASE_JSON" | awk -v f="$IPK_FILE" '
+    /"name":/ { in_a = (index($0, f) > 0) }
+    in_a && /"digest":/ { s=$0; sub(/.*sha256:/, "", s); sub(/".*/, "", s); print s; exit }
+')
+
 # Download
 TMP_DIR=$(mktemp -d /tmp/amneziawg_install.XXXXXX) || { echo "ERROR: Cannot create temp directory"; exit 1; }
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
+# Try GitHub directly, then proxy mirrors — the release-assets host is often
+# unreachable in some regions. SHA256 is verified below, so a mirror cannot
+# substitute a tampered package.
+DEST="$TMP_DIR/$IPK_FILE"
 echo "Downloading..."
-if ! curl -sfL --connect-timeout 10 --max-time 120 "$IPK_URL" -o "$TMP_DIR/$IPK_FILE"; then
-    echo "ERROR: Download failed"
-    rm -rf "$TMP_DIR"
-    exit 1
+DL_OK=0
+for PREFIX in "" "https://ghproxy.net/" "https://gh-proxy.com/"; do
+    [ -n "$PREFIX" ] && echo "  direct failed, trying mirror: $PREFIX"
+    if curl -sfL --connect-timeout 10 --max-time 180 --retry 2 "${PREFIX}${IPK_URL}" -o "$DEST" 2>/dev/null && [ -s "$DEST" ]; then
+        DL_OK=1; break
+    fi
+done
+if [ "$DL_OK" != 1 ]; then
+    echo "ERROR: Download failed (GitHub and mirrors unreachable)."
+    echo "  Workaround: download on a device with access, scp to /tmp, then: opkg install /tmp/$IPK_FILE"
+    rm -rf "$TMP_DIR"; exit 1
 fi
-echo "Downloaded: $TMP_DIR/$IPK_FILE"
+
+# Verify integrity against the SHA256 published by the GitHub API
+if [ -n "$EXPECTED_SHA" ]; then
+    ACTUAL_SHA=$(sha256sum "$DEST" 2>/dev/null | awk '{print $1}')
+    [ -z "$ACTUAL_SHA" ] && ACTUAL_SHA=$(openssl dgst -sha256 "$DEST" 2>/dev/null | awk '{print $NF}')
+    if [ -n "$ACTUAL_SHA" ] && [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+        echo "ERROR: SHA256 mismatch — refusing to install"
+        echo "  expected: $EXPECTED_SHA"
+        echo "  actual:   $ACTUAL_SHA"
+        rm -rf "$TMP_DIR"; exit 1
+    fi
+    [ -n "$ACTUAL_SHA" ] && echo "Integrity: SHA256 verified"
+fi
+echo "Downloaded: $DEST"
 
 # Install
 echo "Installing..."
