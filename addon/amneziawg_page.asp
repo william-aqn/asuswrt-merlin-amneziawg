@@ -179,7 +179,7 @@ function renderVersionButton(){
     var ub = document.getElementById('awg_update_btn');
     if(!ub) return;
     ub.style.display = 'inline';
-    var label = (awgUpdateAvailable && awgLatestVersion) ? ('Обновить до v' + awgLatestVersion)
+    var label = (awgUpdateAvailable && awgLatestVersion) ? ('Обновить v' + awgCurrentVersion + ' до v' + awgLatestVersion)
               : (awgCurrentVersion ? ('Текущая версия — v' + awgCurrentVersion) : 'Версия / обновления');
     ub.innerHTML = '<input type="button" class="button_gen" value="' + escHtml(label) + '" onclick="openUpdateModal();" style="font-size:11px; padding:2px 10px;">';
 }
