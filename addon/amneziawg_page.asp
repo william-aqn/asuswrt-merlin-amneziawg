@@ -100,6 +100,7 @@
 <script>
 var custom_settings = <% get_custom_settings(); %>;
 var statusTimer = null;
+var statusFails = 0;
 var v2flyList = [];
 var v2flyIpList = ['telegram','google','facebook','twitter','netflix','cloudflare','fastly','cloudfront'];
 function escHtml(s){
@@ -568,17 +569,26 @@ function refreshStatus(){
         if(xhr.status === 200){
             try {
                 var status = JSON.parse(xhr.responseText);
+                statusFails = 0;
                 updateStatusUI(status);
             } catch(e) {
-                setOfflineUI();
+                onStatusFail();
             }
         } else {
-            setOfflineUI();
+            onStatusFail();
         }
     };
-    xhr.onerror = function(){ setOfflineUI(); };
-    xhr.ontimeout = function(){ setOfflineUI(); };
+    xhr.onerror = function(){ onStatusFail(); };
+    xhr.ontimeout = function(){ onStatusFail(); };
     xhr.send();
+}
+
+// Tolerate transient status-read failures: a single slow/timed-out read
+// shouldn't flicker the badge to "Stopped". Only show offline after a few
+// consecutive misses (a real stop returns HTTP 200 with running=false and is
+// reflected immediately via updateStatusUI).
+function onStatusFail(){
+    if(++statusFails >= 3) setOfflineUI();
 }
 
 function updateStatusUI(s){
@@ -1051,23 +1061,23 @@ function initAutocompleteIp(){
                 </tr>
                 <tr>
                     <th>I1 (init junk)</th>
-                    <td><input type="text" class="input_32_table" id="awg_i1" style="width:95%; font-size:11px;" maxlength="512" placeholder="Auto-filled by Import Config"></td>
+                    <td><input type="text" class="input_32_table" id="awg_i1" style="width:95%; font-size:11px;" maxlength="5000" placeholder="Auto-filled by Import Config"></td>
                 </tr>
                 <tr>
                     <th>I2</th>
-                    <td><input type="text" class="input_32_table" id="awg_i2" style="width:95%; font-size:11px;" maxlength="512" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table" id="awg_i2" style="width:95%; font-size:11px;" maxlength="5000" placeholder="(optional)"></td>
                 </tr>
                 <tr>
                     <th>I3</th>
-                    <td><input type="text" class="input_32_table" id="awg_i3" style="width:95%; font-size:11px;" maxlength="512" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table" id="awg_i3" style="width:95%; font-size:11px;" maxlength="5000" placeholder="(optional)"></td>
                 </tr>
                 <tr>
                     <th>I4</th>
-                    <td><input type="text" class="input_32_table" id="awg_i4" style="width:95%; font-size:11px;" maxlength="512" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table" id="awg_i4" style="width:95%; font-size:11px;" maxlength="5000" placeholder="(optional)"></td>
                 </tr>
                 <tr>
                     <th>I5</th>
-                    <td><input type="text" class="input_32_table" id="awg_i5" style="width:95%; font-size:11px;" maxlength="512" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table" id="awg_i5" style="width:95%; font-size:11px;" maxlength="5000" placeholder="(optional)"></td>
                 </tr>
                 </table>
 
