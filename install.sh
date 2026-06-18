@@ -20,14 +20,12 @@ MODULE_SRC=""
 TOOL_SRC=""
 PAGE_SRC=""
 ADDON_SCRIPT_SRC=""
-CHANGELOG_SRC=""
 
 for dir in "$SRC_DIR"; do
     [ -f "$dir/amneziawg.ko" ] && MODULE_SRC="$dir/amneziawg.ko"
     [ -f "$dir/awg" ] && TOOL_SRC="$dir/awg"
     [ -f "$dir/amneziawg_page.asp" ] && PAGE_SRC="$dir/amneziawg_page.asp"
     [ -f "$dir/amneziawg.sh" ] && ADDON_SCRIPT_SRC="$dir/amneziawg.sh"
-    [ -f "$dir/CHANGELOG.md" ] && CHANGELOG_SRC="$dir/CHANGELOG.md"
 done
 
 if [ -z "$MODULE_SRC" ] || [ -z "$TOOL_SRC" ]; then
@@ -35,7 +33,7 @@ if [ -z "$MODULE_SRC" ] || [ -z "$TOOL_SRC" ]; then
     echo ""
     echo "Copy build artifacts first:"
     echo "  scp output/amneziawg.ko output/awg admin@<router>:/tmp/"
-    echo "  scp addon/amneziawg_page.asp addon/amneziawg.sh CHANGELOG.md admin@<router>:/tmp/"
+    echo "  scp addon/amneziawg_page.asp addon/amneziawg.sh admin@<router>:/tmp/"
     exit 1
 fi
 
@@ -142,9 +140,6 @@ if [ -n "$ADDON_SCRIPT_SRC" ]; then
 else
     echo "  WARNING: amneziawg.sh not found, skipping addon backend"
 fi
-
-# Copy changelog (shown in the in-UI update modal)
-[ -n "$CHANGELOG_SRC" ] && cp "$CHANGELOG_SRC" "$ADDON_DIR/CHANGELOG.md"
 
 # Copy web page
 if [ -n "$PAGE_SRC" ]; then

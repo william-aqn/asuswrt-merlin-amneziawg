@@ -233,27 +233,29 @@ function confirmUpdate(){
     doUpdate();
 }
 
-// Load changelog: prefer the latest from the repo (jsDelivr mirror — current even if
-// the local copy lags), fall back to the copy shipped on the router.
+// Load the changelog straight from the repo, fetched by the frontend. Use the
+// VERSIONED tag (@vX.Y.Z) — NOT @main: jsDelivr caches the moving "main" ref
+// aggressively (which made the list lag behind), while a tag is immutable and served
+// fresh. raw.githubusercontent is a fallback for when jsDelivr is unreachable.
 function loadChangelog(cb){
-    var remote = 'https://cdn.jsdelivr.net/gh/william-aqn/asuswrt-merlin-amneziawg@main/CHANGELOG.md';
-    var x = new XMLHttpRequest();
-    try { x.open('GET', remote, true); } catch(e){ loadLocalChangelog(cb); return; }
-    x.timeout = 6000;
-    x.onload = function(){ if(x.status === 200 && x.responseText){ cb(x.responseText, true); } else { loadLocalChangelog(cb); } };
-    x.onerror = function(){ loadLocalChangelog(cb); };
-    x.ontimeout = function(){ loadLocalChangelog(cb); };
-    x.send();
-}
-
-function loadLocalChangelog(cb){
-    var x = new XMLHttpRequest();
-    x.open('GET', '/user/awg_changelog.htm?_=' + Date.now(), true);
-    x.timeout = 4000;
-    x.onload = function(){ cb(x.responseText || '', x.status === 200 && !!x.responseText); };
-    x.onerror = function(){ cb('', false); };
-    x.ontimeout = function(){ cb('', false); };
-    x.send();
+    var repo = 'william-aqn/asuswrt-merlin-amneziawg';
+    var ref = awgLatestVersion ? ('v' + awgLatestVersion) : 'main';
+    var urls = [
+        'https://cdn.jsdelivr.net/gh/' + repo + '@' + ref + '/CHANGELOG.md',
+        'https://raw.githubusercontent.com/' + repo + '/' + ref + '/CHANGELOG.md?_=' + Date.now()
+    ];
+    var i = 0;
+    (function tryNext(){
+        if(i >= urls.length){ cb('', false); return; }
+        var u = urls[i++];
+        var x = new XMLHttpRequest();
+        try { x.open('GET', u, true); } catch(e){ tryNext(); return; }
+        x.timeout = 6000;
+        x.onload = function(){ if(x.status === 200 && x.responseText){ cb(x.responseText, true); } else { tryNext(); } };
+        x.onerror = function(){ tryNext(); };
+        x.ontimeout = function(){ tryNext(); };
+        x.send();
+    })();
 }
 
 // Minimal Markdown -> HTML for the changelog (headings, bullets, bold, code, links).
