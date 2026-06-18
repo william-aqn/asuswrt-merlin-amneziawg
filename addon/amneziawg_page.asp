@@ -134,8 +134,8 @@ function initial(){
 
 function checkForUpdate(){
     // Check GitHub directly from browser (no backend needed)
-    var ub0 = document.getElementById('awg_update_btn');
-    if(ub0){ ub0.style.display = 'inline'; ub0.innerHTML = '<span style="font-size:11px; opacity:0.5;">Проверка обновлений…</span>'; }
+    awgChecking = true; awgCheckFailed = false;
+    refreshModalState();
     var xhr = new XMLHttpRequest();
     xhr.open('GET', 'https://api.github.com/repos/william-aqn/asuswrt-merlin-amneziawg/releases/latest', true);
     xhr.timeout = 10000;
@@ -152,43 +152,51 @@ function checkForUpdate(){
     xhr.send();
 }
 
-// Shown when the GitHub update-check fails (api.github.com rate-limit/block/timeout).
-// The current version still shows (from local status); only the check is unavailable.
+// GitHub update-check failed (api.github.com rate-limit/block/timeout). Current version
+// still shows in the header button; the modal reports the failure.
 function showUpdateCheckError(){
-    var ub = document.getElementById('awg_update_btn');
-    if(ub){
-        ub.style.display = 'inline';
-        ub.innerHTML = '<span style="font-size:11px; opacity:0.6; cursor:help;" title="GitHub недоступен или превышен лимит запросов к api.github.com">⚠ не удалось проверить</span>' +
-            '<input type="button" class="button_gen" value="Проверить" onclick="checkForUpdate();" style="font-size:11px; padding:2px 8px; margin-left:6px;">';
-    }
+    awgChecking = false; awgCheckFailed = true;
+    renderVersionButton();
+    refreshModalState();
 }
 
 function showVersionInfo(currentIgnored, latest, hasUpdateIgnored){
-    // Map the update-check result onto the button area. The version itself is shown by
-    // updateStatusUI (from local status), independent of this GitHub check.
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', '/user/awg_status.htm?_=' + Date.now(), true);
-    xhr.timeout = 3000;
-    xhr.onload = function(){
-        try {
-            var s = JSON.parse(xhr.responseText);
-            var current = s.version || awgCurrentVersion || '';
-            if(current) awgCurrentVersion = current;
-            if(latest) awgLatestVersion = latest;
-            var ub = document.getElementById('awg_update_btn');
-            if(!ub) return;
-            ub.style.display = 'inline';
-            if(latest && current && latest !== current){
-                awgUpdateAvailable = true;
-                ub.innerHTML = '<input type="button" class="button_gen" value="Update to v' + escHtml(latest) + '" onclick="openUpdateModal();" style="font-size:11px; padding:2px 10px;">';
-            } else {
-                awgUpdateAvailable = false;
-                ub.innerHTML = '<span style="font-size:11px; opacity:0.6;">обновлений нет</span>' +
-                    '<input type="button" class="button_gen" value="Проверить обновления" onclick="checkForUpdate();" style="font-size:11px; padding:2px 8px; margin-left:6px;">';
-            }
-        } catch(e){}
-    };
-    xhr.send();
+    awgChecking = false; awgCheckFailed = false;
+    if(latest) awgLatestVersion = latest;
+    recomputeUpdate();
+}
+
+// Recompute "update available" from current (local status) + latest (GitHub), then redraw.
+function recomputeUpdate(){
+    awgUpdateAvailable = !!(awgLatestVersion && awgCurrentVersion && awgLatestVersion !== awgCurrentVersion);
+    renderVersionButton();
+    refreshModalState();
+}
+
+// Single header button: "Обновить до vX" when an update is available, else
+// "Текущая версия — vX". Both open the modal (check / changelog / update happen there).
+function renderVersionButton(){
+    var ub = document.getElementById('awg_update_btn');
+    if(!ub) return;
+    ub.style.display = 'inline';
+    var label = (awgUpdateAvailable && awgLatestVersion) ? ('Обновить до v' + awgLatestVersion)
+              : (awgCurrentVersion ? ('Текущая версия — v' + awgCurrentVersion) : 'Версия / обновления');
+    ub.innerHTML = '<input type="button" class="button_gen" value="' + escHtml(label) + '" onclick="openUpdateModal();" style="font-size:11px; padding:2px 10px;">';
+}
+
+// Update the modal's status line + "Обновить" button (only while the modal is open).
+function refreshModalState(){
+    var m = document.getElementById('awg_update_modal');
+    if(!m || m.style.display === 'none') return;
+    var st = document.getElementById('awg_modal_status');
+    var ob = document.getElementById('awg_modal_update');
+    if(st){
+        if(awgChecking) st.textContent = 'Проверка обновлений…';
+        else if(awgCheckFailed) st.textContent = '⚠ Не удалось проверить обновления (GitHub недоступен)';
+        else if(awgUpdateAvailable && awgLatestVersion) st.textContent = 'Доступно обновление: v' + awgLatestVersion;
+        else st.textContent = 'Обновлений нет' + (awgCurrentVersion ? ' — установлена v' + awgCurrentVersion : '');
+    }
+    if(ob) ob.style.display = awgUpdateAvailable ? '' : 'none';
 }
 
 // Reload via a fresh GET (cache-busted), never location.reload() — reload() repeats
@@ -235,21 +243,22 @@ function doUpdate(){
 var awgLatestVersion = '';
 var awgCurrentVersion = '';
 var awgUpdateAvailable = false;
+var awgChecking = false;
+var awgCheckFailed = false;
 
 function openUpdateModal(){
     var m = document.getElementById('awg_update_modal');
     if(!m){ if(awgUpdateAvailable) doUpdate(); return; }
     var title = document.getElementById('awg_modal_title');
     var body = document.getElementById('awg_modal_body');
-    var ob = document.getElementById('awg_modal_update');
     // Show the changelog of the version you'd update to, or the installed one if up to date
     var ref = (awgUpdateAvailable && awgLatestVersion) ? awgLatestVersion : (awgCurrentVersion || awgLatestVersion || '');
     if(title) title.textContent = (awgUpdateAvailable && awgLatestVersion)
         ? ('Обновление до v' + awgLatestVersion)
         : ('История изменений' + (awgCurrentVersion ? ' — v' + awgCurrentVersion : ''));
-    if(ob) ob.style.display = awgUpdateAvailable ? '' : 'none';
     if(body) body.innerHTML = '<div style="opacity:0.7;">Загрузка списка изменений…</div>';
     m.style.display = 'block';
+    refreshModalState();   // status line + "Обновить" button visibility
     loadChangelog(ref, function(text, ok){
         if(!body) return;
         if(ok && text){ body.innerHTML = mdToHtml(text); body.scrollTop = 0; }
@@ -711,13 +720,11 @@ function onStatusFail(){
 
 function updateStatusUI(s){
     awgLoaded = true;
-    // Always show the current version (from the local status file) — independent of the
-    // GitHub update-check, which can fail (api.github.com rate-limit/block) and used to
-    // leave the header version blank.
-    var vi = document.getElementById('awg_version_info');
-    if(vi && s.version){
+    // Track the installed version (from local status, independent of the GitHub check)
+    // and (re)draw the single header version/update button.
+    if(s.version){
         awgCurrentVersion = s.version;
-        vi.innerHTML = '<a href="#" onclick="openUpdateModal(); return false;" style="color:inherit; text-decoration:none; cursor:pointer; border-bottom:1px dotted rgba(255,255,255,0.45);" title="История изменений / обновление">v' + escHtml(s.version) + '</a>';
+        recomputeUpdate();
     }
     var badge = document.getElementById('awg_badge');
     var info = document.getElementById('awg_info');
@@ -1056,7 +1063,6 @@ function initAutocompleteIp(){
                     <span style="font-size:13px; font-weight:normal;">VPN Client</span>
                     <a href="https://t.me/asusxray" target="_blank" style="margin-left:auto; font-size:12px; text-decoration:none;" title="Telegram-чат">💬 Telegram</a>
                     <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" title="GitHub репозиторий" style="font-size:12px; text-decoration:none;"><img src="https://img.shields.io/github/v/release/william-aqn/asuswrt-merlin-amneziawg?logo=github&label=release" alt="GitHub" style="height:18px; display:block;" onerror="this.onerror=null; this.outerHTML='🐙 GitHub';"></a>
-                    <span id="awg_version_info" style="font-size:11px; opacity:0.6;"></span>
                     <span id="awg_update_btn" style="display:none;"></span>
                 </div>
                 <div style="margin:10px 0 10px 5px;" class="splitLine"></div>
@@ -1364,8 +1370,10 @@ function initAutocompleteIp(){
             <span style="margin-left:auto; cursor:pointer; font-size:22px; line-height:1; opacity:0.6;" onclick="closeUpdateModal();" title="Закрыть">&times;</span>
         </div>
         <div id="awg_modal_body" style="padding:14px 18px; overflow-y:auto; font-size:12px; line-height:1.5;"></div>
-        <div style="padding:12px 18px; border-top:1px solid #444; text-align:right;">
-            <input type="button" class="button_gen" value="Закрыть" onclick="closeUpdateModal();">
+        <div style="padding:12px 18px; border-top:1px solid #444; display:flex; align-items:center;">
+            <span id="awg_modal_status" style="font-size:12px; opacity:0.75; margin-right:auto;"></span>
+            <input type="button" class="button_gen" value="Проверить обновления" onclick="checkForUpdate();">
+            <input type="button" class="button_gen" value="Закрыть" onclick="closeUpdateModal();" style="margin-left:8px;">
             <input type="button" class="button_gen" id="awg_modal_update" value="Обновить" onclick="confirmUpdate();" style="margin-left:8px;">
         </div>
     </div>
