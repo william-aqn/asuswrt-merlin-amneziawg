@@ -138,14 +138,26 @@ function checkForUpdate(){
     xhr.open('GET', 'https://api.github.com/repos/william-aqn/asuswrt-merlin-amneziawg/releases/latest', true);
     xhr.timeout = 10000;
     xhr.onload = function(){
-        if(xhr.status !== 200) return;
+        if(xhr.status !== 200){ showUpdateCheckError(); return; }
         try {
             var data = JSON.parse(xhr.responseText);
             var latest = (data.tag_name || '').replace(/^v/, '');
             showVersionInfo('', latest, false);
-        } catch(e){}
+        } catch(e){ showUpdateCheckError(); }
     };
+    xhr.onerror = function(){ showUpdateCheckError(); };
+    xhr.ontimeout = function(){ showUpdateCheckError(); };
     xhr.send();
+}
+
+// Shown when the GitHub update-check fails (api.github.com rate-limit/block/timeout).
+// The current version still shows (from local status); only the check is unavailable.
+function showUpdateCheckError(){
+    var ub = document.getElementById('awg_update_btn');
+    if(ub){
+        ub.style.display = 'inline';
+        ub.innerHTML = '<span style="font-size:11px; opacity:0.6; cursor:help;" title="GitHub недоступен или превышен лимит запросов к api.github.com — проверьте обновления вручную на странице релизов">⚠ не удалось проверить обновления</span>';
+    }
 }
 
 function showVersionInfo(currentIgnored, latest, hasUpdateIgnored){
