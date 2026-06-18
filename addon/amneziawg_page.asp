@@ -681,6 +681,18 @@ function importConfig(){
 function parseConfig(text){
     if(!text) return;
 
+    // Reset all import-target fields first, so values absent from the imported
+    // config don't keep stale values (e.g. an old S4 lingering after import).
+    var clearFields = [
+        'awg_privatekey', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
+        'awg_jc', 'awg_jmin', 'awg_jmax', 'awg_s1', 'awg_s2', 'awg_s3', 'awg_s4',
+        'awg_h1', 'awg_h2', 'awg_h3', 'awg_h4',
+        'awg_i1', 'awg_i2', 'awg_i3', 'awg_i4', 'awg_i5',
+        'awg_peer_pubkey', 'awg_peer_psk', 'awg_peer_endpoint',
+        'awg_peer_allowedips', 'awg_peer_keepalive'
+    ];
+    for(var ci = 0; ci < clearFields.length; ci++){ setVal(clearFields[ci], ''); }
+
     var lines = text.split('\n');
     var section = '';
     for(var i = 0; i < lines.length; i++){
