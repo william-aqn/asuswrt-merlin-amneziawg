@@ -157,7 +157,7 @@ function showVersionInfo(currentIgnored, latest, hasUpdateIgnored){
             var vi = document.getElementById('awg_version_info');
             var ub = document.getElementById('awg_update_btn');
             if(!vi) return;
-            if(current) vi.textContent = 'v' + current;
+            if(current) vi.innerHTML = '<a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="color:inherit;text-decoration:none;" title="GitHub репозиторий">v' + escHtml(current) + '</a>';
             if(latest && current && latest !== current){
                 ub.style.display = 'inline';
                 ub.innerHTML = '<input type="button" class="button_gen" value="Update to v' + escHtml(latest) + '" onclick="doUpdate();" style="font-size:11px; padding:2px 10px;">';
@@ -1169,6 +1169,8 @@ function initAutocompleteIp(){
                 <div class="awg-section" style="margin-top:15px;">Log</div>
                 <div id="awg_log" class="awg-log">Waiting for data...</div>
                 <div style="text-align:right; font-size:11px; opacity:0.5; margin-top:4px;">
+                    <a href="https://t.me/asusxray" target="_blank" style="text-decoration:none;">💬 Telegram</a>
+                    &nbsp;&middot;&nbsp;
                     <a href="https://github.com/r0otx/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; r0otx</a>
                 </div>
 
