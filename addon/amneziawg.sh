@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.42"
+AWG_VERSION="1.1.43"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1351,6 +1351,15 @@ do_update(){
         return 1
     fi
 
+    # Preserve geo lists across the upgrade unless "wipe before update" is on. The
+    # package prerm runs 'rm -rf /opt/amneziawg', so move geo to a sibling dir (same
+    # filesystem = instant rename, no extra space) that survives, and restore it after.
+    local geo_bak="${AWG_DIR}_geobak"
+    rm -rf "$geo_bak" 2>/dev/null
+    if [ "$(get_setting awg_geo_wipe_update)" != "1" ] && [ -d "$GEO_DIR" ]; then
+        mv "$GEO_DIR" "$geo_bak" 2>/dev/null && log_msg "Preserving geo lists across the update"
+    fi
+
     do_stop 2>/dev/null
     wait_for_pid_exit amneziawg-go 10
     # Block auto-start during opkg install (S99amneziawg is triggered by opkg)
@@ -1365,6 +1374,12 @@ do_update(){
     do_stop 2>/dev/null
     wait_for_pid_exit amneziawg-go 10
     rm -f /tmp/.awg_no_autostart
+    # Restore preserved geo lists (if we moved them aside above)
+    if [ -d "$geo_bak" ]; then
+        rm -rf "$GEO_DIR" 2>/dev/null
+        mkdir -p "$AWG_DIR"
+        mv "$geo_bak" "$GEO_DIR" 2>/dev/null && log_msg "Geo lists restored"
+    fi
     # Install page from new version
     /jffs/addons/amneziawg/amneziawg.sh install_page
     log_msg "Update complete. Start VPN from UI."
@@ -1372,8 +1387,8 @@ do_update(){
     # memory, so calling update_status directly would re-write the OLD version number
     # (that's why the header used to keep showing the pre-update version).
     /jffs/addons/amneziawg/amneziawg.sh status 2>/dev/null
-    # Geo lists were wiped by the package upgrade (prerm removes /opt/amneziawg) —
-    # re-download them with the NEW script if geo routing is configured.
+    # If geo wasn't preserved (wipe option on, or restore failed), re-download the
+    # missing lists with the NEW script.
     /jffs/addons/amneziawg/amneziawg.sh ensure_geo 2>/dev/null
 }
 

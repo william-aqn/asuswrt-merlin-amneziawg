@@ -1326,8 +1326,8 @@ function initAutocompleteIp(){
                 <tr>
                     <th>Wipe before update</th>
                     <td>
-                        <label><input type="checkbox" id="awg_geo_wipe_update"> Delete all geo files before a full update (Update Now / auto-update)</label>
-                        <div style="color:#888; font-size:11px; margin-top:3px;">Off (default): keeps existing lists if a re-download fails. On: guarantees a clean set, but a failed download leaves that list missing.</div>
+                        <label><input type="checkbox" id="awg_geo_wipe_update"> Delete all geo files before a full update / program upgrade</label>
+                        <div style="color:#888; font-size:11px; margin-top:3px;">Off (default): keeps existing geo lists — including across a program update (no re-download). On: wipes before re-download (clean set, but a failed download leaves a list missing).</div>
                     </td>
                 </tr>
                 </table>
