@@ -30,6 +30,9 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
+### 1.1.16 -- 2026-06-18
+- **"Stopping…" status during stop/restart** — a page refresh during a stop could briefly show "Connected"; now it shows "Stopping…" immediately
+
 ### 1.1.15 -- 2026-06-18
 - **GeoIP is driven by the "GeoIP Service Lists" UI field** (it was hardcoded and the field ignored); the field is pre-filled with the defaults
 - **Removing a service/category now drops its routes**: stale GeoIP / GeoSite / custom-domain files are no longer kept or applied

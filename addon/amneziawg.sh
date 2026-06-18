@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.15"
+AWG_VERSION="1.1.16"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -13,6 +13,7 @@ AWG_BIN="$AWG_DIR/awg"
 IFACE="awg0"
 STATUS_FILE="/www/user/awg_status.htm"
 STARTING_FLAG="/tmp/.awg_starting"
+STOPPING_FLAG="/tmp/.awg_stopping"
 SETTINGS="/jffs/addons/custom_settings.txt"
 CLIENTS_FILE="$AWG_DIR/clients.list"
 GEO_DIR="$AWG_DIR/geo"
@@ -880,6 +881,9 @@ do_start(){
 do_stop(){
     acquire_lock || { log_msg "Cannot acquire lock, aborting stop"; return 1; }
     rm -f "$STARTING_FLAG"
+    # Mark stop-in-progress so the UI shows "Stopping..." even across a page refresh
+    touch "$STOPPING_FLAG"
+    update_status
 
     iptables -D INPUT -i "$IFACE" -j ACCEPT 2>/dev/null
     iptables -D FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null
@@ -918,6 +922,7 @@ do_stop(){
     wait_for_dns 10
 
     log_msg "Stopped"
+    rm -f "$STOPPING_FLAG"
     update_status
     release_lock
 }
@@ -980,9 +985,11 @@ EOF
 
     local starting=false
     [ -f "$STARTING_FLAG" ] && starting=true
+    local stopping=false
+    [ -f "$STOPPING_FLAG" ] && stopping=true
 
     cat > "$STATUS_FILE" << STATUSEOF
-{"running":${running},"starting":${starting},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"log":"${log_text}"}
 STATUSEOF
 }
 

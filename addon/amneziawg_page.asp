@@ -575,7 +575,13 @@ function updateStatusUI(s){
     var peers = document.getElementById('awg_peers');
     var logbox = document.getElementById('awg_log');
 
-    if(s.running){
+    if(s.stopping){
+        badge.className = 'awg-status connecting';
+        badge.innerHTML = '&#9679; Stopping...';
+        document.getElementById('btn_start').style.display = 'none';
+        document.getElementById('btn_stop').style.display = 'none';
+        document.getElementById('btn_restart').style.display = 'none';
+    } else if(s.running){
         badge.className = 'awg-status running';
         badge.innerHTML = '&#9679; Connected';
         document.getElementById('btn_start').style.display = 'none';
