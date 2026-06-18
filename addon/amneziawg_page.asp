@@ -101,6 +101,7 @@
 var custom_settings = <% get_custom_settings(); %>;
 var statusTimer = null;
 var statusFails = 0;
+var awgPoll = null;
 var v2flyList = [];
 var v2flyIpList = ['telegram','google','facebook','twitter','netflix','cloudflare','fastly','cloudfront'];
 function escHtml(s){
@@ -275,7 +276,12 @@ function saveSettings(){
         var iv = document.getElementById('awg_i' + ix);
         if(iv && iv.value) initData += 'I' + ix + ' = ' + iv.value + '\n';
     }
-    custom_settings.awg_initdata = initData ? btoa(initData) : '';
+    try {
+        custom_settings.awg_initdata = initData ? btoa(initData) : '';
+    } catch(e){
+        alert('I1-I5 contain invalid (non-ASCII) characters.');
+        return;
+    }
 
     // Save geo settings
     custom_settings.awg_geo_v2fly = document.getElementById('awg_geo_v2fly').value;
@@ -297,7 +303,7 @@ function saveSettings(){
         alert('Invalid key format. Keys must be 44 characters (base64).');
         return;
     }
-    if(ep.indexOf(':') === -1){
+    if(!/:\d{1,5}$/.test(ep)){
         alert('Endpoint must include port (e.g. server:51820).');
         return;
     }
@@ -386,21 +392,6 @@ function loadGeoSettings(){
     if(b6) b6.checked = (custom_settings.awg_block_ipv6_dns !== '0');
 }
 
-function getCheckedValues(prefix){
-    var checks = document.querySelectorAll('input[data-group="' + prefix + '"]:checked');
-    var vals = [];
-    for(var i = 0; i < checks.length; i++) vals.push(checks[i].value);
-    return vals.join(',');
-}
-
-function setCheckedValues(prefix, csv){
-    var vals = csv.split(',');
-    var checks = document.querySelectorAll('input[data-group="' + prefix + '"]');
-    for(var i = 0; i < checks.length; i++){
-        checks[i].checked = (vals.indexOf(checks[i].value) !== -1);
-    }
-}
-
 function updateGeoLists(){
     var btn = document.getElementById('btn_geo_update');
     var isDownload = btn && btn.value === 'Download Lists';
@@ -448,37 +439,10 @@ function fetchDhcpClients(){
 }
 
 function fetchDhcpLeases(){
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', '/update_clients.asp?_=' + Date.now(), true);
-    xhr.onload = function(){
-        if(xhr.status === 200){
-            var lines = [];
-            var text = xhr.responseText;
-            // dnsmasq.leases format: expiry mac ip hostname clientid
-            var rows = text.match(/\d+\.\d+\.\d+\.\d+/g);
-            if(rows){
-                // Re-parse line by line for ip + hostname
-                var rawLines = text.split('\n');
-                for(var i = 0; i < rawLines.length; i++){
-                    var parts = rawLines[i].trim().split(/\s+/);
-                    if(parts.length >= 4 && parts[2].match(/^\d+\.\d+\.\d+\.\d+$/)){
-                        lines.push({ip: parts[2], name: parts[3] === '*' ? parts[1] : parts[3]});
-                    }
-                }
-            }
-            if(lines.length > 0){
-                showClientPicker(lines);
-            } else {
-                var input = prompt('Enter device IPs to add (comma-separated):');
-                if(input) addManualIPs(input);
-            }
-        }
-    };
-    xhr.onerror = function(){
-        var input = prompt('Enter device IPs to add (comma-separated):');
-        if(input) addManualIPs(input);
-    };
-    xhr.send();
+    // Fallback when the get_clientlist hook is unavailable: ask for IPs directly.
+    // (Parsing the firmware's client pages is version-specific and unreliable.)
+    var input = prompt('Could not read the DHCP client list.\nEnter device IPs to add (comma-separated):');
+    if(input) addManualIPs(input);
 }
 
 function showClientPicker(clients){
@@ -518,8 +482,9 @@ function awgAction(action){
     var isStop = action.indexOf('stop') !== -1;
     var expect = !isStop;
 
-    // Stop periodic refresh while action runs
+    // Stop periodic refresh and any prior in-flight action poll
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
+    if(awgPoll){ clearInterval(awgPoll); awgPoll = null; }
     document.getElementById('btn_start').disabled = true;
     document.getElementById('btn_stop').disabled = true;
     document.getElementById('btn_restart').disabled = true;
@@ -556,6 +521,7 @@ function awgAction(action){
         xhr.onerror = function(){ if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
         xhr.send();
     }, 2000);
+    awgPoll = poll;
 }
 
 function showLoading(){}
@@ -603,6 +569,12 @@ function updateStatusUI(s){
         document.getElementById('btn_start').style.display = 'none';
         document.getElementById('btn_stop').style.display = '';
         document.getElementById('btn_restart').style.display = '';
+    } else if(s.starting){
+        badge.className = 'awg-status connecting';
+        badge.innerHTML = '&#9679; Connecting...';
+        document.getElementById('btn_start').style.display = 'none';
+        document.getElementById('btn_stop').style.display = '';
+        document.getElementById('btn_restart').style.display = 'none';
     } else {
         badge.className = 'awg-status stopped';
         badge.innerHTML = '&#9679; Stopped';
@@ -665,8 +637,6 @@ function setOfflineUI(){
     document.getElementById('btn_stop').style.display = 'none';
     document.getElementById('btn_restart').style.display = 'none';
 }
-
-var _initParams = {};
 
 function importConfig(){
     var fileInput = document.getElementById('awg_config_file');

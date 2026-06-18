@@ -12,6 +12,7 @@ AWG_GO="$AWG_DIR/amneziawg-go"
 AWG_BIN="$AWG_DIR/awg"
 IFACE="awg0"
 STATUS_FILE="/www/user/awg_status.htm"
+STARTING_FLAG="/tmp/.awg_starting"
 SETTINGS="/jffs/addons/custom_settings.txt"
 CLIENTS_FILE="$AWG_DIR/clients.list"
 GEO_DIR="$AWG_DIR/geo"
@@ -721,6 +722,12 @@ do_start(){
         return 0
     fi
 
+    # Mark start-in-progress so the UI shows "Connecting" even across a page
+    # refresh; the trap clears it and writes the final status on any exit path.
+    touch "$STARTING_FLAG"
+    trap 'rm -f "$STARTING_FLAG"; update_status' EXIT INT TERM
+    update_status
+
     # Wait for network to be ready (br0 up with IP), important on boot
     if ! ip -4 addr show br0 2>/dev/null | grep -q "inet "; then
         log_msg "Waiting for network (br0)..."
@@ -828,6 +835,7 @@ do_start(){
 
 do_stop(){
     acquire_lock || { log_msg "Cannot acquire lock, aborting stop"; return 1; }
+    rm -f "$STARTING_FLAG"
 
     iptables -D INPUT -i "$IFACE" -j ACCEPT 2>/dev/null
     iptables -D FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null
@@ -926,8 +934,11 @@ EOF
     local geo_downloaded=false
     geo_available && geo_downloaded=true
 
+    local starting=false
+    [ -f "$STARTING_FLAG" ] && starting=true
+
     cat > "$STATUS_FILE" << STATUSEOF
-{"running":${running},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"log":"${log_text}"}
 STATUSEOF
 }
 
