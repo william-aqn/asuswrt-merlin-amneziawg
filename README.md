@@ -5,6 +5,8 @@
 
 [[русский]](README.md) [[english]](README_EN.md)
 
+💬 Обсуждение и помощь — [Telegram-чат сообщества](https://t.me/asusxray/26094)
+
 VPN-клиент с обходом DPI-блокировок на базе [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) с веб-интерфейсом для роутеров ASUS на прошивке [Asuswrt-Merlin](https://www.asuswrt-merlin.net/). Маршрутизация по устройствам и выборочная маршрутизация через GeoIP/GeoSite.
 
 Полностью userspace-реализация -- не требует kernel module, работает на любой версии ядра.

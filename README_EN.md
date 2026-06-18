@@ -2,6 +2,8 @@
 
 [[русский]](README.md) [[english]](README_EN.md)
 
+💬 Discussion & help — [community Telegram chat](https://t.me/asusxray/26094)
+
 DPI-obfuscated WireGuard VPN client with web UI for ASUS routers running [Asuswrt-Merlin](https://www.asuswrt-merlin.net/) firmware. Provides per-device policy routing and GeoIP/GeoSite selective routing using [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go) protocol.
 
 Fully userspace implementation -- no kernel module required, works on any kernel version.
