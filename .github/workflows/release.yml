@@ -29,6 +29,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up QEMU (ARM emulation for the static-musl awg build)
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -45,26 +48,18 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go-arm5"
           CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go-arm"
 
-      - name: Build awg (aarch64, static musl)
+      - name: Build awg (aarch64, static musl in emulated Alpine)
         run: |
           set -eux
-          curl -fL --retry 3 --retry-delay 5 https://musl.cc/aarch64-linux-musl-cross.tgz | tar xz -C /opt
-          export PATH="/opt/aarch64-linux-musl-cross/bin:$PATH"
-          git clone --depth 1 --branch "$AWG_TOOLS_TAG" https://github.com/amnezia-vpn/amneziawg-tools.git tools-arm64
-          make -C tools-arm64/src CC=aarch64-linux-musl-gcc LDFLAGS=-static PLATFORM_CFLAGS=""
-          cp tools-arm64/src/awg "$GITHUB_WORKSPACE/output/awg" 2>/dev/null || cp tools-arm64/src/wg "$GITHUB_WORKSPACE/output/awg"
-          chmod +x "$GITHUB_WORKSPACE/output/awg"
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          docker run --rm --platform linux/arm64 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git clone --depth 1 --branch $AWG_TOOLS_TAG https://github.com/amnezia-vpn/amneziawg-tools.git /t && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg 2>/dev/null || cp wg /out/awg; } && chmod +x /out/awg"
           file "$GITHUB_WORKSPACE/output/awg"
 
-      - name: Build awg-arm (ARM32, static musl)
+      - name: Build awg-arm (ARM32, static musl in emulated Alpine)
         run: |
           set -eux
-          curl -fL --retry 3 --retry-delay 5 https://musl.cc/arm-linux-musleabi-cross.tgz | tar xz -C /opt
-          export PATH="/opt/arm-linux-musleabi-cross/bin:$PATH"
-          git clone --depth 1 --branch "$AWG_TOOLS_TAG" https://github.com/amnezia-vpn/amneziawg-tools.git tools-arm
-          make -C tools-arm/src CC=arm-linux-musleabi-gcc LDFLAGS=-static PLATFORM_CFLAGS=""
-          cp tools-arm/src/awg "$GITHUB_WORKSPACE/output/awg-arm" 2>/dev/null || cp tools-arm/src/wg "$GITHUB_WORKSPACE/output/awg-arm"
-          chmod +x "$GITHUB_WORKSPACE/output/awg-arm"
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          docker run --rm --platform linux/arm/v7 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git clone --depth 1 --branch $AWG_TOOLS_TAG https://github.com/amnezia-vpn/amneziawg-tools.git /t && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg-arm 2>/dev/null || cp wg /out/awg-arm; } && chmod +x /out/awg-arm"
           file "$GITHUB_WORKSPACE/output/awg-arm"
 
       - name: Build .ipk packages
