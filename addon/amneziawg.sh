@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.22"
+AWG_VERSION="1.1.23"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -66,10 +66,13 @@ get_endpoint(){
 }
 
 flush_conntrack(){
-    if command -v conntrack >/dev/null 2>&1 && conntrack -D --mark "$FWMARK"/"$FWMARK" 2>/dev/null; then
-        return 0
-    fi
-    conntrack -F 2>/dev/null
+    # Drop ONLY conntrack entries with our fwmark, so marked devices reconnect
+    # through the tunnel. Never fall back to a full 'conntrack -F': a zero-match
+    # targeted delete returns 1, which used to wipe the whole table (killing every
+    # LAN connection) on any Apply that had no currently-marked flows.
+    command -v conntrack >/dev/null 2>&1 || return 0
+    conntrack -D --mark "$FWMARK"/"$FWMARK" 2>/dev/null
+    return 0
 }
 
 save_and_set_rp_filter(){
@@ -211,7 +214,7 @@ download_geoip_service(){
 # Selected GeoIP services: the UI "GeoIP Service Lists" field, or GEOIP_SERVICES default
 selected_geoip(){
     local s
-    s=$(get_setting awg_geo_v2fly_ip | tr ',' ' ')
+    s=$(get_setting awg_geo_v2fly_ip | tr ',' ' ' | tr 'A-Z' 'a-z')
     s=$(echo $s)
     [ -z "$s" ] && s="$GEOIP_SERVICES"
     echo "$s"
@@ -300,13 +303,16 @@ setup_dns_interception(){
     local router_ip
     router_ip=$(get_router_ip)
     [ -z "$router_ip" ] && router_ip="192.168.1.1"
-    iptables -t nat -I PREROUTING -i br0 -p udp --dport 53 -j DNAT --to "$router_ip"
-    iptables -t nat -I PREROUTING -i br0 -p tcp --dport 53 -j DNAT --to "$router_ip"
-    iptables -I FORWARD -i br0 -p tcp --dport 853 -j REJECT
+    # Remember the IP we DNAT to so cleanup can remove the rule even if br0's IP
+    # changes later (otherwise an orphaned DNAT to the old IP breaks LAN DNS).
+    echo "$router_ip" > /tmp/.awg_dns_ip 2>/dev/null
+    iptables -t nat -C PREROUTING -i br0 -p udp --dport 53 -j DNAT --to "$router_ip" 2>/dev/null || iptables -t nat -I PREROUTING -i br0 -p udp --dport 53 -j DNAT --to "$router_ip"
+    iptables -t nat -C PREROUTING -i br0 -p tcp --dport 53 -j DNAT --to "$router_ip" 2>/dev/null || iptables -t nat -I PREROUTING -i br0 -p tcp --dport 53 -j DNAT --to "$router_ip"
+    iptables -C FORWARD -i br0 -p tcp --dport 853 -j REJECT 2>/dev/null || iptables -I FORWARD -i br0 -p tcp --dport 853 -j REJECT
     local doh_ip
     for doh_ip in 8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112; do
-        iptables -I FORWARD -i br0 -d "$doh_ip" -p tcp --dport 443 -j REJECT
-        iptables -I FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT
+        iptables -C FORWARD -i br0 -d "$doh_ip" -p tcp --dport 443 -j REJECT 2>/dev/null || iptables -I FORWARD -i br0 -d "$doh_ip" -p tcp --dport 443 -j REJECT
+        iptables -C FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT 2>/dev/null || iptables -I FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT
     done
     log_msg "DNS interception enabled"
 }
@@ -337,9 +343,11 @@ cleanup_firewall(){
     # Direct-policy rules use "lookup main prio 97" — not matched by the deletes above
     _i=0; while [ $_i -lt 100 ] && ip rule del prio 97 2>/dev/null; do _i=$((_i+1)); done
 
-    # Remove DNS interception rules
+    # Remove DNS interception rules. Prefer the IP we actually DNAT'd to (saved at
+    # setup) so a changed br0 IP doesn't leave an orphaned DNAT to the old address.
     local router_ip
-    router_ip=$(get_router_ip)
+    router_ip=$(cat /tmp/.awg_dns_ip 2>/dev/null)
+    [ -z "$router_ip" ] && router_ip=$(get_router_ip)
     [ -z "$router_ip" ] && router_ip="192.168.1.1"
     iptables -t nat -D PREROUTING -i br0 -p udp --dport 53 -j DNAT --to "$router_ip" 2>/dev/null
     iptables -t nat -D PREROUTING -i br0 -p tcp --dport 53 -j DNAT --to "$router_ip" 2>/dev/null
@@ -419,7 +427,7 @@ setup_firewall(){
     local has_geo=false
 
     # --- Create ipset ---
-    ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem 131072 timeout 86400 2>/dev/null
+    ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem 131072 timeout 0 2>/dev/null
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
         log_msg "ERROR: ipset $IPSET_NAME creation failed, geo routing disabled"
         has_geo=false
@@ -618,7 +626,7 @@ setup_firewall(){
     fi
 
     # --- Reload dnsmasq if geo active (deferred + retried; see reload_dnsmasq) ---
-    if [ $domain_count -gt 0 ] || [ "$has_geo" = true ]; then
+    if [ $domain_count -gt 0 ] || [ "$has_geo" = true ] || [ "$block_ipv6" = "1" ]; then
         reload_dnsmasq
     fi
 
@@ -1150,21 +1158,38 @@ do_watchdog(){
         reason="tunnel not passing traffic"
     fi
 
+    local wd_state="/tmp/.awg_wd_state"
     if [ -n "$reason" ]; then
+        # Backoff: don't churn a 5-min teardown/rebuild loop when the server is simply
+        # unreachable. Widen the retry interval with consecutive failures (5 min * N,
+        # capped at 60 min) so the LAN settles into a stable "VPN down" state.
+        local fails last now cooldown
+        fails=$(sed -n 1p "$wd_state" 2>/dev/null); [ -z "$fails" ] && fails=0
+        last=$(sed -n 2p "$wd_state" 2>/dev/null); [ -z "$last" ] && last=0
+        now=$(date +%s 2>/dev/null); [ -z "$now" ] && now=0
+        cooldown=$((fails * 300)); [ $cooldown -gt 3600 ] && cooldown=3600
+        if [ $fails -gt 0 ] && [ $now -gt 0 ] && [ $((now - last)) -lt $cooldown ]; then
+            log_msg "WATCHDOG: $reason, backing off ($fails consecutive failures)"
+            return
+        fi
         log_msg "WATCHDOG: $reason, restarting"
+        printf '%s\n%s\n' "$((fails + 1))" "$now" > "$wd_state" 2>/dev/null
         do_stop 2>/dev/null
         wait_for_pid_exit amneziawg-go 10
         do_start
         return
     fi
+    rm -f "$wd_state" 2>/dev/null   # healthy: reset backoff counter
 
-    # A firewall restart can wipe our policy routes while the tunnel itself stays
-    # up (the checks above still pass, since the ping is bound to $IFACE). Detect
-    # the missing route table and re-apply routes/firewall — lighter than a full
-    # restart. This self-heals route loss within ~5 min even if the firewall-start
-    # hook didn't fire.
-    if ! ip route show table $RT_TABLE 2>/dev/null | grep -q "0.0.0.0/1"; then
-        log_msg "WATCHDOG: policy routes (table $RT_TABLE) missing, re-applying"
+    # A firewall restart wipes our mangle chain/hook (the packet marking) while the
+    # tunnel and route table stay up — the checks above still pass. Detect the
+    # missing PREROUTING hook (what restart_firewall actually drops) OR a lost policy
+    # route and rebuild — lighter than a full restart, self-heals within ~5 min even
+    # if the firewall-start hook didn't fire. (Old code checked only the route and
+    # missed the far more common mangle-reset case.)
+    if ! iptables -t mangle -C PREROUTING -j "$AWG_CHAIN" 2>/dev/null \
+       || ! ip route show table $RT_TABLE 2>/dev/null | grep -q "0.0.0.0/1"; then
+        log_msg "WATCHDOG: routing/marking incomplete, re-applying firewall/routes"
         do_firewall_restart
     fi
 }
