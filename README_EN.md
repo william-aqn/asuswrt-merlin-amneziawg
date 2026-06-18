@@ -30,6 +30,14 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
+### 1.1.9 -- 2026-06-18
+- **Configurable MTU** -- MTU field in the Interface section (default 1280)
+- **GeoIP fixed** for cloudflare/cloudfront etc. (a busybox `tr` bug mangled service names)
+- **Router header status icons** work again on the addon page (JS function-name clash with the firmware)
+- **Connection status** no longer flickers on poll timeout and shows "Connecting" across a page refresh
+- **Config import** now clears old fields (no leftover values like a stale S4)
+- **UI**: long AllowedIPs lists no longer stretch the page; I1–I5 inputs aren't truncated; assorted validation/robustness fixes
+
 ### 1.1.8 -- 2026-06-18
 - **IPv6 DNS blocking (filter-AAAA)** -- new "Prevent IPv6 Leaks" toggle (on by default): dnsmasq stops returning AAAA records so dual-stack domains can't bypass the IPv4 geo routing (adapted from [PR #15](https://github.com/advocdiaboly/asuswrt-merlin-amneziawg/pull/15))
 
