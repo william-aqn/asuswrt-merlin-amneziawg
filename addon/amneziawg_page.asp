@@ -246,7 +246,14 @@ function loadSettings(){
     updateGeoVisibility();
 }
 
-function saveSettings(){
+function saveSettings(){ applyConfig('start_awgsaveconf'); }
+
+function forceApply(){
+    if(!confirm('Force Apply: сохранить настройки, перезапустить VPN и полностью пересобрать маршруты и firewall?')) return;
+    applyConfig('start_awgforceapply');
+}
+
+function applyConfig(actionScript){
     var fields = [
         'awg_privatekey', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
         'awg_peer_pubkey', 'awg_peer_psk', 'awg_peer_endpoint',
@@ -309,7 +316,7 @@ function saveSettings(){
     }
 
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
-    document.form.action_script.value = "start_awgsaveconf";
+    document.form.action_script.value = actionScript;
     document.form.submit();
     setTimeout(function(){ location.reload(); }, 15000);
 }
@@ -1155,6 +1162,7 @@ function initAutocompleteIp(){
                 <!-- Apply -->
                 <div style="margin-top:12px; text-align:center;">
                     <input type="button" class="button_gen" value="Apply" onclick="saveSettings();">
+                    <input type="button" class="button_gen" value="Force Apply" onclick="forceApply();" style="margin-left:8px;" title="Сохранить + перезапуск VPN + полная пересборка маршрутов и firewall">
                 </div>
 
                 <!-- ==================== LOG ==================== -->

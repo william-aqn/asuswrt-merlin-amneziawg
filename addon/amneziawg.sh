@@ -1207,6 +1207,14 @@ do_service_event(){
         awgstart)       do_start ;;
         awgstop)        do_stop ;;
         awgrestart)     do_stop; wait_for_pid_exit amneziawg-go 10; do_start ;;
+        awgforceapply)
+            # Force Apply: persist settings, then full restart (re-runs setconf +
+            # complete route/firewall/geo rebuild via do_start)
+            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_privatekey)" ]; do sleep 1; _wt=$((_wt+1)); done
+            do_stop 2>/dev/null
+            wait_for_pid_exit amneziawg-go 10
+            do_start
+            ;;
         awgsaveconf)
             local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_privatekey)" ]; do sleep 1; _wt=$((_wt+1)); done
             generate_config
