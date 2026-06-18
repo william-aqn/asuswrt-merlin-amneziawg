@@ -120,8 +120,8 @@ function loadV2flyCategories(){
 function initial(){
     show_menu();
     loadSettings();
-    refreshStatus();
-    statusTimer = setInterval(refreshStatus, 5000);
+    awgRefreshStatus();
+    statusTimer = setInterval(awgRefreshStatus, 5000);
     loadV2flyCategories();
     initAutocomplete();
     initAutocompleteIp();
@@ -544,16 +544,16 @@ function awgAction(action){
                 if(ready || attempts >= 90){
                     clearInterval(poll);
                     updateStatusUI(s);
-                    statusTimer = setInterval(refreshStatus, 5000);
+                    statusTimer = setInterval(awgRefreshStatus, 5000);
                     document.getElementById('btn_start').disabled = false;
                     document.getElementById('btn_stop').disabled = false;
                     document.getElementById('btn_restart').disabled = false;
                 }
             } catch(e){
-                if(attempts >= 90){ clearInterval(poll); refreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; }
+                if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; }
             }
         };
-        xhr.onerror = function(){ if(attempts >= 90){ clearInterval(poll); refreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
+        xhr.onerror = function(){ if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
         xhr.send();
     }, 2000);
 }
@@ -561,7 +561,7 @@ function awgAction(action){
 function showLoading(){}
 function hideLoading(){}
 
-function refreshStatus(){
+function awgRefreshStatus(){
     var xhr = new XMLHttpRequest();
     xhr.open('GET', '/user/awg_status.htm?_=' + Date.now(), true);
     xhr.timeout = 3000;
