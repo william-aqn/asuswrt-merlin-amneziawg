@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.20"
+AWG_VERSION="1.1.21"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -180,6 +180,7 @@ fetch_with_mirrors(){
         fi
         case "$url" in https://raw.githubusercontent.com/*) [ "$u" = "$url" ] && RAW_GH_DOWN=1 ;; esac
     done
+    log_msg "  download failed (incl. mirrors): $url"
     return 1
 }
 
@@ -354,6 +355,42 @@ cleanup_firewall(){
     cleanup_ipv6_block
 
     log_msg "Firewall rules cleaned"
+}
+
+# Reload dnsmasq so it re-reads our ipset/domain rules from dnsmasq.conf.add.
+# When invoked from a service-event, rc_service is busy and a direct
+# "service restart_dnsmasq" is dropped ("skip the event: restart_dnsmasq"); a
+# foreground retry would deadlock (rc waits for this very handler). So defer to a
+# detached job that retries until the restart actually takes (dnsmasq PID changes),
+# then pre-resolves geo domains to populate the ipset.
+reload_dnsmasq(){
+    (
+        oldpid=$(pidof dnsmasq 2>/dev/null)
+        i=0
+        while [ $i -lt 30 ]; do
+            service restart_dnsmasq >/dev/null 2>&1
+            sleep 2
+            newpid=$(pidof dnsmasq 2>/dev/null)
+            if [ -n "$newpid" ] && [ "$newpid" != "$oldpid" ]; then
+                log_msg "dnsmasq reloaded (geo rules active)"
+                break
+            fi
+            i=$((i + 1))
+            sleep 1
+        done
+        [ $i -ge 30 ] && log_msg "WARNING: dnsmasq reload was skipped by rc; geo domains may need a manual restart"
+        wait_for_dns 10
+        if [ -f "$DNSMASQ_AWG_CONF" ]; then
+            bg_count=0
+            awk -F/ '/^ipset=/{for(i=2;i<NF;i++)print $i}' "$DNSMASQ_AWG_CONF" | while read -r domain; do
+                [ -z "$domain" ] && continue
+                nslookup "$domain" 127.0.0.1 >/dev/null 2>&1 &
+                bg_count=$((bg_count + 1))
+                [ $bg_count -ge 10 ] && { wait; bg_count=0; }
+            done
+            wait
+        fi
+    ) </dev/null >/dev/null 2>&1 &
 }
 
 setup_firewall(){
@@ -562,21 +599,9 @@ setup_firewall(){
         setup_dns_interception
     fi
 
-    # --- Restart dnsmasq if geo active ---
+    # --- Reload dnsmasq if geo active (deferred + retried; see reload_dnsmasq) ---
     if [ $domain_count -gt 0 ] || [ "$has_geo" = true ]; then
-        service restart_dnsmasq >/dev/null 2>&1
-        wait_for_dns 10
-        # Pre-resolve domains to populate ipset
-        if [ -f "$DNSMASQ_AWG_CONF" ]; then
-            local bg_count=0
-            awk -F/ '/^ipset=/{for(i=2;i<NF;i++)print $i}' "$DNSMASQ_AWG_CONF" | while read -r domain; do
-                [ -z "$domain" ] && continue
-                nslookup "$domain" 127.0.0.1 >/dev/null 2>&1 &
-                bg_count=$((bg_count + 1))
-                [ $bg_count -ge 10 ] && { wait; bg_count=0; }
-            done
-            wait
-        fi
+        reload_dnsmasq
     fi
 
     # --- Always flush conntrack so devices reconnect through VPN ---
