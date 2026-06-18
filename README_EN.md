@@ -30,6 +30,9 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
+### 1.1.17 -- 2026-06-18
+- **Added an in-UI description of the Apply vs Force Apply buttons** (live apply without dropping the tunnel vs a full VPN restart)
+
 ### 1.1.16 -- 2026-06-18
 - **"Stopping…" status during stop/restart** — a page refresh during a stop could briefly show "Connected"; now it shows "Stopping…" immediately
 

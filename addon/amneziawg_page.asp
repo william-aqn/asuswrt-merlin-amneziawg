@@ -1173,8 +1173,12 @@ function initAutocompleteIp(){
 
                 <!-- Apply -->
                 <div style="margin-top:12px; text-align:center;">
-                    <input type="button" class="button_gen" value="Apply" onclick="saveSettings();">
+                    <input type="button" class="button_gen" value="Apply" onclick="saveSettings();" title="Сохранить и применить без перезапуска VPN">
                     <input type="button" class="button_gen" value="Force Apply" onclick="forceApply();" style="margin-left:8px;" title="Сохранить + перезапуск VPN + полная пересборка маршрутов и firewall">
+                </div>
+                <div style="font-size:11px; opacity:0.7; margin:8px auto 0; max-width:640px; line-height:1.55; text-align:left;">
+                    <div><b>Apply</b> — сохранить настройки и применить их «на лету»: обновляет устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite <b>без разрыва VPN-соединения</b>. Если VPN остановлен — настройки просто сохранятся и применятся при следующем Start.</div>
+                    <div style="margin-top:4px;"><b>Force Apply</b> — сохранить и <b>полностью перезапустить VPN</b> (stop → start): заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall. Нужен при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».</div>
                 </div>
 
                 <!-- ==================== LOG ==================== -->
