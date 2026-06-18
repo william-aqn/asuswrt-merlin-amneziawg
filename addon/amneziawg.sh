@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.21"
+AWG_VERSION="1.1.22"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -12,6 +12,7 @@ AWG_GO="$AWG_DIR/amneziawg-go"
 AWG_BIN="$AWG_DIR/awg"
 IFACE="awg0"
 STATUS_FILE="/www/user/awg_status.htm"
+UI_LOG="/www/user/awg_log.htm"
 STARTING_FLAG="/tmp/.awg_starting"
 STOPPING_FLAG="/tmp/.awg_stopping"
 SETTINGS="/jffs/addons/custom_settings.txt"
@@ -35,6 +36,13 @@ export PATH="/opt/bin:/opt/sbin:/sbin:/usr/sbin:$PATH"
 
 log_msg(){
     logger -t "$SCRIPT_NAME" "$1"
+    # Real-time on-page log (web-readable, polled by the UI); reset per user action.
+    echo "$(date '+%H:%M:%S') $1" >> "$UI_LOG" 2>/dev/null
+}
+
+# Clear the on-page log at the start of a user-facing operation
+ui_log_reset(){
+    : > "$UI_LOG" 2>/dev/null
 }
 
 get_setting(){
@@ -326,6 +334,8 @@ cleanup_firewall(){
     # Remove all ip rules for our table/fwmark
     local _i=0; while [ $_i -lt 100 ] && ip rule del lookup $RT_TABLE 2>/dev/null; do _i=$((_i+1)); done
     _i=0; while [ $_i -lt 100 ] && ip rule del fwmark "$FWMARK" 2>/dev/null; do _i=$((_i+1)); done
+    # Direct-policy rules use "lookup main prio 97" — not matched by the deletes above
+    _i=0; while [ $_i -lt 100 ] && ip rule del prio 97 2>/dev/null; do _i=$((_i+1)); done
 
     # Remove DNS interception rules
     local router_ip
@@ -365,6 +375,14 @@ cleanup_firewall(){
 # then pre-resolves geo domains to populate the ipset.
 reload_dnsmasq(){
     (
+        # Serialize reload jobs: wait for any prior one (so the last restart loads the
+        # current on-disk config), then hold the lock. Avoids ping-ponging restarts.
+        _w=0
+        while ! mkdir /tmp/.awg_dnsreload 2>/dev/null; do
+            _w=$((_w + 1)); [ $_w -ge 60 ] && break
+            sleep 1
+        done
+        trap 'rmdir /tmp/.awg_dnsreload 2>/dev/null' EXIT INT TERM
         oldpid=$(pidof dnsmasq 2>/dev/null)
         i=0
         while [ $i -lt 30 ]; do
@@ -607,10 +625,20 @@ setup_firewall(){
     # --- Always flush conntrack so devices reconnect through VPN ---
     flush_conntrack
 
-    # --- Setup cron ---
+    # --- Policy route for router-originated traffic. Re-added here (not only in
+    #     do_start) so it survives firewall-restart and Apply, which call
+    #     setup_firewall directly after cleanup_firewall removed it ---
+    local awg_self
+    awg_self=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
+    [ -n "$awg_self" ] && ip rule add from "$awg_self" lookup $RT_TABLE prio 100 2>/dev/null
+
+    # --- Cron: optional geo auto-update + route self-heal watchdog. The watchdog is
+    #     (re)added here so it survives firewall-restart/Apply — cleanup_firewall drops
+    #     it, and previously it was only added in do_start and was silently lost ---
     if [ "$(get_setting awg_geo_autoupdate)" = "1" ]; then
         cru a awg_geo_update "0 4 * * * '$ADDON_DIR/amneziawg.sh' update_geo"
     fi
+    cru a awg_watchdog "*/5 * * * * '$ADDON_DIR/amneziawg.sh' watchdog"
 
     log_msg "Firewall configured: $ip_count IPs, $domain_count domains"
 }
@@ -867,14 +895,6 @@ do_start(){
 
     setup_firewall
 
-    # Route for router-originated traffic (after setup_firewall which cleans ip rules)
-    local awg_addr
-    awg_addr=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
-    [ -n "$awg_addr" ] && ip rule add from "$awg_addr" lookup $RT_TABLE prio 100
-
-    # Watchdog
-    cru a awg_watchdog "*/5 * * * * '$ADDON_DIR/amneziawg.sh' watchdog"
-
     log_msg "Started, verifying tunnel connectivity..."
     update_status
     release_lock
@@ -943,8 +963,7 @@ do_stop(){
     fi
     rm -f /var/run/amneziawg/"$IFACE".sock
 
-    service restart_dnsmasq >/dev/null 2>&1 &
-    wait_for_dns 10
+    reload_dnsmasq
 
     log_msg "Stopped"
     rm -f "$STOPPING_FLAG"
@@ -1311,11 +1330,6 @@ do_firewall_restart(){
 
     setup_firewall
 
-    # Route for router-originated traffic (after setup_firewall which cleans ip rules)
-    local awg_addr
-    awg_addr=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
-    [ -n "$awg_addr" ] && ip rule add from "$awg_addr" lookup $RT_TABLE prio 100
-
     release_lock
     log_msg "Firewall/routes re-applied"
 }
@@ -1324,6 +1338,9 @@ do_firewall_restart(){
 
 do_service_event(){
     local event="$2"
+    case "$event" in
+        awgstart|awgstop|awgrestart|awgforceapply|awgsaveconf|awgupdategeo|awgdoupdate) ui_log_reset ;;
+    esac
     case "$event" in
         awgstart)       do_start ;;
         awgstop)        do_stop ;;
@@ -1340,9 +1357,10 @@ do_service_event(){
             local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_privatekey)" ]; do sleep 1; _wt=$((_wt+1)); done
             generate_config
             if ! geo_available; then
-                # Clear geo settings if databases not downloaded
+                # No downloaded GeoIP DB: clear only the list-based geo fields. Keep
+                # custom domains/IPs — they work without a downloaded database.
                 local _cs_changed=false
-                for _gf in awg_geo_v2fly awg_geo_v2fly_ip awg_geo_custom_domains awg_geo_custom_ips; do
+                for _gf in awg_geo_v2fly awg_geo_v2fly_ip; do
                     local _gv=$(get_setting "$_gf")
                     if [ -n "$_gv" ]; then
                         sed -i "/^${_gf} /d" "$SETTINGS"

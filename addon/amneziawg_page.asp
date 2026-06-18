@@ -124,6 +124,8 @@ function initial(){
     loadSettings();
     awgRefreshStatus();
     statusTimer = setInterval(awgRefreshStatus, 5000);
+    awgRefreshLog();
+    setInterval(awgRefreshLog, 2500);
     loadV2flyCategories();
     initAutocomplete();
     initAutocompleteIp();
@@ -608,6 +610,24 @@ function awgAction(action){
 function showLoading(){}
 function hideLoading(){}
 
+// Real-time on-page log: poll the web-readable log the backend writes per action.
+function awgRefreshLog(){
+    var x = new XMLHttpRequest();
+    x.open('GET', '/user/awg_log.htm?_=' + Date.now(), true);
+    x.timeout = 3000;
+    x.onload = function(){
+        if(x.status !== 200 || !x.responseText) return;
+        var box = document.getElementById('awg_log');
+        if(!box) return;
+        var lines = x.responseText.replace(/\s+$/, '').split(/\r?\n/);
+        if(lines.length > 80) lines = lines.slice(-80);
+        var atBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 30;
+        box.textContent = lines.join('\n');
+        if(atBottom) box.scrollTop = box.scrollHeight;
+    };
+    x.send();
+}
+
 function awgRefreshStatus(){
     var xhr = new XMLHttpRequest();
     xhr.open('GET', '/user/awg_status.htm?_=' + Date.now(), true);
@@ -701,7 +721,7 @@ function updateStatusUI(s){
     }
     peers.innerHTML = html;
 
-    if(s.log) logbox.textContent = s.log;
+    // on-page log is polled in real time via awgRefreshLog() (not from s.log)
 
     // Route info
     var rulesEl = document.getElementById('awg_active_rules');
