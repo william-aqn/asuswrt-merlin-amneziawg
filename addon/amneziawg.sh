@@ -1061,6 +1061,17 @@ do_watchdog(){
         do_stop 2>/dev/null
         wait_for_pid_exit amneziawg-go 10
         do_start
+        return
+    fi
+
+    # A firewall restart can wipe our policy routes while the tunnel itself stays
+    # up (the checks above still pass, since the ping is bound to $IFACE). Detect
+    # the missing route table and re-apply routes/firewall — lighter than a full
+    # restart. This self-heals route loss within ~5 min even if the firewall-start
+    # hook didn't fire.
+    if ! ip route show table $RT_TABLE 2>/dev/null | grep -q "0.0.0.0/1"; then
+        log_msg "WATCHDOG: policy routes (table $RT_TABLE) missing, re-applying"
+        do_firewall_restart
     fi
 }
 
