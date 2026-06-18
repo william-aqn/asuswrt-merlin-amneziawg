@@ -30,6 +30,10 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
+### 1.1.11 -- 2026-06-18
+- **Force Apply button** — saves settings and does a full VPN restart: applies WireGuard parameter changes too (keys, endpoint, obfuscation, MTU — which plain Apply doesn't) and fully rebuilds routes/firewall/geo
+- **Fixed startup on routers that don't autoload `tun`** (e.g. RT-AC68U) — the `tun` module now loads reliably (`modprobe` wasn't found due to PATH)
+
 ### 1.1.10 -- 2026-06-18
 - **More reliable GeoSite/routing**: on a firewall-restart event (and on geo-list updates) the VPN policy routes are now fully rebuilt, not just the iptables rules. Previously a firewall restart could drop the VPN routing table, breaking GeoSite/the tunnel until a manual restart. (diagnosis: Artem Shlyakhtin)
 
