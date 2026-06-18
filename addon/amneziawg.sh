@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.36"
+AWG_VERSION="1.1.37"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -687,15 +687,18 @@ update_geo_if_needed(){
     fi
 }
 
-# Full re-download of all geo databases (Update Now / auto-update cron). Wipes every
-# geo file first, so no leftover/stale lists survive (orphan .cidr, old category .txt,
-# partial temps), then downloads the full set fresh. The caller runs do_firewall_restart
+# Re-download all geo databases (Update Now / auto-update cron). If awg_geo_wipe_update
+# is on, wipe every geo file first (guarantees a clean set, but a failed re-download
+# leaves that list missing); off (default) keeps existing lists on failure — download
+# overwrites on success and prune_geoip drops de-selected. Caller runs do_firewall_restart
 # afterwards, which re-extracts domains and reloads dnsmasq.
 update_geo_lists(){
     [ -n "$GEO_DIR" ] || return 1
-    log_msg "Full geo refresh: clearing old lists..."
-    rm -rf "$GEO_DIR/geoip" "$GEO_DIR/domains" 2>/dev/null
-    rm -f "$GEO_DIR/v2fly_all.yml" "$GEO_DIR/v2fly_all.yml.tmp" "$GEO_DIR/v2fly_categories.txt" 2>/dev/null
+    if [ "$(get_setting awg_geo_wipe_update)" = "1" ]; then
+        log_msg "Full geo refresh (wipe enabled): clearing old lists..."
+        rm -rf "$GEO_DIR/geoip" "$GEO_DIR/domains" 2>/dev/null
+        rm -f "$GEO_DIR/v2fly_all.yml" "$GEO_DIR/v2fly_all.yml.tmp" "$GEO_DIR/v2fly_categories.txt" 2>/dev/null
+    fi
     download_all_geo
 }
 

@@ -404,6 +404,7 @@ function applyConfig(actionScript){
     custom_settings.awg_geo_custom_ips = document.getElementById('geo_custom_ips').value;
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
+    custom_settings.awg_geo_wipe_update = document.getElementById('awg_geo_wipe_update').checked ? '1' : '0';
 
     // Basic validation
     var pk = document.getElementById('awg_privatekey').value;
@@ -510,6 +511,8 @@ function loadGeoSettings(){
     // Block IPv6 DNS (default on)
     var b6 = document.getElementById('awg_block_ipv6_dns');
     if(b6) b6.checked = (custom_settings.awg_block_ipv6_dns !== '0');
+    var wp = document.getElementById('awg_geo_wipe_update');
+    if(wp) wp.checked = (custom_settings.awg_geo_wipe_update === '1');
 }
 
 function updateGeoLists(){
@@ -1311,6 +1314,13 @@ function initAutocompleteIp(){
                         <label><input type="checkbox" id="geo_autoupdate"> Daily at 4:00 AM</label>
                         &nbsp;&nbsp;
                         <input type="button" class="button_gen" id="btn_geo_update" value="Update Now" onclick="updateGeoLists();">
+                    </td>
+                </tr>
+                <tr>
+                    <th>Wipe before update</th>
+                    <td>
+                        <label><input type="checkbox" id="awg_geo_wipe_update"> Delete all geo files before a full update (Update Now / auto-update)</label>
+                        <div style="color:#888; font-size:11px; margin-top:3px;">Off (default): keeps existing lists if a re-download fails. On: guarantees a clean set, but a failed download leaves that list missing.</div>
                     </td>
                 </tr>
                 </table>
