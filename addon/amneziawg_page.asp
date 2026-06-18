@@ -134,6 +134,8 @@ function initial(){
 
 function checkForUpdate(){
     // Check GitHub directly from browser (no backend needed)
+    var ub0 = document.getElementById('awg_update_btn');
+    if(ub0){ ub0.style.display = 'inline'; ub0.innerHTML = '<span style="font-size:11px; opacity:0.5;">Проверка обновлений…</span>'; }
     var xhr = new XMLHttpRequest();
     xhr.open('GET', 'https://api.github.com/repos/william-aqn/asuswrt-merlin-amneziawg/releases/latest', true);
     xhr.timeout = 10000;
@@ -156,27 +158,33 @@ function showUpdateCheckError(){
     var ub = document.getElementById('awg_update_btn');
     if(ub){
         ub.style.display = 'inline';
-        ub.innerHTML = '<span style="font-size:11px; opacity:0.6; cursor:help;" title="GitHub недоступен или превышен лимит запросов к api.github.com — проверьте обновления вручную на странице релизов">⚠ не удалось проверить обновления</span>';
+        ub.innerHTML = '<span style="font-size:11px; opacity:0.6; cursor:help;" title="GitHub недоступен или превышен лимит запросов к api.github.com">⚠ не удалось проверить</span>' +
+            '<input type="button" class="button_gen" value="Проверить" onclick="checkForUpdate();" style="font-size:11px; padding:2px 8px; margin-left:6px;">';
     }
 }
 
 function showVersionInfo(currentIgnored, latest, hasUpdateIgnored){
-    // Get current version from status file
+    // Map the update-check result onto the button area. The version itself is shown by
+    // updateStatusUI (from local status), independent of this GitHub check.
     var xhr = new XMLHttpRequest();
     xhr.open('GET', '/user/awg_status.htm?_=' + Date.now(), true);
     xhr.timeout = 3000;
     xhr.onload = function(){
         try {
             var s = JSON.parse(xhr.responseText);
-            var current = s.version || '';
-            var vi = document.getElementById('awg_version_info');
+            var current = s.version || awgCurrentVersion || '';
+            if(current) awgCurrentVersion = current;
+            if(latest) awgLatestVersion = latest;
             var ub = document.getElementById('awg_update_btn');
-            if(!vi) return;
-            if(current) vi.innerHTML = '<a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="color:inherit;text-decoration:none;" title="GitHub репозиторий">v' + escHtml(current) + '</a>';
+            if(!ub) return;
+            ub.style.display = 'inline';
             if(latest && current && latest !== current){
-                awgLatestVersion = latest;
-                ub.style.display = 'inline';
+                awgUpdateAvailable = true;
                 ub.innerHTML = '<input type="button" class="button_gen" value="Update to v' + escHtml(latest) + '" onclick="openUpdateModal();" style="font-size:11px; padding:2px 10px;">';
+            } else {
+                awgUpdateAvailable = false;
+                ub.innerHTML = '<span style="font-size:11px; opacity:0.6;">обновлений нет</span>' +
+                    '<input type="button" class="button_gen" value="Проверить обновления" onclick="checkForUpdate();" style="font-size:11px; padding:2px 8px; margin-left:6px;">';
             }
         } catch(e){}
     };
@@ -225,19 +233,27 @@ function doUpdate(){
 }
 
 var awgLatestVersion = '';
+var awgCurrentVersion = '';
+var awgUpdateAvailable = false;
 
 function openUpdateModal(){
     var m = document.getElementById('awg_update_modal');
-    if(!m){ doUpdate(); return; }
+    if(!m){ if(awgUpdateAvailable) doUpdate(); return; }
     var title = document.getElementById('awg_modal_title');
     var body = document.getElementById('awg_modal_body');
-    if(title) title.textContent = awgLatestVersion ? ('Обновление до v' + awgLatestVersion) : 'Обновление';
+    var ob = document.getElementById('awg_modal_update');
+    // Show the changelog of the version you'd update to, or the installed one if up to date
+    var ref = (awgUpdateAvailable && awgLatestVersion) ? awgLatestVersion : (awgCurrentVersion || awgLatestVersion || '');
+    if(title) title.textContent = (awgUpdateAvailable && awgLatestVersion)
+        ? ('Обновление до v' + awgLatestVersion)
+        : ('История изменений' + (awgCurrentVersion ? ' — v' + awgCurrentVersion : ''));
+    if(ob) ob.style.display = awgUpdateAvailable ? '' : 'none';
     if(body) body.innerHTML = '<div style="opacity:0.7;">Загрузка списка изменений…</div>';
     m.style.display = 'block';
-    loadChangelog(function(text, ok){
+    loadChangelog(ref, function(text, ok){
         if(!body) return;
         if(ok && text){ body.innerHTML = mdToHtml(text); body.scrollTop = 0; }
-        else { body.innerHTML = '<div style="opacity:0.7;">Не удалось загрузить список изменений. Можно продолжить обновление.</div>'; }
+        else { body.innerHTML = '<div style="opacity:0.7;">Не удалось загрузить список изменений.</div>'; }
     });
 }
 
@@ -255,12 +271,12 @@ function confirmUpdate(){
 // VERSIONED tag (@vX.Y.Z) — NOT @main: jsDelivr caches the moving "main" ref
 // aggressively (which made the list lag behind), while a tag is immutable and served
 // fresh. raw.githubusercontent is a fallback for when jsDelivr is unreachable.
-function loadChangelog(cb){
+function loadChangelog(ref, cb){
     var repo = 'william-aqn/asuswrt-merlin-amneziawg';
-    var ref = awgLatestVersion ? ('v' + awgLatestVersion) : 'main';
+    var tag = ref ? ('v' + ref) : 'main';
     var urls = [
-        'https://cdn.jsdelivr.net/gh/' + repo + '@' + ref + '/CHANGELOG.md',
-        'https://raw.githubusercontent.com/' + repo + '/' + ref + '/CHANGELOG.md?_=' + Date.now()
+        'https://cdn.jsdelivr.net/gh/' + repo + '@' + tag + '/CHANGELOG.md',
+        'https://raw.githubusercontent.com/' + repo + '/' + tag + '/CHANGELOG.md?_=' + Date.now()
     ];
     var i = 0;
     (function tryNext(){
@@ -696,7 +712,10 @@ function updateStatusUI(s){
     // GitHub update-check, which can fail (api.github.com rate-limit/block) and used to
     // leave the header version blank.
     var vi = document.getElementById('awg_version_info');
-    if(vi && s.version) vi.innerHTML = '<a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="color:inherit;text-decoration:none;" title="GitHub репозиторий">v' + escHtml(s.version) + '</a>';
+    if(vi && s.version){
+        awgCurrentVersion = s.version;
+        vi.innerHTML = '<a href="#" onclick="openUpdateModal(); return false;" style="color:inherit; text-decoration:none; cursor:pointer; border-bottom:1px dotted rgba(255,255,255,0.45);" title="История изменений / обновление">v' + escHtml(s.version) + '</a>';
+    }
     var badge = document.getElementById('awg_badge');
     var info = document.getElementById('awg_info');
     var peers = document.getElementById('awg_peers');
@@ -1335,8 +1354,8 @@ function initAutocompleteIp(){
         </div>
         <div id="awg_modal_body" style="padding:14px 18px; overflow-y:auto; font-size:12px; line-height:1.5;"></div>
         <div style="padding:12px 18px; border-top:1px solid #444; text-align:right;">
-            <input type="button" class="button_gen" value="Отмена" onclick="closeUpdateModal();">
-            <input type="button" class="button_gen" value="Обновить" onclick="confirmUpdate();" style="margin-left:8px;">
+            <input type="button" class="button_gen" value="Закрыть" onclick="closeUpdateModal();">
+            <input type="button" class="button_gen" id="awg_modal_update" value="Обновить" onclick="confirmUpdate();" style="margin-left:8px;">
         </div>
     </div>
 </div>
