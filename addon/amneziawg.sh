@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.34"
+AWG_VERSION="1.1.35"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -224,18 +224,24 @@ selected_geoip(){
 }
 
 # Download all geo databases (called at install and update)
+# Remove GeoIP .cidr files for services no longer selected (handles a service removed
+# from the UI field). Selection = the field, or the GEOIP_SERVICES default if empty.
+prune_geoip(){
+    local sel=" $(selected_geoip) " f fsvc
+    for f in "$GEO_DIR"/geoip/v2fly_*.cidr; do
+        [ -f "$f" ] || continue
+        fsvc=$(basename "$f" .cidr); fsvc=${fsvc#v2fly_}
+        case "$sel" in *" $fsvc "*) ;; *) rm -f "$f" ;; esac
+    done
+}
+
 download_all_geo(){
     mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains"
     log_msg "Downloading all geo databases..."
 
     # Download GeoIP service CIDR lists (driven by the UI field; default GEOIP_SERVICES)
     local geoip_list=$(selected_geoip)
-    # Drop lists for services removed from the selection
-    for f in "$GEO_DIR"/geoip/v2fly_*.cidr; do
-        [ -f "$f" ] || continue
-        local fsvc=$(basename "$f" .cidr); fsvc=${fsvc#v2fly_}
-        case " $geoip_list " in *" $fsvc "*) ;; *) rm -f "$f" ;; esac
-    done
+    prune_geoip   # drop lists for services removed from the selection
     local count=0 total=0 ok=0
     for svc in $geoip_list; do
         total=$((total + 1))
@@ -444,8 +450,9 @@ setup_firewall(){
     fi
 
     # --- Load selected GeoIP subnets into ipset (bulk) ---
-    # Only services in the UI field (default GEOIP_SERVICES) are loaded, so a removed
-    # service drops its routes even if its .cidr file still lingers on disk.
+    # Only services in the UI field (default GEOIP_SERVICES) are loaded; prune first so
+    # a service removed from the field also has its .cidr file deleted, not just unrouted.
+    prune_geoip
     local ip_count=0 gsvc gf
     for gsvc in $(selected_geoip); do
         gf="$GEO_DIR/geoip/v2fly_${gsvc}.cidr"
@@ -698,6 +705,7 @@ geo_in_use(){
 # Runs in the background so Apply/Force Apply/update return promptly; the log shows
 # progress and setup_firewall is re-applied afterwards.
 ensure_geo(){
+    prune_geoip   # delete .cidr of services removed from the field (sync on Apply/update)
     geo_in_use || return 0
     local missing=0 svc
     for svc in $(selected_geoip); do
