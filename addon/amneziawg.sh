@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.39"
+AWG_VERSION="1.1.40"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -235,6 +235,24 @@ prune_geoip(){
     done
 }
 
+# Download the v2fly GeoSite domain DB (the full category set). To temp + swap on
+# success, so a failed download keeps the existing DB.
+download_geosite(){
+    mkdir -p "$GEO_DIR/domains"
+    log_msg "Downloading v2fly domain database..."
+    update_status
+    local tmp_yml="$GEO_DIR/v2fly_all.yml.tmp"
+    if fetch_with_mirrors "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" "$tmp_yml" 120 && [ -s "$tmp_yml" ]; then
+        mv "$tmp_yml" "$GEO_DIR/v2fly_all.yml"
+        grep '  - name: ' "$GEO_DIR/v2fly_all.yml" | sed 's/.*- name: //' | sort > "$GEO_DIR/v2fly_categories.txt"
+        cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
+        log_msg "GeoSite: $(wc -l < "$GEO_DIR/v2fly_categories.txt") categories downloaded"
+    else
+        rm -f "$tmp_yml"
+        log_msg "WARNING: v2fly domain download failed"
+    fi
+}
+
 download_all_geo(){
     mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains"
     log_msg "Downloading all geo databases..."
@@ -258,24 +276,7 @@ download_all_geo(){
     done
     log_msg "GeoIP: $ok/$total service lists downloaded"
 
-    # Download v2fly domain database
-    log_msg "Downloading v2fly domain database..."
-    update_status
-    local tmp_yml="$GEO_DIR/v2fly_all.yml.tmp"
-    if fetch_with_mirrors "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" "$tmp_yml" 120; then
-        if [ -s "$tmp_yml" ]; then
-            mv "$tmp_yml" "$GEO_DIR/v2fly_all.yml"
-            grep '  - name: ' "$GEO_DIR/v2fly_all.yml" | sed 's/.*- name: //' | sort > "$GEO_DIR/v2fly_categories.txt"
-            cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
-            log_msg "GeoSite: $(wc -l < "$GEO_DIR/v2fly_categories.txt") categories downloaded"
-        else
-            rm -f "$tmp_yml"
-            log_msg "WARNING: v2fly domain download empty"
-        fi
-    else
-        rm -f "$tmp_yml"
-        log_msg "WARNING: v2fly domain download failed"
-    fi
+    download_geosite
 
     # Save timestamp
     date +%s > "$GEO_DIR/.last_update"
@@ -717,14 +718,27 @@ geo_in_use(){
 ensure_geo(){
     prune_geoip   # delete .cidr of services removed from the field (sync on Apply/update)
     geo_in_use || return 0
-    local missing=0 svc
+    # Collect ONLY what's missing — don't re-download lists that are already present
+    # (adding one GeoIP service shouldn't re-fetch the others or the big v2fly DB).
+    local need_svcs="" svc
     for svc in $(selected_geoip); do
-        [ -f "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] || { missing=1; break; }
+        [ -f "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] || need_svcs="$need_svcs $svc"
     done
-    [ "$missing" = 0 ] && [ -n "$(get_setting awg_geo_v2fly)" ] && [ ! -f "$GEO_DIR/v2fly_all.yml" ] && missing=1
-    [ "$missing" = 0 ] && return 0
-    log_msg "Geo lists missing — downloading in background..."
-    ( download_all_geo; is_running && setup_firewall; update_status ) </dev/null >/dev/null 2>&1 &
+    local need_yml=0
+    [ -n "$(get_setting awg_geo_v2fly)" ] && [ ! -f "$GEO_DIR/v2fly_all.yml" ] && need_yml=1
+    [ -z "$need_svcs" ] && [ "$need_yml" = 0 ] && return 0
+    log_msg "Downloading missing geo lists in background..."
+    (
+        mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains"
+        for svc in $need_svcs; do
+            log_msg "GeoIP: downloading $svc..."
+            download_geoip_service "$svc" || log_msg "WARNING: GeoIP $svc failed"
+            update_status
+        done
+        [ "$need_yml" = 1 ] && download_geosite
+        is_running && setup_firewall
+        update_status
+    ) </dev/null >/dev/null 2>&1 &
 }
 
 # --- Validation helpers ---
