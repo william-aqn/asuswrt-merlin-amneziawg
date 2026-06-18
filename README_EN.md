@@ -30,6 +30,9 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
+### 1.1.10 -- 2026-06-18
+- **More reliable GeoSite/routing**: on a firewall-restart event (and on geo-list updates) the VPN policy routes are now fully rebuilt, not just the iptables rules. Previously a firewall restart could drop the VPN routing table, breaking GeoSite/the tunnel until a manual restart. (diagnosis: Artem Shlyakhtin)
+
 ### 1.1.9 -- 2026-06-18
 - **Configurable MTU** -- MTU field in the Interface section (default 1280)
 - **GeoIP fixed** for cloudflare/cloudfront etc. (a busybox `tr` bug mangled service names)
