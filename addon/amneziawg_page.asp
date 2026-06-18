@@ -280,6 +280,7 @@ function saveSettings(){
     custom_settings.awg_geo_custom_domains = document.getElementById('geo_custom_domains').value;
     custom_settings.awg_geo_custom_ips = document.getElementById('geo_custom_ips').value;
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
+    custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
 
     // Basic validation
     var pk = document.getElementById('awg_privatekey').value;
@@ -377,6 +378,9 @@ function loadGeoSettings(){
     // Auto-update
     var au = document.getElementById('geo_autoupdate');
     if(au) au.checked = (custom_settings.awg_geo_autoupdate === '1');
+    // Block IPv6 DNS (default on)
+    var b6 = document.getElementById('awg_block_ipv6_dns');
+    if(b6) b6.checked = (custom_settings.awg_block_ipv6_dns !== '0');
 }
 
 function getCheckedValues(prefix){
@@ -1127,6 +1131,13 @@ function initAutocompleteIp(){
                         <input type="text" class="input_32_table" id="geo_custom_ips" style="width:95%;"
                                maxlength="2000" placeholder="8.8.8.8,1.1.1.0/24,203.0.113.0/24">
                         <div style="color:#666; font-size:11px; margin-top:3px;">Comma-separated IPs or CIDR subnets</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Prevent IPv6 Leaks</th>
+                    <td>
+                        <label><input type="checkbox" id="awg_block_ipv6_dns"> Block IPv6 DNS resolution (filter-AAAA)</label>
+                        <div style="color:#666; font-size:11px; margin-top:3px;">Critical for Geo routing reliability. Prevents dual-stack domains from bypassing the VPN.</div>
                     </td>
                 </tr>
                 <tr>

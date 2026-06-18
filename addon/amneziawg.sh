@@ -379,7 +379,11 @@ setup_firewall(){
 
     # --- Build dnsmasq config for domain-based routing ---
     local domain_count=0
+    local block_ipv6=$(get_setting awg_block_ipv6_dns)
+    [ -z "$block_ipv6" ] && block_ipv6="1"
     echo "# AmneziaWG domain routing - auto-generated" > "$DNSMASQ_AWG_CONF"
+    # Prevent IPv6 leaks: block AAAA records so dual-stack domains can't bypass IPv4 geo-routing
+    [ "$block_ipv6" = "1" ] && echo "filter-AAAA" >> "$DNSMASQ_AWG_CONF"
     for f in "$GEO_DIR"/domains/*.txt "$GEO_DIR"/domains/*.lst; do
         [ ! -f "$f" ] && continue
         local chunk_line="ipset=/"
@@ -402,8 +406,8 @@ setup_firewall(){
         [ $chunk_count -gt 0 ] && echo "${chunk_line}${IPSET_NAME}" >> "$DNSMASQ_AWG_CONF"
     done
 
-    # Add conf-file include to dnsmasq (idempotent)
-    if [ $domain_count -gt 0 ]; then
+    # Add conf-file include to dnsmasq (idempotent) — also when only filter-AAAA is set
+    if [ $domain_count -gt 0 ] || [ "$block_ipv6" = "1" ]; then
         if ! grep -qF "conf-file=$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" 2>/dev/null; then
             echo "conf-file=$DNSMASQ_AWG_CONF" >> "$DNSMASQ_INCLUDE"
         fi
