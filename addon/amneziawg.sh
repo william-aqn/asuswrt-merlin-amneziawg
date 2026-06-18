@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.26"
+AWG_VERSION="1.1.27"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -432,7 +432,12 @@ setup_firewall(){
     local has_geo=false
 
     # --- Create ipset ---
-    ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem 131072 timeout 0 2>/dev/null
+    # Set default timeout 24h: governs domain entries added by dnsmasq (GeoSite/custom
+    # domains). They MUST expire — domains (CDNs) rotate IPs; dnsmasq re-adds the
+    # current IP on each resolution (refreshing it), so active domains stay while stale
+    # IPs age out instead of accumulating forever. Static GeoIP/custom-IP entries are
+    # added with an explicit "timeout 0" (permanent), overriding this default.
+    ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem 131072 timeout 86400 2>/dev/null
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
         log_msg "ERROR: ipset $IPSET_NAME creation failed, geo routing disabled"
         has_geo=false
