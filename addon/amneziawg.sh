@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.12"
+AWG_VERSION="1.1.13"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1117,10 +1117,38 @@ do_update(){
         return 1
     fi
 
+    # Expected SHA256 from the GitHub API (verifies downloads, including via mirror)
+    local ipk_file expected_sha
+    ipk_file=$(basename "$ipk_url")
+    expected_sha=$(echo "$release_json" | awk -v f="$ipk_file" '
+        /"name":/ { in_a = (index($0, f) > 0) }
+        in_a && /"digest":/ { s=$0; sub(/.*sha256:/, "", s); sub(/".*/, "", s); print s; exit }
+    ')
+
+    # Download: GitHub direct, then proxy mirrors (the release-assets host is often
+    # unreachable in some regions). SHA256 is verified below, so a mirror can't
+    # substitute a tampered package.
     local tmp="/tmp/amneziawg_update.ipk"
-    if ! curl -sfL --connect-timeout 10 --max-time 120 "$ipk_url" -o "$tmp"; then
-        log_msg "ERROR: Download failed"
+    local dl_ok=0 prefix
+    for prefix in "" "https://ghproxy.net/" "https://gh-proxy.com/"; do
+        if curl -sfL --connect-timeout 10 --max-time 180 --retry 2 "${prefix}${ipk_url}" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+            dl_ok=1; break
+        fi
+    done
+    if [ "$dl_ok" != 1 ]; then
+        log_msg "ERROR: Download failed (GitHub and mirrors unreachable)"
+        rm -f "$tmp"
         return 1
+    fi
+    if [ -n "$expected_sha" ]; then
+        local actual_sha
+        actual_sha=$(sha256sum "$tmp" 2>/dev/null | awk '{print $1}')
+        [ -z "$actual_sha" ] && actual_sha=$(openssl dgst -sha256 "$tmp" 2>/dev/null | awk '{print $NF}')
+        if [ -n "$actual_sha" ] && [ "$actual_sha" != "$expected_sha" ]; then
+            log_msg "ERROR: SHA256 mismatch, refusing to update"
+            rm -f "$tmp"
+            return 1
+        fi
     fi
 
     do_stop 2>/dev/null

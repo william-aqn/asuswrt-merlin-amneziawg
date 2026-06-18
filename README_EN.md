@@ -30,6 +30,10 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
+### 1.1.13 -- 2026-06-18
+- **Install & update work via mirrors** when the GitHub release CDN is unreachable (common in RU): the online installer and the in-UI updater fall back to mirrors and **verify the package SHA256** (tamper protection)
+- **Device names with spaces** in Device Rules are no longer truncated
+
 ### 1.1.12 -- 2026-06-18
 - **Route self-healing**: the watchdog (every 5 min) detects dropped VPN policy routes (e.g. after a firewall restart) and re-applies them automatically — even if the firewall-start hook didn't fire
 - **Version in the header** is now a link to the repository
