@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.18"
+AWG_VERSION="1.1.19"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1017,7 +1017,7 @@ do_install_page(){
     cp "$ADDON_DIR/amneziawg_page.asp" "/www/user/$am_webui_page"
     mount_menu_tree "$am_webui_page"
 
-    echo '{"running":false,"peers":[],"log":"Installed."}' > "$STATUS_FILE"
+    echo "{\"running\":false,\"starting\":false,\"stopping\":false,\"version\":\"${AWG_VERSION}\",\"peers\":[],\"log\":\"Installed.\"}" > "$STATUS_FILE"
 
     [ ! -f /jffs/scripts/service-event ] && echo "#!/bin/sh" > /jffs/scripts/service-event && chmod +x /jffs/scripts/service-event
     if ! grep -q "amneziawg" /jffs/scripts/service-event; then
@@ -1214,7 +1214,10 @@ do_update(){
     # Install page from new version
     /jffs/addons/amneziawg/amneziawg.sh install_page
     log_msg "Update complete. Start VPN from UI."
-    update_status
+    # Refresh status with the NEW script. This process still runs the old code in
+    # memory, so calling update_status directly would re-write the OLD version number
+    # (that's why the header used to keep showing the pre-update version).
+    /jffs/addons/amneziawg/amneziawg.sh status 2>/dev/null
 }
 
 do_wan_event(){
@@ -1337,7 +1340,6 @@ do_service_event(){
             ;;
         awgdoupdate)
             do_update
-            update_status
             ;;
     esac
 }
