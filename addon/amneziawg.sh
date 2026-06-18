@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.33"
+AWG_VERSION="1.1.34"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -685,6 +685,30 @@ update_geo_lists(){
     download_all_geo
 }
 
+# Is geo routing actually configured (so geo lists are worth downloading)?
+geo_in_use(){
+    case "$(get_setting awg_default_policy)" in *geo*) return 0 ;; esac
+    case "$(get_setting awg_clients)" in *vpn_geo*) return 0 ;; esac
+    [ -n "$(get_setting awg_geo_v2fly)$(get_setting awg_geo_v2fly_ip)$(get_setting awg_geo_custom_domains)$(get_setting awg_geo_custom_ips)" ] && return 0
+    return 1
+}
+
+# Download geo lists if they are configured but missing on disk — e.g. wiped by an
+# update (prerm removes /opt/amneziawg) or a service/category just added in the UI.
+# Runs in the background so Apply/Force Apply/update return promptly; the log shows
+# progress and setup_firewall is re-applied afterwards.
+ensure_geo(){
+    geo_in_use || return 0
+    local missing=0 svc
+    for svc in $(selected_geoip); do
+        [ -f "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] || { missing=1; break; }
+    done
+    [ "$missing" = 0 ] && [ -n "$(get_setting awg_geo_v2fly)" ] && [ ! -f "$GEO_DIR/v2fly_all.yml" ] && missing=1
+    [ "$missing" = 0 ] && return 0
+    log_msg "Geo lists missing — downloading in background..."
+    ( download_all_geo; is_running && setup_firewall; update_status ) </dev/null >/dev/null 2>&1 &
+}
+
 # --- Validation helpers ---
 
 validate_wgkey(){
@@ -1316,6 +1340,9 @@ do_update(){
     # memory, so calling update_status directly would re-write the OLD version number
     # (that's why the header used to keep showing the pre-update version).
     /jffs/addons/amneziawg/amneziawg.sh status 2>/dev/null
+    # Geo lists were wiped by the package upgrade (prerm removes /opt/amneziawg) —
+    # re-download them with the NEW script if geo routing is configured.
+    /jffs/addons/amneziawg/amneziawg.sh ensure_geo 2>/dev/null
 }
 
 do_wan_event(){
@@ -1406,25 +1433,13 @@ do_service_event(){
             do_stop 2>/dev/null
             wait_for_pid_exit amneziawg-go 10
             do_start
+            ensure_geo   # download configured-but-missing geo lists (bg), then re-apply
             ;;
         awgsaveconf)
             local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_privatekey)" ]; do sleep 1; _wt=$((_wt+1)); done
             generate_config
-            if ! geo_available; then
-                # No downloaded GeoIP DB: clear only the list-based geo fields. Keep
-                # custom domains/IPs — they work without a downloaded database.
-                local _cs_changed=false
-                for _gf in awg_geo_v2fly awg_geo_v2fly_ip; do
-                    local _gv=$(get_setting "$_gf")
-                    if [ -n "$_gv" ]; then
-                        sed -i "/^${_gf} /d" "$SETTINGS"
-                        _cs_changed=true
-                    fi
-                done
-                [ "$_cs_changed" = true ] && log_msg "WARNING: Geo fields cleared — databases not downloaded. Click Download Lists first."
-            fi
-            update_geo_if_needed
             is_running && setup_firewall
+            ensure_geo   # download configured-but-missing geo lists (bg), then re-apply
             update_status
             ;;
         awgupdategeo)
@@ -1459,5 +1474,6 @@ case "$1" in
     wan_event)      do_wan_event "$2" "$3" ;;
     firewall_restart) do_firewall_restart ;;
     download_geo)   download_all_geo ;;
+    ensure_geo)     ensure_geo ;;
     *)              echo "Usage: $0 {start|stop|restart|status|update_geo|download_geo|install_page|uninstall}" ;;
 esac

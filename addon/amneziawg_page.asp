@@ -1266,8 +1266,8 @@ function initAutocompleteIp(){
                     <td>
                         <input type="text" class="input_32_table" id="awg_geo_v2fly_ip" style="width:95%;" maxlength="512"
                             placeholder="telegram,google,facebook,twitter,netflix,cloudflare">
-                        <br><span style="color:#888; font-size:11px;">Comma-separated. Available: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + country codes (us, ru, cn, ...). For youtube, discord, microsoft, github, openai etc. there are NO IP lists — use GeoSite below.</span>
-                        <div style="color:#666; font-size:11px; margin-top:3px;">Works without DNS — direct IP matching. Ideal for Telegram, messengers, etc.</div>
+                        <br><span style="color:#888; font-size:11px;">Comma-separated. Available: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + country codes (us, ru, cn, ...).</span>
+                        <br><span style="color:#f0ad4e; font-size:11px;">⚠ For youtube, discord, microsoft, github, openai etc. there are NO IP lists — use GeoSite below.</span>
                     </td>
                 </tr>
                 </table>
