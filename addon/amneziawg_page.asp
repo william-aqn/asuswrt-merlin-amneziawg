@@ -332,7 +332,9 @@ function loadClients(){
     for(var i = 0; i < entries.length; i++){
         if(!entries[i]) continue;
         var parts = entries[i].split(',');
-        addClientRow(parts[0] || '', parts[1] || '', parts[2] || 'vpn_all');
+        var nm = parts[1] || '';
+        try { nm = decodeURIComponent(nm); } catch(e){}  // tolerate old/plain names
+        addClientRow(parts[0] || '', nm, parts[2] || 'vpn_all');
     }
     updateGeoVisibility();
 }
@@ -361,7 +363,10 @@ function serializeClients(){
         var ip = rows[i].querySelector('.client_ip').value.trim();
         var name = rows[i].querySelector('.client_name').value.trim();
         var policy = rows[i].querySelector('.client_policy').value;
-        if(ip) parts.push(ip + ',' + name.replace(/[,;]/g, ' ') + ',' + policy);
+        // Encode the name: Merlin truncates custom_settings values at the first
+        // space, and ',' / ';' are our delimiters — encodeURIComponent escapes all
+        // three (and the backend ignores the name field anyway).
+        if(ip) parts.push(ip + ',' + encodeURIComponent(name) + ',' + policy);
     }
     return parts.join(';');
 }
