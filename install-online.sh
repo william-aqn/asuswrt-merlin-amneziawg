@@ -23,6 +23,10 @@ if [ ! -x /opt/bin/opkg ]; then
 fi
 echo "Entware: OK"
 
+# Ensure full-featured mktemp (busybox mktemp may be missing or limited)
+echo "Installing coreutils-mktemp..."
+opkg install coreutils-mktemp || { opkg update && opkg install coreutils-mktemp; } || echo "WARNING: coreutils-mktemp not installed; using built-in mktemp"
+
 # Detect architecture from opkg config (matches what opkg actually expects)
 PKG_ARCH=$(opkg print-architecture 2>/dev/null | awk '$1=="arch" && $2!="all" {print $2}' | head -1)
 if [ -z "$PKG_ARCH" ]; then
