@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.24"
+AWG_VERSION="1.1.25"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -914,26 +914,30 @@ do_start(){
     update_status
     release_lock
 
-    # Health check: verify tunnel passes traffic, rollback if not
-    local hc_ok=false
-    local hc_try=0
-    while [ $hc_try -lt 30 ]; do
-        if ping -c 1 -W 2 -I "$IFACE" 8.8.8.8 >/dev/null 2>&1; then
-            hc_ok=true
-            break
+    # Health check (detached): verify the tunnel passes traffic and roll back if not.
+    # Backgrounded so the service-event handler returns promptly — otherwise
+    # rc_service stays busy for up to ~60s and silently drops other events.
+    (
+        hc_ok=false
+        hc_try=0
+        while [ $hc_try -lt 30 ]; do
+            if ping -c 1 -W 2 -I "$IFACE" 8.8.8.8 >/dev/null 2>&1; then
+                hc_ok=true
+                break
+            fi
+            hc_try=$((hc_try + 1))
+            sleep 2
+        done
+        if [ "$hc_ok" = true ]; then
+            log_msg "Tunnel verified: traffic passing"
+            update_status
+        else
+            log_msg "ERROR: Tunnel not passing traffic after 60s, rolling back to prevent lockout"
+            do_stop 2>/dev/null
+            log_msg "VPN stopped automatically. Check server config and endpoint reachability."
+            update_status
         fi
-        hc_try=$((hc_try + 1))
-        sleep 2
-    done
-    if [ "$hc_ok" = true ]; then
-        log_msg "Tunnel verified: traffic passing"
-        update_status
-    else
-        log_msg "ERROR: Tunnel not passing traffic after 60s, rolling back to prevent lockout"
-        do_stop 2>/dev/null
-        log_msg "VPN stopped automatically. Check server config and endpoint reachability."
-        update_status
-    fi
+    ) </dev/null >/dev/null 2>&1 &
 }
 
 # --- Stop ---
