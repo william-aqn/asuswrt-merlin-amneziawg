@@ -101,6 +101,7 @@
 var custom_settings = <% get_custom_settings(); %>;
 var statusTimer = null;
 var statusFails = 0;
+var awgLoaded = false;
 var awgPoll = null;
 var v2flyList = [];
 var v2flyIpList = ['telegram','google','facebook','twitter','netflix','cloudflare','fastly','cloudfront'];
@@ -634,10 +635,22 @@ function awgRefreshStatus(){
 // consecutive misses (a real stop returns HTTP 200 with running=false and is
 // reflected immediately via updateStatusUI).
 function onStatusFail(){
-    if(++statusFails >= 3) setOfflineUI();
+    statusFails++;
+    if(!awgLoaded){
+        // Initial load hasn't succeeded yet — keep the "loading" badge and keep
+        // retrying instead of flipping to "Stopped".
+        if(statusFails >= 6){
+            var b = document.getElementById('awg_badge');
+            b.className = 'awg-status connecting';
+            b.innerHTML = '&#9679; Роутер не отвечает…';
+        }
+        return;
+    }
+    if(statusFails >= 3) setOfflineUI();
 }
 
 function updateStatusUI(s){
+    awgLoaded = true;
     var badge = document.getElementById('awg_badge');
     var info = document.getElementById('awg_info');
     var peers = document.getElementById('awg_peers');
@@ -984,7 +997,7 @@ function initAutocompleteIp(){
                 <tr>
                     <th width="20%">Status</th>
                     <td>
-                        <span id="awg_badge" class="awg-status stopped">Stopped</span>
+                        <span id="awg_badge" class="awg-status connecting">&#9679; Загрузка…</span>
                         &nbsp;&nbsp;
                         <input type="button" id="btn_start" class="button_gen awg-btn" value="Start" onclick="awgAction('start_awgstart');">
                         <input type="button" id="btn_stop" class="button_gen awg-btn" value="Stop" style="display:none;" onclick="awgAction('start_awgstop');">
