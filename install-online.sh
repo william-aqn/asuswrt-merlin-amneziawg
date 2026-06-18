@@ -1,10 +1,10 @@
 #!/bin/sh
 # =============================================================
 # AmneziaWG online installer for Asuswrt-Merlin
-# Usage: curl -sfL https://raw.githubusercontent.com/r0otx/asuswrt-merlin-amneziawg/main/install-online.sh | sh
+# Usage: curl -sfL https://raw.githubusercontent.com/william-aqn/asuswrt-merlin-amneziawg/main/install-online.sh | sh
 # =============================================================
 
-REPO="r0otx/asuswrt-merlin-amneziawg"
+REPO="william-aqn/asuswrt-merlin-amneziawg"
 TMP_DIR=""
 
 echo ""

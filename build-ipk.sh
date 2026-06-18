@@ -47,7 +47,7 @@ Version: ${PKG_VERSION}
 Section: net
 Architecture: ${arch}
 Maintainer: amneziawg-merlin
-Source: https://github.com/r0otx/asuswrt-merlin-amneziawg
+Source: https://github.com/william-aqn/asuswrt-merlin-amneziawg
 Description: AmneziaWG VPN for Asuswrt-Merlin
  DPI-obfuscated WireGuard VPN with per-device policy routing
  and GeoIP/GeoSite selective routing for ASUS routers.

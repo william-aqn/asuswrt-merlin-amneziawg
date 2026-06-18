@@ -128,7 +128,7 @@ function initial(){
 function checkForUpdate(){
     // Check GitHub directly from browser (no backend needed)
     var xhr = new XMLHttpRequest();
-    xhr.open('GET', 'https://api.github.com/repos/r0otx/asuswrt-merlin-amneziawg/releases/latest', true);
+    xhr.open('GET', 'https://api.github.com/repos/william-aqn/asuswrt-merlin-amneziawg/releases/latest', true);
     xhr.timeout = 10000;
     xhr.onload = function(){
         if(xhr.status !== 200) return;

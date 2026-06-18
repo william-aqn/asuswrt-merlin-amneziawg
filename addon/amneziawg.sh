@@ -1045,7 +1045,7 @@ do_watchdog(){
 # --- Update check ---
 
 check_update(){
-    local repo="r0otx/asuswrt-merlin-amneziawg"
+    local repo="william-aqn/asuswrt-merlin-amneziawg"
     local latest
     latest=$(curl -sfL --connect-timeout 10 --max-time 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v//;s/".*//')
     if [ -z "$latest" ]; then
@@ -1059,7 +1059,7 @@ check_update(){
 
 do_update(){
     log_msg "Updating AmneziaWG..."
-    local repo="r0otx/asuswrt-merlin-amneziawg"
+    local repo="william-aqn/asuswrt-merlin-amneziawg"
     local pkg_arch
     pkg_arch=$(opkg print-architecture 2>/dev/null | awk '$1=="arch" && $2!="all" {print $2}' | head -1)
     if [ -z "$pkg_arch" ]; then
