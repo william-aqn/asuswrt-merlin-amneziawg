@@ -171,6 +171,12 @@ function showVersionInfo(currentIgnored, latest, hasUpdateIgnored){
     xhr.send();
 }
 
+// Reload via a fresh GET (cache-busted), never location.reload() — reload() repeats
+// the POST from the last form submit, which makes the browser prompt to resubmit.
+function awgReload(){
+    window.location.href = window.location.pathname + '?_=' + (new Date()).getTime();
+}
+
 function doUpdate(){
     var badge = document.getElementById('awg_badge');
     badge.className = 'awg-status connecting';
@@ -194,13 +200,13 @@ function doUpdate(){
                     // Update done when VPN is stopped (do_update stops it)
                     if(!s.running || attempts >= 120){
                         clearInterval(poll);
-                        location.reload();
+                        awgReload();
                     }
                 } catch(e){
-                    if(attempts >= 120){ clearInterval(poll); location.reload(); }
+                    if(attempts >= 120){ clearInterval(poll); awgReload(); }
                 }
             };
-            xhr.onerror = function(){ if(attempts >= 120){ clearInterval(poll); location.reload(); } };
+            xhr.onerror = function(){ if(attempts >= 120){ clearInterval(poll); awgReload(); } };
             xhr.send();
         }, 2000);
     }, 5000);
@@ -391,7 +397,8 @@ function applyConfig(actionScript){
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = actionScript;
     document.form.submit();
-    setTimeout(function(){ location.reload(); }, 15000);
+    // No full-page reload: status + log refresh live via polling. Reloading after a
+    // form POST makes the browser prompt to resubmit the form ("Повторить отправку").
 }
 
 // === Routing: per-device with individual policies ===
@@ -488,7 +495,7 @@ function updateGeoLists(){
     if(log) log.textContent = 'Downloading geo lists... Please wait.';
     document.form.action_script.value = "start_awgupdategeo";
     document.form.submit();
-    setTimeout(function(){ location.reload(); }, 60000);
+    // No reload: geo progress and result show live in the log + status via polling.
 }
 
 function fetchDhcpClients(){
