@@ -30,6 +30,11 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
+### 1.1.12 -- 2026-06-18
+- **Route self-healing**: the watchdog (every 5 min) detects dropped VPN policy routes (e.g. after a firewall restart) and re-applies them automatically — even if the firewall-start hook didn't fire
+- **Version in the header** is now a link to the repository
+- **Telegram chat link** in the UI footer
+
 ### 1.1.11 -- 2026-06-18
 - **Force Apply button** — saves settings and does a full VPN restart: applies WireGuard parameter changes too (keys, endpoint, obfuscation, MTU — which plain Apply doesn't) and fully rebuilds routes/firewall/geo
 - **Fixed startup on routers that don't autoload `tun`** (e.g. RT-AC68U) — the `tun` module now loads reliably (`modprobe` wasn't found due to PATH)
