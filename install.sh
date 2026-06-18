@@ -117,8 +117,11 @@ case "$1" in
     restart)
         /jffs/addons/amneziawg/amneziawg.sh restart
         ;;
+    update)
+        /jffs/addons/amneziawg/amneziawg.sh update
+        ;;
     *)
-        echo "Usage: $0 {start|stop|restart}"
+        echo "Usage: $0 {start|stop|restart|update}"
         exit 1
         ;;
 esac
@@ -165,6 +168,7 @@ echo "CLI usage:"
 echo "  awg show                                # status"
 echo "  /opt/etc/init.d/S99amneziawg start      # start"
 echo "  /opt/etc/init.d/S99amneziawg stop       # stop"
+echo "  /opt/etc/init.d/S99amneziawg update     # update to the latest release"
 echo ""
 echo "Config:  Edit via web UI or vi $AWG_DIR/awg0.conf"
 echo ""
