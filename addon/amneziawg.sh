@@ -1141,37 +1141,62 @@ do_wan_event(){
 }
 
 do_firewall_restart(){
-    if is_running; then
-        log_msg "Firewall restart detected, re-applying rules"
-        # Clean base rules first to prevent duplicates
-        iptables -D INPUT -i "$IFACE" -j ACCEPT 2>/dev/null
-        iptables -D FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null
-        iptables -D FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null
-        iptables -t mangle -D FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
-        iptables -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
-        local lan_net_old
-        lan_net_old=$(get_lan_net)
-        [ -n "$lan_net_old" ] && iptables -t nat -D POSTROUTING -s "$lan_net_old" -o "$IFACE" -j MASQUERADE 2>/dev/null
-        iptables -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null
-        cleanup_ipv6_block
-        iptables -I INPUT -i "$IFACE" -j ACCEPT
-        iptables -I FORWARD -i "$IFACE" -j ACCEPT
-        iptables -I FORWARD -o "$IFACE" -j ACCEPT
-        iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-        iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-        local lan_net
-        lan_net=$(get_lan_net)
-        if [ -n "$lan_net" ]; then
-            iptables -t nat -I POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE
-        else
-            iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
-        fi
-        setup_ipv6_block
-        setup_firewall
-        local awg_addr
-        awg_addr=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
-        [ -n "$awg_addr" ] && ip rule add from "$awg_addr" lookup $RT_TABLE prio 100
+    is_running || return 0
+    log_msg "Firewall restart detected, re-applying routes and rules"
+    acquire_lock || { log_msg "Cannot acquire lock, aborting firewall restart"; return 1; }
+
+    # --- Tear down current routing + firewall (mirror do_stop) ---
+    iptables -D INPUT -i "$IFACE" -j ACCEPT 2>/dev/null
+    iptables -D FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null
+    iptables -D FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null
+    cleanup_ipv6_block
+    iptables -t mangle -D FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+    iptables -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+    local lan_net_old
+    lan_net_old=$(get_lan_net)
+    [ -n "$lan_net_old" ] && iptables -t nat -D POSTROUTING -s "$lan_net_old" -o "$IFACE" -j MASQUERADE 2>/dev/null
+    iptables -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null
+    cleanup_firewall
+    ip route flush table $RT_TABLE 2>/dev/null
+    local endpoint_old
+    endpoint_old=$(get_endpoint)
+    [ -n "$endpoint_old" ] && ip route del "$endpoint_old" 2>/dev/null
+    restore_rp_filter
+
+    # --- Rebuild routing + firewall (mirror do_start); routes are the part the
+    #     old version missed, so GeoSite/VPN routing broke after a firewall event ---
+    local lan_net gw endpoint
+    lan_net=$(get_lan_net)
+    gw=$(ip route | awk '/^default/{print $3; exit}')
+    endpoint=$(get_endpoint)
+    [ -n "$endpoint" ] && [ -n "$gw" ] && ip route add "$endpoint" via "$gw" 2>/dev/null
+    ip route add 0.0.0.0/1 dev "$IFACE" table $RT_TABLE 2>/dev/null
+    ip route add 128.0.0.0/1 dev "$IFACE" table $RT_TABLE 2>/dev/null
+    [ -n "$lan_net" ] && ip route add "$lan_net" dev br0 table $RT_TABLE 2>/dev/null
+
+    save_and_set_rp_filter
+
+    iptables -I INPUT -i "$IFACE" -j ACCEPT
+    iptables -I FORWARD -i "$IFACE" -j ACCEPT
+    iptables -I FORWARD -o "$IFACE" -j ACCEPT
+    setup_ipv6_block
+    iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    if [ -n "$lan_net" ]; then
+        iptables -t nat -I POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE
+    else
+        iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
     fi
+
+    setup_firewall
+
+    # Route for router-originated traffic (after setup_firewall which cleans ip rules)
+    local awg_addr
+    awg_addr=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
+    [ -n "$awg_addr" ] && ip rule add from "$awg_addr" lookup $RT_TABLE prio 100
+
+    release_lock
+    log_msg "Firewall/routes re-applied"
 }
 
 # --- Service event dispatcher ---
@@ -1203,7 +1228,7 @@ do_service_event(){
             ;;
         awgupdategeo)
             update_geo_lists
-            is_running && setup_firewall
+            do_firewall_restart
             update_status
             ;;
         awgcheckupdate)
@@ -1223,7 +1248,7 @@ case "$1" in
     stop)           do_stop ;;
     restart)        do_stop; wait_for_pid_exit amneziawg-go 10; do_start ;;
     status)         update_status ;;
-    update_geo)     update_geo_lists; is_running && setup_firewall; update_status ;;
+    update_geo)     update_geo_lists; do_firewall_restart; update_status ;;
     check_update)   check_update ;;
     update)         do_update ;;
     watchdog)       do_watchdog ;;
