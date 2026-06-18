@@ -28,7 +28,7 @@ V2FLY_GEOIP_BASE="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/t
 GEOIP_SERVICES="telegram google facebook twitter netflix cloudflare fastly cloudfront"
 
 # Ensure Entware binaries are in PATH (not set when called from httpd/service-event)
-export PATH="/opt/bin:/opt/sbin:$PATH"
+export PATH="/opt/bin:/opt/sbin:/sbin:/usr/sbin:$PATH"
 
 # --- Helpers ---
 
@@ -744,8 +744,12 @@ do_start(){
     [ ! -f "$CONF" ] && { log_msg "ERROR: No config"; update_status; release_lock; return 1; }
     [ ! -f "$AWG_GO" ] && { log_msg "ERROR: amneziawg-go not found"; update_status; release_lock; return 1; }
 
-    # Ensure TUN device exists
-    modprobe tun 2>/dev/null
+    # Ensure the TUN module is loaded + device node exists. Older routers (e.g.
+    # RT-AC68U) don't autoload tun, and modprobe lives in /sbin — which is why
+    # /sbin is on PATH above (it's missing when run from httpd/service-event).
+    if ! lsmod 2>/dev/null | grep -q "^tun "; then
+        modprobe tun 2>/dev/null || log_msg "WARNING: modprobe tun failed (module missing or modprobe not on PATH)"
+    fi
     mkdir -p /dev/net
     [ ! -c /dev/net/tun ] && mknod /dev/net/tun c 10 200
     chmod 600 /dev/net/tun
