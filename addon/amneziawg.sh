@@ -757,7 +757,10 @@ do_start(){
     "$AWG_BIN" setconf "$IFACE" "$CONF" || { log_msg "ERROR: setconf failed"; ip link del "$IFACE" 2>/dev/null; update_status; release_lock; return 1; }
 
     [ -f "$AWG_DIR/awg0.addr" ] && ip addr add "$(cat "$AWG_DIR/awg0.addr")" dev "$IFACE"
-    ip link set "$IFACE" mtu 1280
+    # MTU: configurable via awg_mtu (default 1280); fall back if unset/out of range
+    local mtu=$(get_setting awg_mtu)
+    { [ -n "$mtu" ] && validate_uint "$mtu" && [ "$mtu" -ge 576 ] && [ "$mtu" -le 1500 ]; } || mtu=1280
+    ip link set "$IFACE" mtu "$mtu"
     ip link set "$IFACE" up
 
     # Routing table

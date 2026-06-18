@@ -201,7 +201,7 @@ function doUpdate(){
 
 function loadSettings(){
     var fields = [
-        'awg_privatekey', 'awg_address', 'awg_listenport', 'awg_dns',
+        'awg_privatekey', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
         'awg_peer_pubkey', 'awg_peer_psk', 'awg_peer_endpoint',
         'awg_peer_allowedips', 'awg_peer_keepalive',
         'awg_jc', 'awg_jmin', 'awg_jmax',
@@ -244,7 +244,7 @@ function loadSettings(){
 
 function saveSettings(){
     var fields = [
-        'awg_privatekey', 'awg_address', 'awg_listenport', 'awg_dns',
+        'awg_privatekey', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
         'awg_peer_pubkey', 'awg_peer_psk', 'awg_peer_endpoint',
         'awg_peer_allowedips', 'awg_peer_keepalive',
         'awg_jc', 'awg_jmin', 'awg_jmax',
@@ -697,6 +697,7 @@ function parseConfig(text){
                 case 'PrivateKey': setVal('awg_privatekey', val); break;
                 case 'Address':    setVal('awg_address', val); break;
                 case 'ListenPort': setVal('awg_listenport', val); break;
+                case 'MTU':        setVal('awg_mtu', val); break;
                 case 'DNS':        setVal('awg_dns', val); break;
                 case 'Jc':         setVal('awg_jc', val); break;
                 case 'Jmin':       setVal('awg_jmin', val); break;
@@ -951,6 +952,11 @@ function initAutocompleteIp(){
                 <tr>
                     <th>Listen Port</th>
                     <td><input type="text" class="input_6_table" id="awg_listenport" maxlength="5" placeholder="51820"></td>
+                </tr>
+                <tr>
+                    <th>MTU</th>
+                    <td><input type="text" class="input_6_table" id="awg_mtu" maxlength="4" placeholder="1280">
+                        <span style="color:#666; font-size:11px; margin-left:6px;">default 1280 (576–1500)</span></td>
                 </tr>
                 <tr>
                     <th>DNS</th>
