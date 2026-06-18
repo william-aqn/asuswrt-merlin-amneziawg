@@ -98,6 +98,14 @@ curl -sfL https://raw.githubusercontent.com/william-aqn/asuswrt-merlin-amneziawg
 
 Скрипт автоматически определит архитектуру роутера, скачает нужный пакет из последнего релиза и установит.
 
+**Если GitHub заблокирован (РФ):** установка через зеркало jsDelivr —
+
+```shell
+curl -sfL https://cdn.jsdelivr.net/gh/william-aqn/asuswrt-merlin-amneziawg@main/install-online.sh | sh
+```
+
+Скрипт сам скачает `.ipk` через зеркала и проверит его по SHA256.
+
 ### Из .ipk пакета
 
 Скопируйте пакет на роутер и установите:

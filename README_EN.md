@@ -92,6 +92,14 @@ curl -sfL https://raw.githubusercontent.com/william-aqn/asuswrt-merlin-amneziawg
 
 The script auto-detects router architecture, downloads the latest package from GitHub releases and installs it.
 
+**If GitHub is blocked:** install via the jsDelivr mirror —
+
+```shell
+curl -sfL https://cdn.jsdelivr.net/gh/william-aqn/asuswrt-merlin-amneziawg@main/install-online.sh | sh
+```
+
+The script downloads the `.ipk` through mirrors and verifies its SHA256.
+
 ### From .ipk package
 
 Copy the package to the router and install:
