@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.13"
+AWG_VERSION="1.1.14"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -161,13 +161,34 @@ human_size(){
     fi
 }
 
+# Fetch $1 -> $2 (max-time $3), trying GitHub directly then mirrors. raw.githubusercontent
+# and the release CDN are often unreachable in some regions; jsDelivr mirrors repo files.
+fetch_with_mirrors(){
+    local url="$1" out="$2" mt="${3:-60}" u list
+    case "$url" in
+        https://raw.githubusercontent.com/*)
+            local jsd=$(echo "$url" | sed 's#https://raw.githubusercontent.com/\([^/]*\)/\([^/]*\)/\([^/]*\)/#https://cdn.jsdelivr.net/gh/\1/\2@\3/#')
+            # if raw GitHub already timed out this run, try jsDelivr first
+            if [ "$RAW_GH_DOWN" = 1 ]; then list="$jsd $url"; else list="$url $jsd"; fi
+            ;;
+        *) list="$url" ;;
+    esac
+    for u in $list "https://ghproxy.net/$url" "https://gh-proxy.com/$url"; do
+        if curl -sfL --connect-timeout 6 --max-time "$mt" --retry 1 "$u" -o "$out" 2>/dev/null && [ -s "$out" ]; then
+            return 0
+        fi
+        case "$url" in https://raw.githubusercontent.com/*) [ "$u" = "$url" ] && RAW_GH_DOWN=1 ;; esac
+    done
+    return 1
+}
+
 # Download a single GeoIP service list (IPv4 only)
 download_geoip_service(){
     local svc="$1"
     svc=$(echo "$svc" | tr -d ' ' | tr 'A-Z' 'a-z')
     [ -z "$svc" ] && return 1
     local tmp="$GEO_DIR/geoip/.dl_${svc}.tmp"
-    if curl -sfL --connect-timeout 10 --max-time 30 "${V2FLY_GEOIP_BASE}/${svc}.txt" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    if fetch_with_mirrors "${V2FLY_GEOIP_BASE}/${svc}.txt" "$tmp" 30 && [ -s "$tmp" ]; then
         grep -v ":" "$tmp" > "$GEO_DIR/geoip/v2fly_${svc}.cidr"
         rm -f "$tmp"
         [ -s "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] || { rm -f "$GEO_DIR/geoip/v2fly_${svc}.cidr"; return 1; }
@@ -203,8 +224,7 @@ download_all_geo(){
     log_msg "Downloading v2fly domain database..."
     update_status
     local tmp_yml="$GEO_DIR/v2fly_all.yml.tmp"
-    if curl -sfL --connect-timeout 10 --max-time 120 "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" \
-        -o "$tmp_yml" 2>/dev/null; then
+    if fetch_with_mirrors "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" "$tmp_yml" 120; then
         if [ -s "$tmp_yml" ]; then
             mv "$tmp_yml" "$GEO_DIR/v2fly_all.yml"
             grep '  - name: ' "$GEO_DIR/v2fly_all.yml" | sed 's/.*- name: //' | sort > "$GEO_DIR/v2fly_categories.txt"

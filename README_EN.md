@@ -30,6 +30,9 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
+### 1.1.14 -- 2026-06-18
+- **GeoIP/GeoSite downloads via mirrors.** When `raw.githubusercontent.com` or the GitHub CDN are unreachable (RU), lists are now fetched through mirrors (jsDelivr etc.). Previously GeoIP failed (0/8) when blocked.
+
 ### 1.1.13 -- 2026-06-18
 - **Install & update work via mirrors** when the GitHub release CDN is unreachable (common in RU): the online installer and the in-UI updater fall back to mirrors and **verify the package SHA256** (tamper protection)
 - **Device names with spaces** in Device Rules are no longer truncated
