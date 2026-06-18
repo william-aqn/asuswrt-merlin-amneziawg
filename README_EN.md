@@ -30,6 +30,11 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
+### 1.1.15 -- 2026-06-18
+- **GeoIP is driven by the "GeoIP Service Lists" UI field** (it was hardcoded and the field ignored); the field is pre-filled with the defaults
+- **Removing a service/category now drops its routes**: stale GeoIP / GeoSite / custom-domain files are no longer kept or applied
+- **Telegram link** moved to the header (next to the version)
+
 ### 1.1.14 -- 2026-06-18
 - **GeoIP/GeoSite downloads via mirrors.** When `raw.githubusercontent.com` or the GitHub CDN are unreachable (RU), lists are now fetched through mirrors (jsDelivr etc.). Previously GeoIP failed (0/8) when blocked.
 

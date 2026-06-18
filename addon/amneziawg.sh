@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.14"
+AWG_VERSION="1.1.15"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -198,17 +198,33 @@ download_geoip_service(){
     return 1
 }
 
+# Selected GeoIP services: the UI "GeoIP Service Lists" field, or GEOIP_SERVICES default
+selected_geoip(){
+    local s
+    s=$(get_setting awg_geo_v2fly_ip | tr ',' ' ')
+    s=$(echo $s)
+    [ -z "$s" ] && s="$GEOIP_SERVICES"
+    echo "$s"
+}
+
 # Download all geo databases (called at install and update)
 download_all_geo(){
     mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains"
     log_msg "Downloading all geo databases..."
 
-    # Download all GeoIP service CIDR lists
+    # Download GeoIP service CIDR lists (driven by the UI field; default GEOIP_SERVICES)
+    local geoip_list=$(selected_geoip)
+    # Drop lists for services removed from the selection
+    for f in "$GEO_DIR"/geoip/v2fly_*.cidr; do
+        [ -f "$f" ] || continue
+        local fsvc=$(basename "$f" .cidr); fsvc=${fsvc#v2fly_}
+        case " $geoip_list " in *" $fsvc "*) ;; *) rm -f "$f" ;; esac
+    done
     local count=0 total=0 ok=0
-    for svc in $GEOIP_SERVICES; do
+    for svc in $geoip_list; do
         total=$((total + 1))
     done
-    for svc in $GEOIP_SERVICES; do
+    for svc in $geoip_list; do
         count=$((count + 1))
         log_msg "GeoIP: downloading $svc ($count/$total)..."
         if download_geoip_service "$svc"; then
@@ -353,12 +369,15 @@ setup_firewall(){
         has_geo=false
     fi
 
-    # --- Load GeoIP subnets into ipset (bulk) ---
-    local ip_count=0
-    for f in "$GEO_DIR"/geoip/*.cidr; do
-        [ ! -f "$f" ] && continue
-        ipset_load_file "$f" "$IPSET_NAME"
-        ip_count=$((ip_count + $(wc -l < "$f")))
+    # --- Load selected GeoIP subnets into ipset (bulk) ---
+    # Only services in the UI field (default GEOIP_SERVICES) are loaded, so a removed
+    # service drops its routes even if its .cidr file still lingers on disk.
+    local ip_count=0 gsvc gf
+    for gsvc in $(selected_geoip); do
+        gf="$GEO_DIR/geoip/v2fly_${gsvc}.cidr"
+        [ -f "$gf" ] || continue
+        ipset_load_file "$gf" "$IPSET_NAME"
+        ip_count=$((ip_count + $(wc -l < "$gf")))
     done
 
     # Check ipset fill level
@@ -369,8 +388,8 @@ setup_firewall(){
 
     # --- Extract v2fly domains from downloaded database ---
     local geo_v2fly=$(get_setting awg_geo_v2fly)
+    rm -f "$GEO_DIR/domains/v2fly_"*.txt   # always clear stale category files (handles a cleared field)
     if [ -n "$geo_v2fly" ] && [ -f "$GEO_DIR/v2fly_all.yml" ]; then
-        rm -f "$GEO_DIR/domains/v2fly_"*.txt
         for svc in $(echo "$geo_v2fly" | tr ',' ' '); do
             svc=$(echo "$svc" | tr -d ' ')
             [ -z "$svc" ] && continue
@@ -385,6 +404,7 @@ setup_firewall(){
 
     # --- Save custom domains/IPs ---
     local custom_domains=$(get_setting awg_geo_custom_domains)
+    rm -f "$GEO_DIR/domains/custom.txt"   # clear stale file when the field is emptied
     if [ -n "$custom_domains" ]; then
         mkdir -p "$GEO_DIR/domains"
         echo "$custom_domains" | tr ',' '\n' > "$GEO_DIR/domains/custom.txt"

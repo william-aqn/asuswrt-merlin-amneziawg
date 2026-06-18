@@ -390,7 +390,7 @@ function loadGeoSettings(){
     var v2fly = document.getElementById('awg_geo_v2fly');
     if(v2fly) v2fly.value = custom_settings.awg_geo_v2fly || '';
     var v2flyIp = document.getElementById('awg_geo_v2fly_ip');
-    if(v2flyIp) v2flyIp.value = custom_settings.awg_geo_v2fly_ip || '';
+    if(v2flyIp) v2flyIp.value = custom_settings.awg_geo_v2fly_ip || v2flyIpList.join(',');
     // Custom
     var cd = document.getElementById('geo_custom_domains');
     if(cd) cd.value = custom_settings.awg_geo_custom_domains || '';
@@ -899,7 +899,8 @@ function initAutocompleteIp(){
                 <div class="formfonttitle" style="display:flex; align-items:center; gap:10px;">
                     <span style="font-size:20px; font-weight:bold; letter-spacing:1px;">AmneziaWG</span>
                     <span style="font-size:13px; font-weight:normal;">VPN Client</span>
-                    <span id="awg_version_info" style="margin-left:auto; font-size:11px; opacity:0.6;"></span>
+                    <a href="https://t.me/asusxray" target="_blank" style="margin-left:auto; font-size:12px; text-decoration:none;" title="Telegram-чат">💬 Telegram</a>
+                    <span id="awg_version_info" style="font-size:11px; opacity:0.6;"></span>
                     <span id="awg_update_btn" style="display:none;"></span>
                 </div>
                 <div style="margin:10px 0 10px 5px;" class="splitLine"></div>
@@ -1174,8 +1175,6 @@ function initAutocompleteIp(){
                 <div class="awg-section" style="margin-top:15px;">Log</div>
                 <div id="awg_log" class="awg-log">Waiting for data...</div>
                 <div style="text-align:right; font-size:11px; opacity:0.5; margin-top:4px;">
-                    <a href="https://t.me/asusxray" target="_blank" style="text-decoration:none;">💬 Telegram</a>
-                    &nbsp;&middot;&nbsp;
                     <a href="https://github.com/r0otx/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; r0otx</a>
                 </div>
 
