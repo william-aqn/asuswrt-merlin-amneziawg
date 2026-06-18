@@ -28,7 +28,7 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
-### 2026-06-18
+### 1.1.7 -- 2026-06-18
 - **H1-H4 header validation** -- dashes are now allowed in values ([PR #13](https://github.com/r0otx/asuswrt-merlin-amneziawg/pull/13))
 - **Online installer** -- pre-installs `coreutils-mktemp` (busybox `mktemp` may be missing or limited)
 
