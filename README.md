@@ -34,6 +34,9 @@ VPN-клиент с обходом DPI-блокировок на базе [Amnez
 
 ## Changelog
 
+### 1.1.8 -- 2026-06-18
+- **Блокировка IPv6 DNS (filter-AAAA)** -- новый переключатель «Prevent IPv6 Leaks» (включён по умолчанию): dnsmasq перестаёт отдавать AAAA-записи, чтобы dual-stack домены не обходили гео-маршрутизацию по IPv4 (адаптация [PR #15](https://github.com/advocdiaboly/asuswrt-merlin-amneziawg/pull/15))
+
 ### 1.1.7 -- 2026-06-18
 - **Валидация заголовков H1-H4** -- теперь в значениях допускается дефис ([PR #13](https://github.com/r0otx/asuswrt-merlin-amneziawg/pull/13))
 - **Онлайн-установщик** -- предварительно устанавливает `coreutils-mktemp` (busybox `mktemp` может отсутствовать или быть урезанным)

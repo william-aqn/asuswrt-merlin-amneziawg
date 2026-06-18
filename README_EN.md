@@ -28,6 +28,9 @@ Other aarch64 Merlin routers should also work.
 
 ## Changelog
 
+### 1.1.8 -- 2026-06-18
+- **IPv6 DNS blocking (filter-AAAA)** -- new "Prevent IPv6 Leaks" toggle (on by default): dnsmasq stops returning AAAA records so dual-stack domains can't bypass the IPv4 geo routing (adapted from [PR #15](https://github.com/advocdiaboly/asuswrt-merlin-amneziawg/pull/15))
+
 ### 1.1.7 -- 2026-06-18
 - **H1-H4 header validation** -- dashes are now allowed in values ([PR #13](https://github.com/r0otx/asuswrt-merlin-amneziawg/pull/13))
 - **Online installer** -- pre-installs `coreutils-mktemp` (busybox `mktemp` may be missing or limited)
