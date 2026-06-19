@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.60"
+AWG_VERSION="1.1.61"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -603,14 +603,26 @@ setup_firewall(){
     local has_geo=false
 
     # --- Create ipset ---
+    # Old routers (e.g. RT-AC68U) don't autoload the ip_set kernel modules, and the
+    # in-kernel auto-load needs modprobe — absent from the httpd/service-event PATH
+    # context — so `ipset create` fails there. Load them explicitly (no-op if already
+    # loaded or built-in). xt_set backs the `-m set --match-set` mangle rules below.
+    local m ipset_err
+    for m in ip_set ip_set_hash_net xt_set; do
+        modprobe "$m" 2>/dev/null
+    done
     # Set default timeout 24h: governs domain entries added by dnsmasq (GeoSite/custom
     # domains). They MUST expire — domains (CDNs) rotate IPs; dnsmasq re-adds the
     # current IP on each resolution (refreshing it), so active domains stay while stale
     # IPs age out instead of accumulating forever. Static GeoIP/custom-IP entries are
     # added with an explicit "timeout 0" (permanent), overriding this default.
-    ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem "$IPSET_MAXELEM" timeout 86400 2>/dev/null
+    # Capture stderr instead of masking it, so the real kernel error (e.g. "set type not
+    # supported" when ip_set_hash_net is missing) lands in the UI log rather than a bare
+    # "creation failed". The `ipset list` guard keeps a benign "set with the same name
+    # already exists" on re-run from being logged as an error.
+    ipset_err=$(ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem "$IPSET_MAXELEM" timeout 86400 2>&1)
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
-        log_msg "ERROR: ipset $IPSET_NAME creation failed, geo routing disabled"
+        log_msg "ERROR: ipset $IPSET_NAME creation failed, geo routing disabled${ipset_err:+: $ipset_err}"
         has_geo=false
     fi
 
