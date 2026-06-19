@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.59"
+AWG_VERSION="1.1.60"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -190,6 +190,24 @@ human_size(){
     else
         echo "${bytes} B"
     fi
+}
+
+# Human-readable hint for a curl exit code, so download failures in the log say WHY
+# (DNS vs refused vs timeout vs TLS vs HTTP error) instead of a bare number. Keeps the
+# raw code too — `man curl` EXIT CODES has the full list.
+curl_err_hint(){
+    case "$1" in
+        0)  echo "ok" ;;
+        6)  echo "curl 6: DNS resolution failed" ;;
+        7)  echo "curl 7: connection refused/unreachable" ;;
+        22) echo "curl 22: HTTP error (4xx/5xx — asset missing or blocked)" ;;
+        28) echo "curl 28: timeout (connect or stalled transfer)" ;;
+        35) echo "curl 35: TLS handshake failed" ;;
+        47) echo "curl 47: too many redirects" ;;
+        52) echo "curl 52: empty reply from server" ;;
+        56) echo "curl 56: connection reset during transfer" ;;
+        *)  echo "curl $1" ;;
+    esac
 }
 
 # Echo a curl "--interface <ip>" option that binds the request's SOURCE address to the
@@ -1725,22 +1743,38 @@ do_update(){
     # Resolve the version and, when api.github.com is reachable, grab the release JSON
     # (it carries the per-asset SHA256 digest we verify against). One API call gives both
     # the version and the digest.
-    local version="" rel_json=""
+    if [ -n "$awg_bind" ]; then
+        log_msg "Update: egress via VPN tunnel ${awg_bind#--interface } (awg_update_via_awg=1)"
+    else
+        log_msg "Update: egress via WAN (direct)"
+    fi
+
+    local version="" rel_json="" api_rc
     if [ -n "$target" ]; then
         version="$target"
-        log_msg "Update: requested version v$version"
-        rel_json=$(curl -sfL $awg_bind --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/tags/v${version}" 2>/dev/null)
+        log_msg "Update: requested version v$version (pinned)"
+        local api_url="https://api.github.com/repos/${repo}/releases/tags/v${version}"
+        log_msg "Update: querying $api_url"
+        rel_json=$(curl -sfL $awg_bind --connect-timeout 5 --max-time 12 "$api_url" 2>/dev/null); api_rc=$?
+        [ -n "$rel_json" ] && log_msg "Update: GitHub API OK (release metadata for v$version fetched)" \
+                           || log_msg "Update: GitHub API gave nothing for v$version ($(curl_err_hint "$api_rc")) — release may not exist or API is blocked"
     else
-        log_msg "Update: resolving latest version..."
-        rel_json=$(curl -sfL $awg_bind --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
+        local api_url="https://api.github.com/repos/${repo}/releases/latest"
+        log_msg "Update: resolving latest version via $api_url"
+        rel_json=$(curl -sfL $awg_bind --connect-timeout 5 --max-time 12 "$api_url" 2>/dev/null); api_rc=$?
         [ -n "$rel_json" ] && version=$(echo "$rel_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
         # API blocked or unparsable -> jsDelivr (API already tried, so skip it there)
-        [ -z "$version" ] && version=$(awg_resolve_version "$repo" skip_api)
+        if [ -z "$version" ]; then
+            log_msg "Update: GitHub API gave no version ($(curl_err_hint "$api_rc")) — falling back to jsDelivr"
+            version=$(awg_resolve_version "$repo" skip_api)
+            [ -n "$version" ] && log_msg "Update: resolved v$version via jsDelivr"
+        else
+            log_msg "Update: GitHub API resolved latest as v$version"
+        fi
         if [ -z "$version" ]; then
             log_msg "Update: ERROR could not resolve latest version (api.github.com and jsDelivr both unreachable)"
             update_status; return 1
         fi
-        log_msg "Update: latest version is v$version"
     fi
 
     if [ "$version" = "$AWG_VERSION" ]; then
@@ -1770,19 +1804,28 @@ do_update(){
     # unreachable in some regions). --speed-limit/--speed-time aborts a stalled
     # connection in ~15s (a blocked host accepts the socket then goes silent) so we
     # fall through to a working mirror fast instead of hanging on --max-time.
-    log_msg "Update: downloading v$version ($pkg_arch)"
-    local dl_ok=0 prefix label
+    # NOTE: jsDelivr is NOT a fallback here — it mirrors git-tracked repo files, not
+    # GitHub *release assets*, so it cannot serve the .ipk.
+    log_msg "Update: downloading v$version ($pkg_arch) — asset $ipk_file"
+    local dl_ok=0 prefix label full_url rc http
     for prefix in "" "https://ghproxy.net/" "https://gh-proxy.com/"; do
+        full_url="${prefix}${ipk_url}"
         [ -z "$prefix" ] && label="github.com" || label="$prefix"
-        log_msg "Update: trying $label ..."
-        if curl -sfL $awg_bind --connect-timeout 8 --max-time 90 --speed-limit 1024 --speed-time 15 "${prefix}${ipk_url}" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
-            log_msg "Update: downloaded $(human_size "$(wc -c < "$tmp" 2>/dev/null)") from $label"
+        log_msg "Update: trying $full_url"
+        # -w prints the final HTTP status; -f still suppresses the error body. Capturing
+        # both the curl exit code and the HTTP code tells a 404 (asset missing) apart from
+        # a connection failure (blocked/timeout) — they used to look identical in the log.
+        http=$(curl -sfL $awg_bind --connect-timeout 8 --max-time 90 --speed-limit 1024 --speed-time 15 -w '%{http_code}' "$full_url" -o "$tmp" 2>/dev/null); rc=$?
+        if [ "$rc" = 0 ] && [ -s "$tmp" ]; then
+            log_msg "Update: downloaded $(human_size "$(wc -c < "$tmp" 2>/dev/null)") from $label (HTTP ${http:-?})"
             dl_ok=1; break
         fi
-        log_msg "Update: $label failed"
+        rm -f "$tmp"
+        log_msg "Update: $label failed — HTTP ${http:-000}, $(curl_err_hint "$rc")"
     done
     if [ "$dl_ok" != 1 ]; then
-        log_msg "Update: ERROR download failed for v$version (GitHub and mirrors unreachable)"
+        log_msg "Update: ERROR download failed for v$version — none of github.com / ghproxy.net / gh-proxy.com served $ipk_file"
+        log_msg "Update: if HTTP was 404 above, the v$version release/asset does not exist; if it was connection errors, GitHub is unreachable from this egress path"
         rm -f "$tmp"; update_status; return 1
     fi
 
