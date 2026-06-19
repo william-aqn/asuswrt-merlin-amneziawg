@@ -87,10 +87,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eux
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Release notes = this version's CHANGELOG.md section (the Russian feature
+          # description). Fall back to auto-generated notes if no section is found.
+          awk -v v="$VERSION" 'index($0,"### "v" ")==1{f=1;print;next} /^### /&&f{exit} f{print}' CHANGELOG.md > /tmp/relnotes.md
+          if [ -s /tmp/relnotes.md ]; then
+            NOTES="--notes-file /tmp/relnotes.md"
+          else
+            NOTES="--generate-notes"
+          fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" output/*.ipk output/SHA256SUMS --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" $NOTES
           else
-            gh release create "$GITHUB_REF_NAME" output/*.ipk output/SHA256SUMS --title "$GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" output/*.ipk output/SHA256SUMS --title "$GITHUB_REF_NAME" $NOTES
           fi
 
       # Publish per-version SHA256 sums to a dedicated 'checksums' branch. jsDelivr
