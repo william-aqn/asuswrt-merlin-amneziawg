@@ -231,19 +231,28 @@ function awgReload(){
     window.location.href = window.location.pathname + '?_=' + (new Date()).getTime();
 }
 
+// Mirror the two "download via VPN" checkboxes into custom_settings so update / geo
+// actions carry the current choice even when the user didn't click Apply first.
+function syncViaVpnToggles(){
+    var g = document.getElementById('awg_geo_via_awg');
+    if(g) custom_settings.awg_geo_via_awg = g.checked ? '1' : '0';
+    var u = document.getElementById('awg_update_via_awg');
+    if(u) custom_settings.awg_update_via_awg = u.checked ? '1' : '0';
+}
+
 function doUpdate(version){
     var badge = document.getElementById('awg_badge');
     if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; Updating...'; }
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
 
+    // Carry the current "download via VPN" choice even without a prior Apply.
+    syncViaVpnToggles();
     // Pin an explicit version (one-shot) so the router installs exactly it — no backend
     // jsDelivr resolution, no crawl lag. Sent via custom_settings, then removed from
     // memory so a later "Apply" can't re-pin it (the backend also clears it after use).
-    if(version){
-        custom_settings.awg_update_version = String(version);
-        document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
-        delete custom_settings.awg_update_version;
-    }
+    if(version) custom_settings.awg_update_version = String(version);
+    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
+    if(version) delete custom_settings.awg_update_version;
     document.form.action_script.value = "start_awgdoupdate";
     document.form.submit();
 
@@ -690,6 +699,9 @@ function applyConfig(actionScript){
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
     custom_settings.awg_geo_wipe_update = document.getElementById('awg_geo_wipe_update').checked ? '1' : '0';
+    // Download-via-VPN toggles (route geo / program-update downloads through the tunnel)
+    custom_settings.awg_geo_via_awg = document.getElementById('awg_geo_via_awg').checked ? '1' : '0';
+    custom_settings.awg_update_via_awg = document.getElementById('awg_update_via_awg').checked ? '1' : '0';
     // Antifilter lists: collect checked checkboxes -> comma-separated registry keys
     var afChecked = [];
     var afB = document.querySelectorAll('.af_list');
@@ -803,6 +815,11 @@ function loadGeoSettings(){
     if(b6) b6.checked = (custom_settings.awg_block_ipv6_dns !== '0');
     var wp = document.getElementById('awg_geo_wipe_update');
     if(wp) wp.checked = (custom_settings.awg_geo_wipe_update === '1');
+    // Download-via-VPN toggles (default off)
+    var gva = document.getElementById('awg_geo_via_awg');
+    if(gva) gva.checked = (custom_settings.awg_geo_via_awg === '1');
+    var uva = document.getElementById('awg_update_via_awg');
+    if(uva) uva.checked = (custom_settings.awg_update_via_awg === '1');
     // Antifilter lists (checkboxes) — value attr holds the registry key
     var afSel = (custom_settings.awg_antifilter_lists || '').split(',');
     var afBoxes = document.querySelectorAll('.af_list');
@@ -820,6 +837,9 @@ function updateGeoLists(){
     if(!confirm(msg)) return;
     var log = document.getElementById('awg_log');
     if(log) log.textContent = 'Downloading geo lists... Please wait.';
+    // Carry the current "download via VPN" choice even without a prior Apply.
+    syncViaVpnToggles();
+    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = "start_awgupdategeo";
     document.form.submit();
     // No reload: geo progress and result show live in the log + status via polling.
@@ -1647,6 +1667,27 @@ function initAutocompleteIp(){
                 </table>
 
                 </div>
+
+                <!-- ==================== DOWNLOAD VIA VPN ==================== -->
+                <!-- Outside geo_section: the program-update toggle must show even when no
+                     device uses geo routing. -->
+                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
+                <thead><tr><td colspan="2">Загрузка через VPN (обход блокировок)</td></tr></thead>
+                <tr>
+                    <th width="35%">Geo-списки через VPN</th>
+                    <td>
+                        <label><input type="checkbox" id="awg_geo_via_awg"> Загружать geo-списки через активный AWG-туннель</label>
+                        <div style="color:#888; font-size:11px; margin-top:3px;">Пока туннель поднят, загрузка GeoIP / GeoSite / antifilter идёт через VPN (обход блокировок GitHub / jsDelivr). Если VPN выключен — загрузка идёт напрямую, как раньше.</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Обновление программы через VPN</th>
+                    <td>
+                        <label><input type="checkbox" id="awg_update_via_awg"> Загружать обновление программы через активный AWG-туннель</label>
+                        <div style="color:#888; font-size:11px; margin-top:3px;">Проверка версии и загрузка <code>.ipk</code> идут через VPN, пока туннель активен — можно ставить обновления прямо с GitHub в обход региональных блокировок (и проверять SHA256 по GitHub API). DNS-резолвинг остаётся системным; обход работает для блокировок по IP/TCP. Если VPN выключен — напрямую, как раньше.</div>
+                    </td>
+                </tr>
+                </table>
 
                 <!-- Apply -->
                 <div style="margin-top:12px; text-align:center;">

@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.53"
+AWG_VERSION="1.1.54"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -192,10 +192,43 @@ human_size(){
     fi
 }
 
+# Echo a curl "--interface <ip>" option that binds the request's SOURCE address to the
+# awg0 tunnel IP, so the download egresses through the VPN and bypasses regional blocks
+# on GitHub/jsDelivr/etc. $1 = feature ("geo" or "update"). Returns nothing — download
+# goes out the WAN as before — unless the matching toggle is on AND the tunnel is up with
+# an IP. Source-binding alone is enough: setup_firewall installs
+# "ip rule from <awg0-ip> lookup $RT_TABLE prio 100", which routes anything sourced from
+# that address through the tunnel table. DNS still uses the system resolver (not the
+# tunnel), so this bypasses IP/TCP-level blocks, not DNS poisoning.
+awg_dl_iface_opt(){
+    local feature="$1" key addr
+    case "$feature" in
+        geo)    key="awg_geo_via_awg" ;;
+        update) key="awg_update_via_awg" ;;
+        *)      return 0 ;;
+    esac
+    [ "$(get_setting "$key")" = "1" ] || return 0
+    is_running || return 0
+    addr=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
+    [ -n "$addr" ] || return 0
+    # Bind ONLY when the tunnel routing is actually in place — not just the link. During
+    # do_start and do_firewall_restart (the latter fires on EVERY router firewall restart)
+    # there is a brief window where awg0 is up with its IP but cleanup_firewall has flushed
+    # the policy rule + table $RT_TABLE routes that setup_firewall re-adds last. Binding in
+    # that window would egress the WAN with a martian source and fail with no fallback, so
+    # require both the "from <addr> lookup $RT_TABLE" rule and the table's default route;
+    # otherwise emit nothing -> direct (WAN) download.
+    ip rule show 2>/dev/null | grep -qF "from $addr lookup $RT_TABLE" || return 0
+    ip route show table "$RT_TABLE" 2>/dev/null | grep -q "0.0.0.0/1" || return 0
+    printf -- '--interface %s' "$addr"
+}
+
 # Fetch $1 -> $2 (max-time $3), trying GitHub directly then mirrors. raw.githubusercontent
 # and the release CDN are often unreachable in some regions; jsDelivr mirrors repo files.
+# When "geo via VPN" is on and the tunnel is up, all attempts egress through it (awg_bind).
 fetch_with_mirrors(){
     local url="$1" out="$2" mt="${3:-60}" u list
+    local awg_bind=$(awg_dl_iface_opt geo)
     case "$url" in
         https://raw.githubusercontent.com/*)
             local jsd=$(echo "$url" | sed 's#https://raw.githubusercontent.com/\([^/]*\)/\([^/]*\)/\([^/]*\)/#https://cdn.jsdelivr.net/gh/\1/\2@\3/#')
@@ -205,7 +238,7 @@ fetch_with_mirrors(){
         *) list="$url" ;;
     esac
     for u in $list "https://ghproxy.net/$url" "https://gh-proxy.com/$url"; do
-        if curl -sfL --connect-timeout 6 --max-time "$mt" --retry 1 "$u" -o "$out" 2>/dev/null && [ -s "$out" ]; then
+        if curl -sfL $awg_bind --connect-timeout 6 --max-time "$mt" --retry 1 "$u" -o "$out" 2>/dev/null && [ -s "$out" ]; then
             return 0
         fi
         case "$url" in https://raw.githubusercontent.com/*) [ "$u" = "$url" ] && RAW_GH_DOWN=1 ;; esac
@@ -1423,13 +1456,14 @@ do_watchdog(){
 # build-ipk.sh on the CDN. Echoes the version, or nothing if every source is unreachable.
 awg_resolve_version(){
     local repo="$1" skip_api="$2" v=""
+    local awg_bind=$(awg_dl_iface_opt update)
     # api.github.com first (freshest), unless the caller already found it unreachable
     # — re-trying a blocked API just adds another connect timeout to the wait.
     if [ "$skip_api" != "skip_api" ]; then
-        v=$(curl -sfL --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
+        v=$(curl -sfL $awg_bind --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
     fi
-    [ -z "$v" ] && v=$(curl -sfL --connect-timeout 6 --max-time 15 "https://data.jsdelivr.com/v1/packages/gh/${repo}/resolved" 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
-    [ -z "$v" ] && v=$(curl -sfL --connect-timeout 6 --max-time 15 "https://cdn.jsdelivr.net/gh/${repo}@latest/build-ipk.sh" 2>/dev/null | sed -n 's/^PKG_VERSION="\([0-9][0-9.]*\).*/\1/p' | head -1)
+    [ -z "$v" ] && v=$(curl -sfL $awg_bind --connect-timeout 6 --max-time 15 "https://data.jsdelivr.com/v1/packages/gh/${repo}/resolved" 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    [ -z "$v" ] && v=$(curl -sfL $awg_bind --connect-timeout 6 --max-time 15 "https://cdn.jsdelivr.net/gh/${repo}@latest/build-ipk.sh" 2>/dev/null | sed -n 's/^PKG_VERSION="\([0-9][0-9.]*\).*/\1/p' | head -1)
     case "$v" in ""|*[!0-9.]*) return 1 ;; esac
     echo "$v"
 }
@@ -1575,6 +1609,9 @@ do_manual_install(){
 
 do_update(){
     local repo="william-aqn/asuswrt-merlin-amneziawg"
+    # "Update via VPN" bind, resolved while the tunnel is still up (do_update stops it only
+    # later, in finalize_ipk_install — every download below happens before that).
+    local awg_bind=$(awg_dl_iface_opt update)
     # Target version: explicit CLI arg ($1), else a one-shot version pinned by the UI
     # (custom setting), else empty = resolve the latest. Cleared right away so a pinned
     # version can never carry over to a later automatic update.
@@ -1603,10 +1640,10 @@ do_update(){
     if [ -n "$target" ]; then
         version="$target"
         log_msg "Update: requested version v$version"
-        rel_json=$(curl -sfL --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/tags/v${version}" 2>/dev/null)
+        rel_json=$(curl -sfL $awg_bind --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/tags/v${version}" 2>/dev/null)
     else
         log_msg "Update: resolving latest version..."
-        rel_json=$(curl -sfL --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
+        rel_json=$(curl -sfL $awg_bind --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
         [ -n "$rel_json" ] && version=$(echo "$rel_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
         # API blocked or unparsable -> jsDelivr (API already tried, so skip it there)
         [ -z "$version" ] && version=$(awg_resolve_version "$repo" skip_api)
@@ -1649,7 +1686,7 @@ do_update(){
     for prefix in "" "https://ghproxy.net/" "https://gh-proxy.com/"; do
         [ -z "$prefix" ] && label="github.com" || label="$prefix"
         log_msg "Update: trying $label ..."
-        if curl -sfL --connect-timeout 8 --max-time 90 --speed-limit 1024 --speed-time 15 "${prefix}${ipk_url}" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+        if curl -sfL $awg_bind --connect-timeout 8 --max-time 90 --speed-limit 1024 --speed-time 15 "${prefix}${ipk_url}" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
             log_msg "Update: downloaded $(human_size "$(wc -c < "$tmp" 2>/dev/null)") from $label"
             dl_ok=1; break
         fi
