@@ -82,16 +82,25 @@
       (document.head || document.documentElement).appendChild(st);
     }
 
-    function findContainer() {
-      var sels = [
-        "#status_block", ".statusBar",
-        "#statusicon", ".statusbar", "#status_icon", ".status_icon",
-        "#topbar", ".topbar", ".top_bar",
-        "#TopBanner .product", "#TopBanner"
-      ];
-      for (var i = 0; i < sels.length; i++) {
-        var el = document.querySelector(sels[i]);
-        if (el) return el;
+    function closestTd(el) {
+      var n = el;
+      while (n && n.nodeType === 1) {
+        if (n.tagName === "TD") return n;
+        n = n.parentNode;
+      }
+      return null;
+    }
+
+    // Classic (non-ROG) themes lay the status icons out as <td> cells in a <tr>
+    // rather than a flex #status_block. Locate that row via a known status icon.
+    function findIconRow() {
+      var ids = ["notification_status1", "bwdpi_status", "wifi_hw_sw_status",
+                 "connect_status", "usb_status"];
+      for (var i = 0; i < ids.length; i++) {
+        var el = document.getElementById(ids[i]);
+        if (!el) continue;
+        var td = (el.tagName === "TD") ? el : closestTd(el);
+        if (td && td.parentNode && td.parentNode.tagName === "TR") return td.parentNode;
       }
       return null;
     }
@@ -111,17 +120,34 @@
     }
 
     function placeIndicator(d) {
-      // First element in the status-bar icon row. We deliberately do NOT anchor to a
+      // Leftmost slot of the status-icon row. We deliberately do NOT anchor to a
       // specific icon (QoS, wifi, usb…) — any of those can be hidden or absent
-      // depending on the router config, so the leftmost slot is the only reliable one.
+      // depending on the router config, so the first slot is the only reliable target.
+
+      // 1) ROG / flex theme (GT-AX11000 etc.): a #status_block flex container.
       var block = document.getElementById("status_block");
       if (block) {
         try { block.insertBefore(d, block.firstChild); return; } catch (e) {}
       }
-      // Else: other known header containers
-      var c = findContainer();
-      if (c) { try { c.appendChild(d); return; } catch (e) {} }
-      // Else: floating pill top-right
+
+      // 2) Classic / table theme (RT-AC68U, RT-AX88U etc.): icons are <td> cells in a
+      //    <tr>. Insert a leading <td> right after the title cell so the badge is the
+      //    first icon — a bare <div> can't be a direct <tr> child.
+      var row = findIconRow();
+      if (row) {
+        try {
+          var td = document.createElement("td");
+          td.style.width = "auto";
+          td.style.verticalAlign = "middle";
+          td.appendChild(d);
+          var cells = row.children;
+          var ref = (cells && cells.length > 1) ? cells[1] : null; // after the leading title cell
+          row.insertBefore(td, ref);
+          return;
+        } catch (e) {}
+      }
+
+      // 3) Unknown theme: floating pill, top-right (predictable, never mis-anchored).
       if (d.className.indexOf("awg-fixed") === -1) d.className += " awg-fixed";
       document.body.appendChild(d);
     }
