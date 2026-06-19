@@ -105,6 +105,17 @@ esac
 IPK_FILE=$(basename "$IPK_URL")
 echo "Package: $IPK_FILE"
 
+# Best-effort SHA256 from the GitHub API digest. Present only when api.github.com is
+# reachable; otherwise we skip the check and install anyway.
+EXPECTED_SHA=""
+if [ -n "$RELEASE_JSON" ]; then
+    EXPECTED_SHA=$(echo "$RELEASE_JSON" | awk -v f="$IPK_FILE" '
+        /"name":/ { in_a = (index($0, f) > 0) }
+        in_a && /"digest":/ { s=$0; sub(/.*sha256:/, "", s); sub(/".*/, "", s); print s; exit }
+    ')
+    case "$EXPECTED_SHA" in *[!0-9a-fA-F]*) EXPECTED_SHA="" ;; esac
+fi
+
 # Download
 TMP_DIR=$(mktemp -d /tmp/amneziawg_install.XXXXXX) || { echo "ERROR: Cannot create temp directory"; exit 1; }
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
@@ -123,6 +134,21 @@ if [ "$DL_OK" != 1 ]; then
     echo "ERROR: Download failed (GitHub and mirrors unreachable)."
     echo "  Workaround: download on a device with access, scp to /tmp, then: opkg install /tmp/$IPK_FILE"
     rm -rf "$TMP_DIR"; exit 1
+fi
+
+# Verify against the GitHub API digest when we have it; otherwise skip and continue.
+if [ -n "$EXPECTED_SHA" ]; then
+    ACTUAL_SHA=$(sha256sum "$DEST" 2>/dev/null | awk '{print $1}')
+    [ -z "$ACTUAL_SHA" ] && ACTUAL_SHA=$(openssl dgst -sha256 "$DEST" 2>/dev/null | awk '{print $NF}')
+    if [ -n "$ACTUAL_SHA" ] && [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+        echo "ERROR: SHA256 mismatch — refusing to install"
+        echo "  expected: $EXPECTED_SHA"
+        echo "  actual:   $ACTUAL_SHA"
+        rm -rf "$TMP_DIR"; exit 1
+    fi
+    [ -n "$ACTUAL_SHA" ] && echo "Integrity: SHA256 verified"
+else
+    echo "Integrity: SHA256 unavailable (GitHub API blocked) — skipping check"
 fi
 
 echo "Downloaded: $DEST"

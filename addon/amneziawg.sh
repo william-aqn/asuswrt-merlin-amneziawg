@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.47"
+AWG_VERSION="1.1.48"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1354,13 +1354,20 @@ do_update(){
         esac
     fi
 
-    local version
+    # Resolve the version and, when api.github.com is reachable, grab the release JSON
+    # (it carries the per-asset SHA256 digest we verify against). One API call gives both
+    # the version and the digest.
+    local version="" rel_json=""
     if [ -n "$target" ]; then
         version="$target"
         log_msg "Update: requested version v$version"
+        rel_json=$(curl -sfL --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/tags/v${version}" 2>/dev/null)
     else
         log_msg "Update: resolving latest version..."
-        version=$(awg_resolve_version "$repo")
+        rel_json=$(curl -sfL --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
+        [ -n "$rel_json" ] && version=$(echo "$rel_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
+        # API blocked or unparsable -> jsDelivr (API already tried, so skip it there)
+        [ -z "$version" ] && version=$(awg_resolve_version "$repo" skip_api)
         if [ -z "$version" ]; then
             log_msg "Update: ERROR could not resolve latest version (api.github.com and jsDelivr both unreachable)"
             update_status; return 1
@@ -1377,6 +1384,19 @@ do_update(){
     # Asset name is deterministic (build-ipk.sh: amneziawg_<ver>-1_<arch>.ipk).
     local ipk_url="https://github.com/${repo}/releases/download/v${version}/amneziawg_${version}-1_${pkg_arch}.ipk"
     local tmp="/tmp/amneziawg_update.ipk"
+
+    # Best-effort SHA256 from the GitHub API digest. If api.github.com is blocked there's
+    # no digest — then we skip the check and install anyway rather than refuse.
+    local ipk_file expected_sha=""
+    ipk_file=$(basename "$ipk_url")
+    if [ -n "$rel_json" ]; then
+        expected_sha=$(echo "$rel_json" | awk -v f="$ipk_file" '
+            /"name":/ { in_a = (index($0, f) > 0) }
+            in_a && /"digest":/ { s=$0; sub(/.*sha256:/, "", s); sub(/".*/, "", s); print s; exit }
+        ')
+        case "$expected_sha" in *[!0-9a-fA-F]*) expected_sha="" ;; esac
+    fi
+    [ -n "$expected_sha" ] && log_msg "Update: SHA256 from GitHub API — will verify" || log_msg "Update: SHA256 unavailable (API blocked) — skipping check"
 
     # Download: GitHub direct, then proxy mirrors (the release-assets host is often
     # unreachable in some regions). --speed-limit/--speed-time aborts a stalled
@@ -1396,6 +1416,17 @@ do_update(){
     if [ "$dl_ok" != 1 ]; then
         log_msg "Update: ERROR download failed for v$version (GitHub and mirrors unreachable)"
         rm -f "$tmp"; update_status; return 1
+    fi
+
+    if [ -n "$expected_sha" ]; then
+        local actual_sha
+        actual_sha=$(sha256sum "$tmp" 2>/dev/null | awk '{print $1}')
+        [ -z "$actual_sha" ] && actual_sha=$(openssl dgst -sha256 "$tmp" 2>/dev/null | awk '{print $NF}')
+        if [ -n "$actual_sha" ] && [ "$actual_sha" != "$expected_sha" ]; then
+            log_msg "Update: ERROR SHA256 mismatch — refusing to install"
+            rm -f "$tmp"; update_status; return 1
+        fi
+        log_msg "Update: SHA256 verified"
     fi
 
     # Preserve geo lists across the upgrade unless "wipe before update" is on. The
