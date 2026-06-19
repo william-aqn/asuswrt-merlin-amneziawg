@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.67"
+AWG_VERSION="1.1.68"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -34,6 +34,7 @@ SCRIPT_NAME="amneziawg"
 RT_TABLE=300
 AWG_CHAIN="AWG"
 LOCKDIR="/tmp/.awg_lock"
+GEOLOCK="/tmp/.awg_geolock"   # long-running background geo-download mutex (separate from LOCKDIR)
 V2FLY_GEOIP_BASE="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text"
 GEOIP_SERVICES="telegram google facebook twitter netflix cloudflare fastly cloudfront"
 
@@ -499,14 +500,27 @@ ipset_load_file(){
 
 # --- Unified firewall setup ---
 
-# Detect a co-resident DPI-bypass tool (zapret/zapret2 by bol-van) that we must not fight:
-# its userspace daemons (nfqws/tpws) running, or NFQUEUE/TPROXY targets present in iptables.
-# When detected we skip the global DNS hijack below so we don't collide with its DNS/NFQUEUE
-# handling and lock out the LAN — the addon's marks/table/conntrack flush are already its own.
+# Detect a co-resident DPI-bypass / proxy tool that we must not fight: zapret/zapret2 by
+# bol-van (nfqws/tpws daemons, or NFQUEUE/TPROXY targets in iptables), OR a transparent
+# proxy daemon (xray/XRAYUI, v2ray, sing-box). When detected we skip the global DNS hijack
+# below so we don't collide with its DNS/redirect handling and lock out the LAN — the addon's
+# marks/table/conntrack flush are already its own. (Name kept as zapret_active for callers.)
 zapret_active(){
     { pidof nfqws || pidof tpws; } >/dev/null 2>&1 && return 0
+    { pidof xray || pidof v2ray || pidof sing-box; } >/dev/null 2>&1 && return 0
     iptables-save 2>/dev/null | grep -qE 'NFQUEUE|TPROXY' && return 0
     return 1
+}
+
+# Human-readable name of a co-resident DPI-bypass / proxy tool, for the UI coexistence
+# warning (status JSON "dpi_tool"). Echoes the first match, or nothing. Proxy daemons first
+# (the common Xray/XRAYUI case), then zapret, then a generic NFQUEUE/TPROXY footprint.
+detect_dpi_tool(){
+    pidof xray     >/dev/null 2>&1 && { echo "Xray";     return; }
+    pidof v2ray    >/dev/null 2>&1 && { echo "V2Ray";    return; }
+    pidof sing-box >/dev/null 2>&1 && { echo "sing-box"; return; }
+    { pidof nfqws || pidof tpws; } >/dev/null 2>&1 && { echo "zapret"; return; }
+    iptables-save 2>/dev/null | grep -qE 'NFQUEUE|TPROXY' && { echo "DPI (NFQUEUE/TPROXY)"; return; }
 }
 
 setup_dns_interception(){
@@ -532,6 +546,28 @@ setup_dns_interception(){
         iptables -C FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT 2>/dev/null || iptables -I FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT
     done
     log_msg "DNS interception enabled"
+}
+
+# True if our LAN DNS interception (:53 DNAT to the router) is currently installed. Checked
+# against the exact rule we add so a stale /tmp/.awg_dns_ip or a foreign :53 DNAT won't match.
+dns_intercept_active(){
+    local ip
+    ip=$(cat /tmp/.awg_dns_ip 2>/dev/null)
+    [ -z "$ip" ] && return 1
+    iptables -t nat -C PREROUTING -i br0 -p udp --dport 53 -j DNAT --to "$ip" 2>/dev/null
+}
+
+# Resolve a well-known name via the router's own dnsmasq (the resolver LAN clients are
+# DNAT'd to). Returns 0 only on a real answer. The health check/watchdog use this to catch
+# the "tunnel pings 8.8.8.8 but DNS is dead" lockout that an ICMP-only probe silently misses
+# (e.g. dnsmasq's upstream is blackholed through a non-passing tunnel). busybox nslookup
+# prints a "Name:" line only on success; failure prints "can't resolve" with no such line.
+dns_ok(){
+    local n
+    for n in cloudflare.com google.com quad9.net; do
+        nslookup "$n" 127.0.0.1 2>/dev/null | grep -q '^Name:' && return 0
+    done
+    return 1
 }
 
 setup_ipv6_block(){
@@ -896,15 +932,18 @@ setup_firewall(){
 
     # --- Force DNS through dnsmasq whenever VPN is active ---
     # The global :53 DNAT + DoH/DoT REJECT is the one piece that collides with a co-resident
-    # DPI-bypass tool (zapret/zapret2) and can lock out the LAN. Skip it when the user opted
-    # out (awg_no_dns_intercept=1) OR when zapret/NFQUEUE is detected — geo-by-IP (GeoIP /
-    # antifilter CIDR) keeps working; only forced domain-geo is weakened for clients that use
-    # an external resolver instead of the router. This is what lets AWG coexist like xray+zapret.
+    # DPI-bypass / proxy tool (zapret/zapret2, xray/XRAYUI, v2ray, sing-box) and can lock out
+    # the LAN. Skip it when the user opted out (awg_no_dns_intercept=1) OR when such a tool is
+    # detected — geo-by-IP (GeoIP / antifilter CIDR) keeps working; only forced domain-geo is
+    # weakened for clients that use an external resolver instead of the router. This is what
+    # lets AWG coexist with xray/zapret. NOTE: this only resolves the DNS-layer clash — with
+    # default_policy=vpn_all the marks/table still steal the proxy's traffic, so coexistence
+    # also needs a direct/geo default policy, not all->VPN.
     if [ "$default_policy" != "direct" ] || [ "$has_geo" = true ]; then
         if [ "$(get_setting awg_no_dns_intercept)" = "1" ]; then
             log_msg "DNS interception OFF (awg_no_dns_intercept=1) — coexistence mode"
         elif zapret_active; then
-            log_msg "DNS interception OFF — zapret/NFQUEUE detected, coexisting (geo-by-IP still active)"
+            log_msg "DNS interception OFF — zapret/xray/NFQUEUE detected, coexisting (geo-by-IP still active)"
         else
             setup_dns_interception
         fi
@@ -1006,8 +1045,27 @@ ensure_geo(){
         fi
     done
     [ -z "$need_svcs" ] && [ "$need_yml" = 0 ] && [ -z "$need_af" ] && return 0
+    # Single-flight: only one background geo download at a time. Without this, a double
+    # Apply/SaveConf (or Apply + update) fired ensure_geo twice and the old lockless "( ) &"
+    # ran two download loops in lockstep — minutes of duplicate failing fetches plus two
+    # back-to-back setup_firewall rebuilds. mkdir is busybox's only atomic test-and-set, so
+    # acquire with plain mkdir (NOT mkdir -p, which returns 0 even if the dir already exists).
+    # If the lock is held by a LIVE pid, skip — the running pass re-applies the firewall when
+    # it finishes; a service added mid-download is picked up on the next Apply/update. If the
+    # holder is gone (empty/dead pid -> crashed before its cleanup trap), reclaim the lock so
+    # geo can't wedge off until a reboot. /tmp is tmpfs, so the lock never survives a reboot.
+    if ! mkdir "$GEOLOCK" 2>/dev/null; then
+        local gp; gp=$(cat "$GEOLOCK/pid" 2>/dev/null)
+        if [ -n "$gp" ] && kill -0 "$gp" 2>/dev/null; then
+            log_msg "Geo download already in progress (pid $gp) — skipping duplicate"
+            return 0
+        fi
+        rm -rf "$GEOLOCK"
+        mkdir "$GEOLOCK" 2>/dev/null || { log_msg "Geo download already in progress — skipping duplicate"; return 0; }
+    fi
     log_msg "Downloading missing geo lists in background..."
     (
+        trap 'rm -rf "$GEOLOCK"' EXIT INT TERM
         mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains" "$GEO_DIR/antifilter"
         for svc in $need_svcs; do
             log_msg "GeoIP: downloading $svc..."
@@ -1023,6 +1081,7 @@ ensure_geo(){
         is_running && setup_firewall
         update_status
     ) </dev/null >/dev/null 2>&1 &
+    echo $! > "$GEOLOCK/pid" 2>/dev/null   # real bg-subshell PID, written by the parent
 }
 
 # --- Validation helpers ---
@@ -1231,7 +1290,7 @@ do_diag(){
     echo "memory (free):"; free 2>/dev/null | sed 's/^/  /'
     echo "amneziawg-go running : $(pidof amneziawg-go 2>/dev/null || echo no)"
     echo "dnsmasq running      : $(pidof dnsmasq 2>/dev/null || echo no)"
-    echo "zapret/NFQUEUE       : $(zapret_active && echo "yes -> DNS interception auto-off (coexist)" || echo no)"
+    echo "zapret/xray/NFQUEUE  : $(zapret_active && echo "yes -> DNS interception auto-off (coexist)" || echo no)"
     echo "lan_ipaddr           : $(nvram get lan_ipaddr 2>/dev/null)"
     echo "awg0 link            :"; ip link show "$IFACE" 2>&1 | sed 's/^/  /'
     echo "awg0 inet            : $(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2}')"
@@ -1398,10 +1457,19 @@ do_start(){
     (
         hc_ok=false
         hc_try=0
+        hc_reason="not passing traffic"
         while [ $hc_try -lt 30 ]; do
             if ping -c 1 -W 2 -I "$IFACE" 8.8.8.8 >/dev/null 2>&1; then
-                hc_ok=true
-                break
+                # ICMP is up. If we hijacked LAN DNS, also require it to actually resolve:
+                # an ICMP-only "verified" tunnel leaves clients pinned to a dead resolver
+                # (with DoH/DoT REJECTed too) = silent LAN-wide outage that never rolls back.
+                # Skip the DNS gate when dnsmasq isn't up (a dnsmasq problem, not the tunnel's
+                # — the 30x2s retry covers a brief restart; don't roll back the VPN for it).
+                if ! dns_intercept_active || ! pidof dnsmasq >/dev/null 2>&1 || dns_ok; then
+                    hc_ok=true
+                    break
+                fi
+                hc_reason="DNS not resolving through tunnel"
             fi
             hc_try=$((hc_try + 1))
             sleep 2
@@ -1410,7 +1478,7 @@ do_start(){
             log_msg "Tunnel verified: traffic passing"
             update_status
         else
-            log_msg "ERROR: Tunnel not passing traffic after 60s, rolling back to prevent lockout"
+            log_msg "ERROR: Tunnel $hc_reason after 60s, rolling back to prevent lockout"
             do_stop 2>/dev/null
             log_msg "VPN stopped automatically. Check server config and endpoint reachability."
             update_status
@@ -1529,9 +1597,13 @@ EOF
     local stopping=false
     [ -f "$STOPPING_FLAG" ] && stopping=true
 
+    # Co-resident DPI/proxy tool (Xray/zapret/etc.), surfaced to the UI so it can warn that
+    # "all->VPN" + DNS interception will collide with it.
+    local dpi_tool=$(detect_dpi_tool)
+
     # Write atomically (temp + rename) so the UI never reads a half-written file.
     cat > "${STATUS_FILE}.tmp" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.tmp" "$STATUS_FILE" 2>/dev/null
 }
@@ -1652,6 +1724,15 @@ do_watchdog(){
         reason="amneziawg-go process dead"
     elif ! ping -c 1 -W 5 -I "$IFACE" 8.8.8.8 >/dev/null 2>&1; then
         reason="tunnel not passing traffic"
+    elif dns_intercept_active && pidof dnsmasq >/dev/null 2>&1 && ! dns_ok; then
+        # Confirm before acting: dnsmasq gets bounced by many unrelated events (DHCP lease
+        # churn, other addons, our own reload_dnsmasq). Re-probe after a short settle so a
+        # transient resolver blip doesn't trigger a full VPN restart — only a DNS that stays
+        # dead WHILE dnsmasq is up is the tunnel-DNS lockout we want to roll back.
+        sleep 5
+        if pidof dnsmasq >/dev/null 2>&1 && ! dns_ok; then
+            reason="DNS not resolving through tunnel"
+        fi
     fi
 
     local wd_state="/tmp/.awg_wd_state"

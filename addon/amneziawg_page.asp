@@ -1112,6 +1112,35 @@ function updateStatusUI(s){
             geoBtn.style.fontWeight = 'bold';
         }
     }
+
+    renderCoexistWarning(s);
+}
+
+// Warn when a co-resident proxy/DPI tool (Xray/XRAYUI, zapret, ...) is running AND the
+// applied config would fight it: default policy "All Traffic -> VPN" steals its traffic,
+// and DNS interception (:53 DNAT) collides with its DNS. Advise the two safe settings.
+// Uses the applied custom_settings (what's actually running), refreshed every status poll.
+function renderCoexistWarning(s){
+    var el = document.getElementById('awg_coexist_warn');
+    if(!el) return;
+    var tool = (s && s.dpi_tool) ? String(s.dpi_tool) : '';
+    if(!tool){ el.style.display = 'none'; el.innerHTML = ''; return; }
+
+    var cs = (typeof custom_settings !== 'undefined' && custom_settings) ? custom_settings : {};
+    var policy = (cs.awg_default_policy || 'direct');
+    var dnsOff = (cs.awg_no_dns_intercept === '1');
+    var needPolicy = (policy === 'vpn_all');   // routing collision (not auto-handled)
+    var needDns = !dnsOff;                      // DNS collision (auto-handled too, but make it explicit)
+    if(!needPolicy && !needDns){ el.style.display = 'none'; el.innerHTML = ''; return; }
+
+    var steps = '';
+    if(needPolicy) steps += '<li>Смените <b>Default Policy</b> с <b>«VPN — All Traffic»</b> на <b>«Direct»</b> или <b>«VPN — Geo Only»</b> — иначе маршрутизация заберёт у ' + escHtml(tool) + ' весь трафик.</li>';
+    if(needDns) steps += '<li>Включите галочку <b>«Не перехватывать DNS»</b> (блок «Совместимость с zapret») — чтобы перехват :53 не конфликтовал с ' + escHtml(tool) + '.</li>';
+
+    el.innerHTML = '⚠ Обнаружен <b>' + escHtml(tool) + '</b> на роутере. Чтобы AmneziaWG не конфликтовал с ним и не оставил сеть без интернета:'
+        + '<ul style="margin:5px 0 4px 0; padding-left:20px;">' + steps + '</ul>'
+        + '<span style="opacity:0.85;">После изменений нажмите <b>Apply</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>';
+    el.style.display = '';
 }
 
 function setOfflineUI(){
@@ -1395,6 +1424,10 @@ function initAutocompleteIp(){
                     <td><span id="awg_info">-</span></td>
                 </tr>
                 </table>
+
+                <!-- Coexistence warning: shown by updateStatusUI() when a co-resident proxy/DPI
+                     tool (Xray/XRAYUI, zapret, ...) is detected AND the config would collide with it -->
+                <div id="awg_coexist_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a2e1a; border:1px solid #f0ad4e; border-radius:5px; color:#f0ad4e; font-size:12px; line-height:1.5;"></div>
 
                 <!-- Peers Table -->
                 <div class="awg-section">Connected Peers</div>
