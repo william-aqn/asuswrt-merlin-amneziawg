@@ -218,12 +218,19 @@ function awgReload(){
     window.location.href = window.location.pathname + '?_=' + (new Date()).getTime();
 }
 
-function doUpdate(){
+function doUpdate(version){
     var badge = document.getElementById('awg_badge');
-    badge.className = 'awg-status connecting';
-    badge.innerHTML = '&#9679; Updating...';
+    if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; Updating...'; }
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
 
+    // Pin an explicit version (one-shot) so the router installs exactly it — no backend
+    // jsDelivr resolution, no crawl lag. Sent via custom_settings, then removed from
+    // memory so a later "Apply" can't re-pin it (the backend also clears it after use).
+    if(version){
+        custom_settings.awg_update_version = String(version);
+        document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
+        delete custom_settings.awg_update_version;
+    }
     document.form.action_script.value = "start_awgdoupdate";
     document.form.submit();
 
@@ -286,7 +293,19 @@ function closeUpdateModal(){
 
 function confirmUpdate(){
     closeUpdateModal();
-    doUpdate();
+    // Pass the version the frontend already resolved (avoids backend jsDelivr lag);
+    // empty string falls back to backend resolution.
+    doUpdate(awgLatestVersion || '');
+}
+
+// Install a user-specified published version (X.Y.Z) from the modal input field.
+function installSpecificVersion(){
+    var inp = document.getElementById('awg_version_input');
+    var v = ((inp && inp.value) || '').trim().replace(/^v/i, '');
+    if(!/^\d+\.\d+\.\d+$/.test(v)){ alert('Укажите версию в формате X.Y.Z, например 1.1.46'); return; }
+    if(awgCurrentVersion && v === awgCurrentVersion){ alert('Версия v' + v + ' уже установлена.'); return; }
+    closeUpdateModal();
+    doUpdate(v);
 }
 
 // Load the changelog straight from the repo, fetched by the frontend. Use the
@@ -1385,6 +1404,11 @@ function initAutocompleteIp(){
             <span style="margin-left:auto; cursor:pointer; font-size:22px; line-height:1; opacity:0.6;" onclick="closeUpdateModal();" title="Закрыть">&times;</span>
         </div>
         <div id="awg_modal_body" style="padding:14px 18px; overflow-y:auto; font-size:12px; line-height:1.5;"></div>
+        <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; font-size:12px;">
+            <span style="opacity:0.75;">Установить конкретную версию:</span>
+            <input type="text" id="awg_version_input" placeholder="напр. 1.1.46" maxlength="12" style="width:100px; margin-left:8px; padding:2px 6px; background:#222; color:#e0e0e0; border:1px solid #555; border-radius:4px;">
+            <input type="button" class="button_gen" value="Установить" onclick="installSpecificVersion();" style="margin-left:8px;">
+        </div>
         <div style="padding:12px 18px; border-top:1px solid #444; display:flex; align-items:center;">
             <span id="awg_modal_status" style="font-size:12px; opacity:0.75; margin-right:auto;"></span>
             <input type="button" class="button_gen" value="Проверить обновления" onclick="checkForUpdate();">

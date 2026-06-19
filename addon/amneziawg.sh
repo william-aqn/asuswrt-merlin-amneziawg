@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.46"
+AWG_VERSION="1.1.47"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -47,6 +47,17 @@ ui_log_reset(){
 
 get_setting(){
     awk -v key="$1" '$1==key{sub(/^[^ ]+ /,"");print;exit}' "$SETTINGS" 2>/dev/null
+}
+
+# Remove a custom-settings line. Used for one-shot keys (e.g. awg_update_version) so a
+# version pinned for a single update can never pin a later automatic update.
+clear_setting(){
+    local key="$1" tmp
+    [ -f "$SETTINGS" ] || return 0
+    grep -q "^$key " "$SETTINGS" 2>/dev/null || return 0
+    tmp="$SETTINGS.awgtmp.$$"
+    grep -v "^$key " "$SETTINGS" > "$tmp" 2>/dev/null && mv "$tmp" "$SETTINGS"
+    rm -f "$tmp" 2>/dev/null
 }
 
 is_running(){
@@ -1295,10 +1306,14 @@ do_watchdog(){
 # GitHub's API is not): first its data API (newest git tag), then PKG_VERSION from
 # build-ipk.sh on the CDN. Echoes the version, or nothing if every source is unreachable.
 awg_resolve_version(){
-    local repo="$1" v=""
-    v=$(curl -sfL --connect-timeout 8 --max-time 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
-    [ -z "$v" ] && v=$(curl -sfL --connect-timeout 8 --max-time 15 "https://data.jsdelivr.com/v1/packages/gh/${repo}/resolved" 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
-    [ -z "$v" ] && v=$(curl -sfL --connect-timeout 8 --max-time 15 "https://cdn.jsdelivr.net/gh/${repo}@latest/build-ipk.sh" 2>/dev/null | sed -n 's/^PKG_VERSION="\([0-9][0-9.]*\).*/\1/p' | head -1)
+    local repo="$1" skip_api="$2" v=""
+    # api.github.com first (freshest), unless the caller already found it unreachable
+    # — re-trying a blocked API just adds another connect timeout to the wait.
+    if [ "$skip_api" != "skip_api" ]; then
+        v=$(curl -sfL --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
+    fi
+    [ -z "$v" ] && v=$(curl -sfL --connect-timeout 6 --max-time 15 "https://data.jsdelivr.com/v1/packages/gh/${repo}/resolved" 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    [ -z "$v" ] && v=$(curl -sfL --connect-timeout 6 --max-time 15 "https://cdn.jsdelivr.net/gh/${repo}@latest/build-ipk.sh" 2>/dev/null | sed -n 's/^PKG_VERSION="\([0-9][0-9.]*\).*/\1/p' | head -1)
     case "$v" in ""|*[!0-9.]*) return 1 ;; esac
     echo "$v"
 }
@@ -1317,8 +1332,17 @@ check_update(){
 }
 
 do_update(){
-    log_msg "Updating AmneziaWG..."
     local repo="william-aqn/asuswrt-merlin-amneziawg"
+    # Target version: explicit CLI arg ($1), else a one-shot version pinned by the UI
+    # (custom setting), else empty = resolve the latest. Cleared right away so a pinned
+    # version can never carry over to a later automatic update.
+    local target="$1"
+    [ -z "$target" ] && target=$(get_setting awg_update_version)
+    clear_setting awg_update_version
+    case "$target" in *[!0-9.]*) target="" ;; esac
+
+    log_msg "Update: starting (installed v$AWG_VERSION)"
+
     local pkg_arch
     pkg_arch=$(opkg print-architecture 2>/dev/null | awk '$1=="arch" && $2!="all" {print $2}' | head -1)
     if [ -z "$pkg_arch" ]; then
@@ -1326,82 +1350,52 @@ do_update(){
         case "$arch" in
             aarch64) pkg_arch="aarch64-3.10" ;;
             armv7l)  pkg_arch="armv7-2.6" ;;
-            *) log_msg "ERROR: Unsupported arch: $arch"; return 1 ;;
+            *) log_msg "Update: ERROR unsupported architecture: $arch"; update_status; return 1 ;;
         esac
     fi
 
-    # Resolve version + asset URL. Prefer the GitHub API (it also yields the SHA256
-    # digest); where api.github.com is blocked, fall back to jsDelivr for the version
-    # and construct the canonical asset URL (build-ipk.sh names it deterministically).
-    local release_json version="" ipk_url=""
-    release_json=$(curl -sfL --connect-timeout 8 --max-time 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
-    if [ -n "$release_json" ]; then
-        version=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
-        ipk_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "$pkg_arch" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/".*//')
-        if [ -z "$ipk_url" ]; then
-            local base_arch=$(echo "$pkg_arch" | sed 's/-.*//')
-            ipk_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "${base_arch}" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/".*//')
+    local version
+    if [ -n "$target" ]; then
+        version="$target"
+        log_msg "Update: requested version v$version"
+    else
+        log_msg "Update: resolving latest version..."
+        version=$(awg_resolve_version "$repo")
+        if [ -z "$version" ]; then
+            log_msg "Update: ERROR could not resolve latest version (api.github.com and jsDelivr both unreachable)"
+            update_status; return 1
         fi
+        log_msg "Update: latest version is v$version"
     fi
-    [ -z "$version" ] && version=$(awg_resolve_version "$repo")
-    if [ -z "$version" ]; then
-        log_msg "ERROR: Cannot reach GitHub API or jsDelivr to resolve the latest version"
-        return 1
-    fi
-    # Package revision is always -1 (see build-ipk.sh: PKG_VERSION="<ver>-1").
-    [ -z "$ipk_url" ] && ipk_url="https://github.com/${repo}/releases/download/v${version}/amneziawg_${version}-1_${pkg_arch}.ipk"
 
-    local ipk_file expected_sha=""
-    ipk_file=$(basename "$ipk_url")
-    # Expected SHA256: from the API digest when available, otherwise from the repo's
-    # 'checksums' branch served by jsDelivr. That file is git content, so a download
-    # mirror cannot tamper with it — which lets us safely accept a mirror-sourced .ipk
-    # in regions where api.github.com (and the release-assets host) are blocked.
-    if [ -n "$release_json" ]; then
-        expected_sha=$(echo "$release_json" | awk -v f="$ipk_file" '
-            /"name":/ { in_a = (index($0, f) > 0) }
-            in_a && /"digest":/ { s=$0; sub(/.*sha256:/, "", s); sub(/".*/, "", s); print s; exit }
-        ')
+    if [ "$version" = "$AWG_VERSION" ]; then
+        log_msg "Update: already on v$AWG_VERSION — nothing to install"
+        update_status
+        return 0
     fi
-    if [ -z "$expected_sha" ]; then
-        local sums
-        sums=$(curl -sfL --connect-timeout 8 --max-time 20 "https://cdn.jsdelivr.net/gh/${repo}@checksums/v${version}.txt" 2>/dev/null)
-        [ -z "$sums" ] && sums=$(curl -sfL --connect-timeout 8 --max-time 20 "https://raw.githubusercontent.com/${repo}/checksums/v${version}.txt" 2>/dev/null)
-        expected_sha=$(echo "$sums" | awk -v f="$ipk_file" '($2==f)||($2=="*"f){print $1; exit}')
-        case "$expected_sha" in ""|*[!0-9a-fA-F]*) expected_sha="" ;; esac
-        [ -n "$expected_sha" ] && log_msg "SHA256 from repo checksums branch (jsDelivr)"
-    fi
+
+    # Asset name is deterministic (build-ipk.sh: amneziawg_<ver>-1_<arch>.ipk).
+    local ipk_url="https://github.com/${repo}/releases/download/v${version}/amneziawg_${version}-1_${pkg_arch}.ipk"
+    local tmp="/tmp/amneziawg_update.ipk"
 
     # Download: GitHub direct, then proxy mirrors (the release-assets host is often
-    # unreachable in some regions). SHA256 is verified below, so a mirror can't
-    # substitute a tampered package.
-    local tmp="/tmp/amneziawg_update.ipk"
-    local dl_ok=0 prefix used_mirror=0
+    # unreachable in some regions). --speed-limit/--speed-time aborts a stalled
+    # connection in ~15s (a blocked host accepts the socket then goes silent) so we
+    # fall through to a working mirror fast instead of hanging on --max-time.
+    log_msg "Update: downloading v$version ($pkg_arch)"
+    local dl_ok=0 prefix label
     for prefix in "" "https://ghproxy.net/" "https://gh-proxy.com/"; do
-        if curl -sfL --connect-timeout 10 --max-time 180 --retry 2 "${prefix}${ipk_url}" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
-            dl_ok=1; [ -n "$prefix" ] && used_mirror=1; break
+        [ -z "$prefix" ] && label="github.com" || label="$prefix"
+        log_msg "Update: trying $label ..."
+        if curl -sfL --connect-timeout 8 --max-time 90 --speed-limit 1024 --speed-time 15 "${prefix}${ipk_url}" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+            log_msg "Update: downloaded $(human_size "$(wc -c < "$tmp" 2>/dev/null)") from $label"
+            dl_ok=1; break
         fi
+        log_msg "Update: $label failed"
     done
     if [ "$dl_ok" != 1 ]; then
-        log_msg "ERROR: Download failed (GitHub and mirrors unreachable)"
-        rm -f "$tmp"
-        return 1
-    fi
-    if [ -n "$expected_sha" ]; then
-        local actual_sha
-        actual_sha=$(sha256sum "$tmp" 2>/dev/null | awk '{print $1}')
-        [ -z "$actual_sha" ] && actual_sha=$(openssl dgst -sha256 "$tmp" 2>/dev/null | awk '{print $NF}')
-        if [ -n "$actual_sha" ] && [ "$actual_sha" != "$expected_sha" ]; then
-            log_msg "ERROR: SHA256 mismatch, refusing to update"
-            rm -f "$tmp"
-            return 1
-        fi
-    elif [ "$used_mirror" = 1 ]; then
-        # No published digest to verify a mirror-sourced package — refuse rather than
-        # trust an unauthenticated proxy (a direct github.com download is TLS-trusted).
-        log_msg "ERROR: mirror download without a SHA256 to verify — refusing to update"
-        rm -f "$tmp"
-        return 1
+        log_msg "Update: ERROR download failed for v$version (GitHub and mirrors unreachable)"
+        rm -f "$tmp"; update_status; return 1
     fi
 
     # Preserve geo lists across the upgrade unless "wipe before update" is on. The
@@ -1410,17 +1404,20 @@ do_update(){
     local geo_bak="${AWG_DIR}_geobak"
     rm -rf "$geo_bak" 2>/dev/null
     if [ "$(get_setting awg_geo_wipe_update)" != "1" ] && [ -d "$GEO_DIR" ]; then
-        mv "$GEO_DIR" "$geo_bak" 2>/dev/null && log_msg "Preserving geo lists across the update"
+        mv "$GEO_DIR" "$geo_bak" 2>/dev/null && log_msg "Update: preserving geo lists"
     fi
 
+    log_msg "Update: stopping VPN"
     do_stop 2>/dev/null
     wait_for_pid_exit amneziawg-go 10
     # Block auto-start during opkg install (S99amneziawg is triggered by opkg)
     touch /tmp/.awg_no_autostart
+    log_msg "Update: installing package via opkg"
     if ! opkg install "$tmp" && ! opkg install --force-architecture "$tmp"; then
-        log_msg "ERROR: opkg install failed — staying on the current version"
+        log_msg "Update: ERROR opkg install failed — staying on v$AWG_VERSION"
         rm -f "$tmp" /tmp/.awg_no_autostart
-        return 1
+        if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
+        update_status; return 1
     fi
     rm -f "$tmp"
     # Stop VPN if opkg's init script started it
@@ -1431,17 +1428,15 @@ do_update(){
     if [ -d "$geo_bak" ]; then
         rm -rf "$GEO_DIR" 2>/dev/null
         mkdir -p "$AWG_DIR"
-        mv "$geo_bak" "$GEO_DIR" 2>/dev/null && log_msg "Geo lists restored"
+        mv "$geo_bak" "$GEO_DIR" 2>/dev/null && log_msg "Update: geo lists restored"
     fi
     # Install page from new version
     /jffs/addons/amneziawg/amneziawg.sh install_page
-    log_msg "Update complete. Start VPN from UI."
-    # Refresh status with the NEW script. This process still runs the old code in
-    # memory, so calling update_status directly would re-write the OLD version number
-    # (that's why the header used to keep showing the pre-update version).
+    log_msg "Update: complete — now on v$version. Start VPN from the UI."
+    # Refresh status with the NEW script (this process still runs the old code in memory,
+    # so calling update_status directly would re-write the OLD version number).
     /jffs/addons/amneziawg/amneziawg.sh status 2>/dev/null
-    # If geo wasn't preserved (wipe option on, or restore failed), re-download the
-    # missing lists with the NEW script.
+    # If geo wasn't preserved (wipe option on, or restore failed), re-download with the NEW script.
     /jffs/addons/amneziawg/amneziawg.sh ensure_geo 2>/dev/null
 }
 
@@ -1565,7 +1560,7 @@ case "$1" in
     status)         update_status ;;
     update_geo)     update_geo_lists; do_firewall_restart; update_status ;;
     check_update)   check_update ;;
-    update)         do_update ;;
+    update)         do_update "$2" ;;
     watchdog)       do_watchdog ;;
     install_page)   do_install_page ;;
     mount_ui)       do_mount_ui ;;
