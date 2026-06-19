@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.61"
+AWG_VERSION="1.1.62"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -474,6 +474,13 @@ ipset_load_file(){
 # --- Unified firewall setup ---
 
 setup_dns_interception(){
+    # Never DNAT :53 to a dead resolver — that black-holes all LAN DNS. If dnsmasq isn't
+    # up, skip interception (clients keep working DNS); reload_dnsmasq + the start deadman
+    # bring geo DNS online shortly after.
+    if ! pidof dnsmasq >/dev/null 2>&1; then
+        log_msg "WARNING: dnsmasq not running — skipping DNS interception (would break LAN DNS)"
+        return 0
+    fi
     local router_ip
     router_ip=$(get_router_ip)
     [ -z "$router_ip" ] && router_ip="192.168.1.1"
@@ -581,6 +588,21 @@ reload_dnsmasq(){
             sleep 1
         done
         [ $i -ge 30 ] && log_msg "WARNING: dnsmasq reload was skipped by rc; geo domains may need a manual restart"
+        # Self-heal: if dnsmasq is NOT running at all now, our generated config most likely
+        # broke it (bad/oversized rules) and the LAN just lost DHCP/DNS. Drop our include
+        # and restart clean so the router stays reachable — degraded geo beats a dead LAN.
+        if ! pidof dnsmasq >/dev/null 2>&1; then
+            log_msg "ERROR: dnsmasq down after reload — removing AWG dnsmasq rules + restarting to restore DNS/DHCP"
+            rm -f "$DNSMASQ_AWG_CONF"
+            [ -f "$DNSMASQ_INCLUDE" ] && grep -vF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.tmp" 2>/dev/null && mv "${DNSMASQ_INCLUDE}.tmp" "$DNSMASQ_INCLUDE"
+            _j=0
+            while [ $_j -lt 15 ]; do
+                service restart_dnsmasq >/dev/null 2>&1
+                sleep 2
+                pidof dnsmasq >/dev/null 2>&1 && { log_msg "dnsmasq recovered (AWG dnsmasq rules removed)"; break; }
+                _j=$((_j + 1)); sleep 1
+            done
+        fi
         wait_for_dns 10
         if [ -f "$DNSMASQ_AWG_CONF" ]; then
             bg_count=0
@@ -620,7 +642,17 @@ setup_firewall(){
     # supported" when ip_set_hash_net is missing) lands in the UI log rather than a bare
     # "creation failed". The `ipset list` guard keeps a benign "set with the same name
     # already exists" on re-run from being logged as an error.
-    ipset_err=$(ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem "$IPSET_MAXELEM" timeout 86400 2>&1)
+    # RAM-aware cap: on low-memory routers (RT-AC68U etc., 256MB) the big lists (antifilter
+    # ipresolve ~154K) can exhaust kernel memory and hang the router. Scale the set ceiling
+    # to total RAM; adds past it fail harmlessly (ipset restore -!), trading some geo
+    # coverage for not locking up. Logged, not silent.
+    local maxelem="$IPSET_MAXELEM" memkb
+    memkb=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+    if [ -n "$memkb" ] && [ "$memkb" -lt 393216 ]; then
+        maxelem=98304
+        log_msg "Low RAM (${memkb}KB total): ipset capped at $maxelem (was $IPSET_MAXELEM) to avoid OOM"
+    fi
+    ipset_err=$(ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem "$maxelem" timeout 86400 2>&1)
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
         log_msg "ERROR: ipset $IPSET_NAME creation failed, geo routing disabled${ipset_err:+: $ipset_err}"
         has_geo=false
@@ -1091,26 +1123,26 @@ generate_config(){
 # (dd + od) — the router has neither `file` nor `readelf`. Echoes e.g.
 # "ELF32 ARM eabi=05 float=soft", "ELF64 AARCH64", or "missing" / "not-ELF(...)".
 elf_arch(){
-    local f="$1" magic clsw cls mw mach
+    local f="$1" sz mg mw mach
     [ -f "$f" ] || { echo "missing"; return; }
-    # This firmware's busybox od supports only -x (16-bit hex words) and prints an address
-    # column, so read 2-byte words and take field 2 of the first line, matching either
-    # print/byte order. Float ABI (the actual culprit on VFP-less CPUs) can't be read here
-    # without readelf — the live probes in do_diag are the authoritative arch check.
-    magic=$(dd if="$f" bs=1 count=2 2>/dev/null | od -x 2>/dev/null | awk 'NR==1{print $2; exit}')
-    case "$magic" in
-        457f|7f45) ;;   # \x7fELF -> first LE16 word
-        *) echo "not-ELF(magic=$magic)"; return ;;
+    sz=$(wc -c < "$f" 2>/dev/null)
+    # This firmware's busybox od is minimal; -b (octal bytes) is the mode that reliably
+    # works here (an earlier -A/-t/-x approach printed nothing -> "not-ELF(magic=)"). Match
+    # the ELF magic and e_machine by octal byte pattern, tolerant of od's address column.
+    # The live probes in do_diag are the authoritative arch check; this is a size/sanity tag.
+    mg=$(dd if="$f" bs=1 count=4 2>/dev/null | od -b 2>/dev/null | tr '\n' ' ')
+    case "$mg" in
+        *"177 105 114 106"*) ;;            # \177 E L F
+        *) echo "${sz}B (not ELF)"; return ;;
     esac
-    clsw=$(dd if="$f" bs=1 skip=4 count=2 2>/dev/null | od -x 2>/dev/null | awk 'NR==1{print $2; exit}')
-    case "$clsw" in 02*|*02) cls="ELF64" ;; 01*|*01) cls="ELF32" ;; *) cls="ELF?" ;; esac
-    mw=$(dd if="$f" bs=1 skip=18 count=2 2>/dev/null | od -x 2>/dev/null | awk 'NR==1{print $2; exit}')
+    # e_machine (LE) at offset 18: 050 000 = ARM (0x28), 267 000 = AARCH64 (0xB7)
+    mw=$(dd if="$f" bs=1 skip=18 count=2 2>/dev/null | od -b 2>/dev/null | tr '\n' ' ')
     case "$mw" in
-        0028|2800) mach="ARM" ;;
-        00b7|b700) mach="AARCH64" ;;
-        *)         mach="machine=$mw" ;;
+        *"050 000"*) mach="ARM" ;;
+        *"267 000"*) mach="AARCH64" ;;
+        *)           mach="ELF" ;;
     esac
-    echo "$cls $mach"
+    echo "$mach ${sz}B"
 }
 
 # Run a command, capturing its exit/signal without aborting. Translates the shell's
@@ -1157,6 +1189,27 @@ do_diag(){
     echo "--- last amneziawg-go output (/tmp/awg_daemon.log) ---"
     [ -f /tmp/awg_daemon.log ] && sed 's/^/  /' /tmp/awg_daemon.log || echo "  (none)"
     echo "================================================="
+}
+
+# Detached LAN-safety net ("deadman"). A wrong/oversized config can leave the router
+# without DHCP/DNS (dnsmasq dead) and lock everyone out — including SSH. Armed just before
+# the risky firewall/DNS setup; after a grace period it checks dnsmasq and, if it's dead,
+# rolls the VPN back and restarts dnsmasq so access returns without a physical reboot.
+# Detached + </dev/null so it survives an SSH disconnect or the parent exiting.
+arm_lan_deadman(){
+    (
+        sleep 75
+        # reload_dnsmasq bounces dnsmasq; re-check a few times before concluding it's dead.
+        _k=0
+        while [ $_k -lt 6 ]; do
+            pidof dnsmasq >/dev/null 2>&1 && exit 0
+            sleep 3; _k=$((_k + 1))
+        done
+        logger -t "$SCRIPT_NAME" "DEADMAN: dnsmasq still down ~90s after start — rolling back VPN to restore LAN/DHCP"
+        echo "$(date '+%H:%M:%S') DEADMAN: dnsmasq down, rolling back to restore LAN access" >> "$UI_LOG" 2>/dev/null
+        "$ADDON_DIR/amneziawg.sh" stop >/dev/null 2>&1
+        service restart_dnsmasq >/dev/null 2>&1
+    ) </dev/null >/dev/null 2>&1 &
 }
 
 # --- Start ---
@@ -1263,6 +1316,10 @@ do_start(){
         iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
     fi
 
+    # Arm the LAN deadman BEFORE the risky part: setup_firewall does the ipset load, DNS
+    # interception and dnsmasq reload — the steps that can lock the router out. If they
+    # kill dnsmasq, the deadman rolls everything back within ~90s even if we hang here.
+    arm_lan_deadman
     setup_firewall
 
     log_msg "Started, verifying tunnel connectivity..."
