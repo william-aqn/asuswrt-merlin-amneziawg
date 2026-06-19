@@ -1,3 +1,5 @@
 # Router (busybox) and CI shell scripts + web UI page must be LF, never CRLF.
+# GitHub Actions runs YAML run: blocks as shell on Linux — CRLF would break them.
 *.sh text eol=lf
 *.asp text eol=lf
+*.yml text eol=lf

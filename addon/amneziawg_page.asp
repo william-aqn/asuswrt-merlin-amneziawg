@@ -133,23 +133,36 @@ function initial(){
 }
 
 function checkForUpdate(){
-    // Check GitHub directly from browser (no backend needed)
+    // Resolve the latest version from the browser (no backend needed). Try jsDelivr
+    // first — it's reachable in regions where api.github.com is blocked — then fall
+    // back to the GitHub API. Each source maps its JSON response to a version string.
     awgChecking = true; awgCheckFailed = false;
     refreshModalState();
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', 'https://api.github.com/repos/william-aqn/asuswrt-merlin-amneziawg/releases/latest', true);
-    xhr.timeout = 10000;
-    xhr.onload = function(){
-        if(xhr.status !== 200){ showUpdateCheckError(); return; }
-        try {
-            var data = JSON.parse(xhr.responseText);
-            var latest = (data.tag_name || '').replace(/^v/, '');
-            showVersionInfo('', latest, false);
-        } catch(e){ showUpdateCheckError(); }
-    };
-    xhr.onerror = function(){ showUpdateCheckError(); };
-    xhr.ontimeout = function(){ showUpdateCheckError(); };
-    xhr.send();
+    var repo = 'william-aqn/asuswrt-merlin-amneziawg';
+    var sources = [
+        { url: 'https://data.jsdelivr.com/v1/packages/gh/' + repo + '/resolved',
+          pick: function(d){ return (d.version || ''); } },
+        { url: 'https://api.github.com/repos/' + repo + '/releases/latest',
+          pick: function(d){ return (d.tag_name || '').replace(/^v/, ''); } }
+    ];
+    var i = 0;
+    (function tryNext(){
+        if(i >= sources.length){ showUpdateCheckError(); return; }
+        var s = sources[i++];
+        var xhr = new XMLHttpRequest();
+        try { xhr.open('GET', s.url, true); } catch(e){ tryNext(); return; }
+        xhr.timeout = 10000;
+        xhr.onload = function(){
+            if(xhr.status !== 200){ tryNext(); return; }
+            try {
+                var latest = s.pick(JSON.parse(xhr.responseText));
+                if(latest){ showVersionInfo('', latest, false); } else { tryNext(); }
+            } catch(e){ tryNext(); }
+        };
+        xhr.onerror = function(){ tryNext(); };
+        xhr.ontimeout = function(){ tryNext(); };
+        xhr.send();
+    })();
 }
 
 // GitHub update-check failed (api.github.com rate-limit/block/timeout). Current version

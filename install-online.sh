@@ -5,6 +5,7 @@
 # =============================================================
 
 REPO="william-aqn/asuswrt-merlin-amneziawg"
+PKG_NAME="amneziawg"
 TMP_DIR=""
 
 echo ""
@@ -44,33 +45,55 @@ if [ -z "$PKG_ARCH" ]; then
 fi
 echo "Architecture: $PKG_ARCH"
 
-# Get latest release URL
+# --- Resolve the latest version + download URL ---
+# GitHub's API is the freshest source (and publishes a SHA256 we verify against),
+# but api.github.com is blocked in some regions. Fall back to jsDelivr, which mirrors
+# the repo's git tags and is reachable where GitHub's API is not. The .ipk asset name
+# is deterministic (see build-ipk.sh), so once we know the version we can build the URL.
 echo "Fetching latest release..."
-RELEASE_JSON=$(curl -sfL --connect-timeout 10 --max-time 15 "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null)
-if [ -z "$RELEASE_JSON" ]; then
-    echo "ERROR: Cannot reach GitHub API"
-    echo "Check DNS and internet connectivity: ping github.com"
-    exit 1
+VERSION=""
+RELEASE_JSON=""
+
+# 1) GitHub API (also yields the per-asset SHA256 digest for integrity verification)
+RELEASE_JSON=$(curl -sfL --connect-timeout 8 --max-time 15 "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null)
+if [ -n "$RELEASE_JSON" ]; then
+    VERSION=$(echo "$RELEASE_JSON" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
 fi
 
-VERSION=$(echo "$RELEASE_JSON" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
+# 2) jsDelivr data API — resolves the newest git tag (strips the leading "v")
+if [ -z "$VERSION" ]; then
+    echo "  GitHub API unreachable, resolving version via jsDelivr..."
+    VERSION=$(curl -sfL --connect-timeout 8 --max-time 15 "https://data.jsdelivr.com/v1/packages/gh/${REPO}/resolved" 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+fi
+
+# 3) jsDelivr CDN (the host this installer was fetched from) — read PKG_VERSION from
+#    build-ipk.sh at the latest tag as a last resort.
+if [ -z "$VERSION" ]; then
+    VERSION=$(curl -sfL --connect-timeout 8 --max-time 15 "https://cdn.jsdelivr.net/gh/${REPO}@latest/build-ipk.sh" 2>/dev/null | sed -n 's/^PKG_VERSION="\([0-9][0-9.]*\).*/\1/p' | head -1)
+fi
+
 # Validate version string
 case "$VERSION" in
-    "") echo "ERROR: Could not parse version"; exit 1 ;;
+    "") echo "ERROR: Could not determine the latest version (GitHub API and jsDelivr both unreachable)."
+        echo "Check connectivity, e.g.: ping cdn.jsdelivr.net"; exit 1 ;;
     *[!0-9.]*) echo "ERROR: Invalid version format: $VERSION"; exit 1 ;;
 esac
 echo "Latest version: $VERSION"
 
-# Find matching .ipk asset (exact arch, then fallback to base arch)
-IPK_URL=$(echo "$RELEASE_JSON" | grep '"browser_download_url"' | grep "$PKG_ARCH" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//' | sed 's/".*//')
-if [ -z "$IPK_URL" ]; then
-    # Fallback: armv7-3.2 -> try armv7, aarch64-3.10 -> try aarch64
-    BASE_ARCH=$(echo "$PKG_ARCH" | sed 's/-.*//')
-    IPK_URL=$(echo "$RELEASE_JSON" | grep '"browser_download_url"' | grep "${BASE_ARCH}" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//' | sed 's/".*//')
+# Determine the .ipk URL. From the API when available (exact arch, then base arch);
+# otherwise construct the canonical release-asset URL deterministically.
+IPK_URL=""
+if [ -n "$RELEASE_JSON" ]; then
+    IPK_URL=$(echo "$RELEASE_JSON" | grep '"browser_download_url"' | grep "$PKG_ARCH" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//' | sed 's/".*//')
+    if [ -z "$IPK_URL" ]; then
+        # Fallback: armv7-3.2 -> try armv7, aarch64-3.10 -> try aarch64
+        BASE_ARCH=$(echo "$PKG_ARCH" | sed 's/-.*//')
+        IPK_URL=$(echo "$RELEASE_JSON" | grep '"browser_download_url"' | grep "${BASE_ARCH}" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//' | sed 's/".*//')
+    fi
 fi
 if [ -z "$IPK_URL" ]; then
-    echo "ERROR: No .ipk found for $PKG_ARCH in release $VERSION"
-    exit 1
+    # Package revision is always -1 (see build-ipk.sh: PKG_VERSION="<ver>-1").
+    IPK_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${PKG_NAME}_${VERSION}-1_${PKG_ARCH}.ipk"
 fi
 
 # Validate URL is from GitHub
@@ -82,11 +105,22 @@ esac
 IPK_FILE=$(basename "$IPK_URL")
 echo "Package: $IPK_FILE"
 
-# Expected SHA256 from the GitHub API (verifies downloads, including via mirror)
-EXPECTED_SHA=$(echo "$RELEASE_JSON" | awk -v f="$IPK_FILE" '
-    /"name":/ { in_a = (index($0, f) > 0) }
-    in_a && /"digest":/ { s=$0; sub(/.*sha256:/, "", s); sub(/".*/, "", s); print s; exit }
-')
+# Expected SHA256 — from the GitHub API digest when reachable, otherwise from the repo's
+# 'checksums' branch via jsDelivr (git content; a download mirror can't tamper with it).
+EXPECTED_SHA=""
+if [ -n "$RELEASE_JSON" ]; then
+    EXPECTED_SHA=$(echo "$RELEASE_JSON" | awk -v f="$IPK_FILE" '
+        /"name":/ { in_a = (index($0, f) > 0) }
+        in_a && /"digest":/ { s=$0; sub(/.*sha256:/, "", s); sub(/".*/, "", s); print s; exit }
+    ')
+fi
+if [ -z "$EXPECTED_SHA" ]; then
+    SUMS=$(curl -sfL --connect-timeout 8 --max-time 20 "https://cdn.jsdelivr.net/gh/${REPO}@checksums/v${VERSION}.txt" 2>/dev/null)
+    [ -z "$SUMS" ] && SUMS=$(curl -sfL --connect-timeout 8 --max-time 20 "https://raw.githubusercontent.com/${REPO}/checksums/v${VERSION}.txt" 2>/dev/null)
+    EXPECTED_SHA=$(echo "$SUMS" | awk -v f="$IPK_FILE" '($2==f)||($2=="*"f){print $1; exit}')
+    case "$EXPECTED_SHA" in ""|*[!0-9a-fA-F]*) EXPECTED_SHA="" ;; esac
+    [ -n "$EXPECTED_SHA" ] && echo "Integrity: using SHA256 from repo checksums (jsDelivr)"
+fi
 
 # Download
 TMP_DIR=$(mktemp -d /tmp/amneziawg_install.XXXXXX) || { echo "ERROR: Cannot create temp directory"; exit 1; }

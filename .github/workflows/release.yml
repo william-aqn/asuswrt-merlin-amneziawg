@@ -69,12 +69,16 @@ jobs:
           sudo ln -sf "$(command -v tar)" /usr/local/bin/gtar
           ./build-ipk.sh
           ls -lh output/*.ipk
+          # SHA256 manifest — published as a release asset and to the 'checksums' branch
+          ( cd output && sha256sum *.ipk | tee SHA256SUMS )
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: amneziawg-ipk
-          path: output/*.ipk
+          path: |
+            output/*.ipk
+            output/SHA256SUMS
           if-no-files-found: error
 
       - name: Publish release
@@ -84,7 +88,38 @@ jobs:
         run: |
           set -eux
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" output/*.ipk --clobber
+            gh release upload "$GITHUB_REF_NAME" output/*.ipk output/SHA256SUMS --clobber
           else
-            gh release create "$GITHUB_REF_NAME" output/*.ipk --title "$GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" output/*.ipk output/SHA256SUMS --title "$GITHUB_REF_NAME" --generate-notes
           fi
+
+      # Publish per-version SHA256 sums to a dedicated 'checksums' branch. jsDelivr
+      # serves git content, so a router behind a blocked api.github.com can fetch a
+      # trusted checksum (cdn.jsdelivr.net/gh/<repo>@checksums/v<ver>.txt) that a
+      # download proxy/mirror cannot tamper with — see do_update in addon/amneziawg.sh.
+      - name: Publish checksums branch
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          VERSION="${GITHUB_REF_NAME#v}"
+          ( cd "$GITHUB_WORKSPACE/output" && sha256sum *.ipk ) > "/tmp/v${VERSION}.txt"
+          cat "/tmp/v${VERSION}.txt"
+          WORK="$(mktemp -d)"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$WORK"
+          cd "$WORK"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch origin checksums 2>/dev/null; then
+            git checkout checksums
+          else
+            git checkout --orphan checksums
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          cp "/tmp/v${VERSION}.txt" "v${VERSION}.txt"
+          git add "v${VERSION}.txt"
+          git commit -m "checksums for ${GITHUB_REF_NAME}" || { echo "nothing to commit"; exit 0; }
+          git push origin checksums
+          # Warm jsDelivr's cache so the file is fetchable immediately after release
+          curl -sf "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@checksums/v${VERSION}.txt" >/dev/null || true

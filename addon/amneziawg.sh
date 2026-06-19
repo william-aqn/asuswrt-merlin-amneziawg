@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.43"
+AWG_VERSION="1.1.44"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1271,10 +1271,23 @@ do_watchdog(){
 
 # --- Update check ---
 
+# Resolve the latest published version (e.g. "1.1.43"). GitHub's API is freshest, but
+# api.github.com is blocked in some regions, so fall back to jsDelivr (reachable where
+# GitHub's API is not): first its data API (newest git tag), then PKG_VERSION from
+# build-ipk.sh on the CDN. Echoes the version, or nothing if every source is unreachable.
+awg_resolve_version(){
+    local repo="$1" v=""
+    v=$(curl -sfL --connect-timeout 8 --max-time 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
+    [ -z "$v" ] && v=$(curl -sfL --connect-timeout 8 --max-time 15 "https://data.jsdelivr.com/v1/packages/gh/${repo}/resolved" 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    [ -z "$v" ] && v=$(curl -sfL --connect-timeout 8 --max-time 15 "https://cdn.jsdelivr.net/gh/${repo}@latest/build-ipk.sh" 2>/dev/null | sed -n 's/^PKG_VERSION="\([0-9][0-9.]*\).*/\1/p' | head -1)
+    case "$v" in ""|*[!0-9.]*) return 1 ;; esac
+    echo "$v"
+}
+
 check_update(){
     local repo="william-aqn/asuswrt-merlin-amneziawg"
     local latest
-    latest=$(curl -sfL --connect-timeout 10 --max-time 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v//;s/".*//')
+    latest=$(awg_resolve_version "$repo")
     if [ -z "$latest" ]; then
         echo "{\"current\":\"$AWG_VERSION\",\"latest\":\"\",\"update\":false,\"error\":\"Cannot reach GitHub\"}"
         return
@@ -1298,26 +1311,47 @@ do_update(){
         esac
     fi
 
-    local release_json
-    release_json=$(curl -sfL --connect-timeout 10 --max-time 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
-    local ipk_url
-    ipk_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "$pkg_arch" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/".*//')
-    if [ -z "$ipk_url" ]; then
-        local base_arch=$(echo "$pkg_arch" | sed 's/-.*//')
-        ipk_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "${base_arch}" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/".*//')
+    # Resolve version + asset URL. Prefer the GitHub API (it also yields the SHA256
+    # digest); where api.github.com is blocked, fall back to jsDelivr for the version
+    # and construct the canonical asset URL (build-ipk.sh names it deterministically).
+    local release_json version="" ipk_url=""
+    release_json=$(curl -sfL --connect-timeout 8 --max-time 15 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null)
+    if [ -n "$release_json" ]; then
+        version=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
+        ipk_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "$pkg_arch" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/".*//')
+        if [ -z "$ipk_url" ]; then
+            local base_arch=$(echo "$pkg_arch" | sed 's/-.*//')
+            ipk_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "${base_arch}" | grep '.ipk"' | head -1 | sed 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/".*//')
+        fi
     fi
-    if [ -z "$ipk_url" ]; then
-        log_msg "ERROR: No package found for $pkg_arch"
+    [ -z "$version" ] && version=$(awg_resolve_version "$repo")
+    if [ -z "$version" ]; then
+        log_msg "ERROR: Cannot reach GitHub API or jsDelivr to resolve the latest version"
         return 1
     fi
+    # Package revision is always -1 (see build-ipk.sh: PKG_VERSION="<ver>-1").
+    [ -z "$ipk_url" ] && ipk_url="https://github.com/${repo}/releases/download/v${version}/amneziawg_${version}-1_${pkg_arch}.ipk"
 
-    # Expected SHA256 from the GitHub API (verifies downloads, including via mirror)
-    local ipk_file expected_sha
+    local ipk_file expected_sha=""
     ipk_file=$(basename "$ipk_url")
-    expected_sha=$(echo "$release_json" | awk -v f="$ipk_file" '
-        /"name":/ { in_a = (index($0, f) > 0) }
-        in_a && /"digest":/ { s=$0; sub(/.*sha256:/, "", s); sub(/".*/, "", s); print s; exit }
-    ')
+    # Expected SHA256: from the API digest when available, otherwise from the repo's
+    # 'checksums' branch served by jsDelivr. That file is git content, so a download
+    # mirror cannot tamper with it — which lets us safely accept a mirror-sourced .ipk
+    # in regions where api.github.com (and the release-assets host) are blocked.
+    if [ -n "$release_json" ]; then
+        expected_sha=$(echo "$release_json" | awk -v f="$ipk_file" '
+            /"name":/ { in_a = (index($0, f) > 0) }
+            in_a && /"digest":/ { s=$0; sub(/.*sha256:/, "", s); sub(/".*/, "", s); print s; exit }
+        ')
+    fi
+    if [ -z "$expected_sha" ]; then
+        local sums
+        sums=$(curl -sfL --connect-timeout 8 --max-time 20 "https://cdn.jsdelivr.net/gh/${repo}@checksums/v${version}.txt" 2>/dev/null)
+        [ -z "$sums" ] && sums=$(curl -sfL --connect-timeout 8 --max-time 20 "https://raw.githubusercontent.com/${repo}/checksums/v${version}.txt" 2>/dev/null)
+        expected_sha=$(echo "$sums" | awk -v f="$ipk_file" '($2==f)||($2=="*"f){print $1; exit}')
+        case "$expected_sha" in ""|*[!0-9a-fA-F]*) expected_sha="" ;; esac
+        [ -n "$expected_sha" ] && log_msg "SHA256 from repo checksums branch (jsDelivr)"
+    fi
 
     # Download: GitHub direct, then proxy mirrors (the release-assets host is often
     # unreachable in some regions). SHA256 is verified below, so a mirror can't
