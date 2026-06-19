@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.44"
+AWG_VERSION="1.1.45"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -284,12 +284,27 @@ download_all_geo(){
     log_msg "Geo databases updated"
 }
 
-# Mount AmneziaWG tab into Merlin menu
+# Mount AmneziaWG tab + global header widget into Merlin menu.
+# Idempotent: the tab line is matched precisely and the widget loader lives in a
+# marker-delimited block, so re-running (services-start, service events) never
+# duplicates or corrupts either one.
 mount_menu_tree(){
     local page="$1"
     [ ! -f /tmp/menuTree.js ] && cp /www/require/modules/menuTree.js /tmp/
-    sed -i '/AmneziaWG/d' /tmp/menuTree.js
+    # Remove our previous tab line (precise match — does not touch the widget block)
+    sed -i '/tabName: "AmneziaWG"/d' /tmp/menuTree.js
+    # Remove our previous widget block (marker range; independent of the word "AmneziaWG")
+    sed -i '/\/\* AWG_WIDGET_START \*\//,/\/\* AWG_WIDGET_END \*\//d' /tmp/menuTree.js
+    # Insert the AmneziaWG tab after the OpenVPN entry
     sed -i "/url: \"Advanced_VPN_OpenVPN.asp\"/a {url: \"$page\", tabName: \"AmneziaWG\"}," /tmp/menuTree.js
+    # Append the tiny widget loader (runs on every page; version-stamped for cache-busting)
+    cat >> /tmp/menuTree.js <<AWGEOF
+/* AWG_WIDGET_START */
+(function(){try{if(window.__awgWidget)return;window.__awgWidget=1;window.__awgPage='${page}';
+var s=document.createElement('script');s.src='/user/awg_widget.js?v=${AWG_VERSION}';s.async=true;
+(document.head||document.documentElement).appendChild(s);}catch(e){}})();
+/* AWG_WIDGET_END */
+AWGEOF
     umount /www/require/modules/menuTree.js 2>/dev/null
     mount -o bind /tmp/menuTree.js /www/require/modules/menuTree.js
 }
@@ -1140,6 +1155,8 @@ do_install_page(){
     [ "$am_webui_page" = "none" ] && { log_msg "ERROR: No page slot"; return 1; }
 
     cp "$ADDON_DIR/amneziawg_page.asp" "/www/user/$am_webui_page"
+    # Publish the global header widget to the web root before binding the loader
+    [ -f "$ADDON_DIR/amneziawg_widget.js" ] && cp "$ADDON_DIR/amneziawg_widget.js" /www/user/awg_widget.js 2>/dev/null
     mount_menu_tree "$am_webui_page"
 
     echo "{\"running\":false,\"starting\":false,\"stopping\":false,\"version\":\"${AWG_VERSION}\",\"peers\":[],\"log\":\"Installed.\"}" > "$STATUS_FILE"
@@ -1183,6 +1200,7 @@ do_mount_ui(){
     am_get_webui_page "$ADDON_DIR/amneziawg_page.asp"
     if [ "$am_webui_page" != "none" ]; then
         cp "$ADDON_DIR/amneziawg_page.asp" "/www/user/$am_webui_page"
+        [ -f "$ADDON_DIR/amneziawg_widget.js" ] && cp "$ADDON_DIR/amneziawg_widget.js" /www/user/awg_widget.js 2>/dev/null
         mount_menu_tree "$am_webui_page"
     fi
 
@@ -1205,12 +1223,13 @@ do_uninstall(){
 
     local page=$(ls /www/user/ 2>/dev/null | while read f; do grep -l "AmneziaWG" "/www/user/$f" 2>/dev/null; done | head -1)
     [ -n "$page" ] && rm -f "$page"
-    rm -f "$STATUS_FILE" /www/user/v2fly_categories.htm /www/user/awg_changelog.htm /www/user/awg_update.htm /www/user/awg_log.htm
+    rm -f "$STATUS_FILE" /www/user/awg_widget.js /www/user/v2fly_categories.htm /www/user/awg_changelog.htm /www/user/awg_update.htm /www/user/awg_log.htm
 
     rm -rf "$ADDON_DIR"
 
     if [ -f /tmp/menuTree.js ]; then
-        sed -i '/AmneziaWG/d' /tmp/menuTree.js
+        sed -i '/tabName: "AmneziaWG"/d' /tmp/menuTree.js
+        sed -i '/\/\* AWG_WIDGET_START \*\//,/\/\* AWG_WIDGET_END \*\//d' /tmp/menuTree.js
         umount /www/require/modules/menuTree.js 2>/dev/null
         mount -o bind /tmp/menuTree.js /www/require/modules/menuTree.js
     fi

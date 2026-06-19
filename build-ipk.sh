@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PKG_NAME="amneziawg"
-PKG_VERSION="1.1.44-1"
+PKG_VERSION="1.1.45-1"
 
 build_ipk(){
     local arch="$1"
@@ -112,11 +112,13 @@ PRERMEOF
     cp "$awg_bin"                    "$DATA_DIR/opt/amneziawg/awg"
     cp addon/amneziawg.sh            "$DATA_DIR/jffs/addons/amneziawg/amneziawg.sh"
     cp addon/amneziawg_page.asp      "$DATA_DIR/jffs/addons/amneziawg/amneziawg_page.asp"
+    cp addon/amneziawg_widget.js     "$DATA_DIR/jffs/addons/amneziawg/amneziawg_widget.js"
 
     chmod 755 "$DATA_DIR/opt/amneziawg/amneziawg-go"
     chmod 755 "$DATA_DIR/opt/amneziawg/awg"
     chmod 755 "$DATA_DIR/jffs/addons/amneziawg/amneziawg.sh"
     chmod 644 "$DATA_DIR/jffs/addons/amneziawg/amneziawg_page.asp"
+    chmod 644 "$DATA_DIR/jffs/addons/amneziawg/amneziawg_widget.js"
 
     cd "$DATA_DIR/opt/bin"
     ln -sf ../amneziawg/awg awg
