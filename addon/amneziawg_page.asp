@@ -463,6 +463,11 @@ function applyConfig(actionScript){
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
     custom_settings.awg_geo_wipe_update = document.getElementById('awg_geo_wipe_update').checked ? '1' : '0';
+    // Antifilter lists: collect checked checkboxes -> comma-separated registry keys
+    var afChecked = [];
+    var afB = document.querySelectorAll('.af_list');
+    for(var aj = 0; aj < afB.length; aj++){ if(afB[aj].checked) afChecked.push(afB[aj].value); }
+    custom_settings.awg_antifilter_lists = afChecked.join(',');
 
     // Basic validation
     var pk = document.getElementById('awg_privatekey').value;
@@ -571,6 +576,12 @@ function loadGeoSettings(){
     if(b6) b6.checked = (custom_settings.awg_block_ipv6_dns !== '0');
     var wp = document.getElementById('awg_geo_wipe_update');
     if(wp) wp.checked = (custom_settings.awg_geo_wipe_update === '1');
+    // Antifilter lists (checkboxes) — value attr holds the registry key
+    var afSel = (custom_settings.awg_antifilter_lists || '').split(',');
+    var afBoxes = document.querySelectorAll('.af_list');
+    for(var ai = 0; ai < afBoxes.length; ai++){
+        afBoxes[ai].checked = afSel.indexOf(afBoxes[ai].value) !== -1;
+    }
 }
 
 function updateGeoLists(){
@@ -1362,6 +1373,29 @@ function initAutocompleteIp(){
                         <input type="text" class="input_32_table" id="geo_custom_ips" style="width:95%;"
                                maxlength="2000" placeholder="8.8.8.8,1.1.1.0/24,203.0.113.0/24">
                         <div style="color:#666; font-size:11px; margin-top:3px;">Comma-separated IPs or CIDR subnets</div>
+                    </td>
+                </tr>
+                </table>
+
+                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
+                <thead><tr><td colspan="2">Geo Antifilter — РКН-списки (antifilter.download)</td></tr></thead>
+                <tr>
+                    <th width="35%">Antifilter IP-списки<br><span style="font-weight:normal; font-size:11px; color:#888;">antifilter.download</span></th>
+                    <td>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="allyouneed"> allyouneed — все нужные подсети (~15K) <span style="color:#5bd75b;">рекомендуется</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community"> community — подсети сообщества (~900)</label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipsum"> ipsum — IP, сжатые до /24 (~15K)</label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="subnet"> subnet — крупные подсети (~78)</label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ip"> ip — отдельные IP (~48K)</label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipresolve"> ipresolve — IP из DNS-резолва (~154K) <span style="color:#f0ad4e;">⚠ очень большой</span></label>
+                        <div style="color:#888; font-size:11px; margin-top:4px;">Загружаются в общий ipset awg_dst вместе с GeoIP и маршрутизируются через VPN. allyouneed = ipsum + subnet; ip/ipresolve сильно пересекаются с allyouneed — обычно достаточно allyouneed.</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Antifilter домены</th>
+                    <td>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community_domains"> community домены (~485) → dnsmasq</label>
+                        <div style="color:#888; font-size:11px; margin-top:4px;">Полный domains.lst (1.4M доменов / 27 МБ) не поддерживается — слишком большой для dnsmasq на роутере.</div>
                     </td>
                 </tr>
                 </table>

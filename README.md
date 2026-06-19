@@ -47,6 +47,7 @@ VPN-клиент с обходом DPI-блокировок на базе [Amnez
 - **Маршрутизация по устройствам** -- политика VPN для каждого устройства: `VPN All`, `VPN Geo`, `Direct`
 - **GeoIP по сервисам** -- IP-диапазоны Telegram, Google, Netflix, Twitter и др. через [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip)
 - **GeoSite по доменам** -- списки доменов через [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) + dnsmasq ipset
+- **Geo Antifilter** -- готовые списки заблокированных в РФ подсетей/доменов через [antifilter.download](https://antifilter.download/)
 - **Свои домены и IP** -- ручное добавление доменов и CIDR-подсетей
 - **Перехват DNS** -- принудительный DNS через dnsmasq, блокировка DoH/DoT для надёжной гео-маршрутизации
 - **MSS clamping** -- автоматическое исправление TCP MSS для туннельного трафика
@@ -144,6 +145,18 @@ youtube,google,discord,netflix,spotify,instagram
 
 Требует чтобы устройства использовали роутер как DNS-сервер. Для iPhone: **Настройки > Wi-Fi > (i) > DNS > Вручную > только IP роутера**.
 
+### Geo Antifilter
+
+Готовые списки заблокированных в РФ ресурсов с [antifilter.download](https://antifilter.download/). Отмечайте нужные галочками — IP-списки грузятся в тот же ipset `awg_dst`, что и GeoIP, и маршрутизируются через VPN:
+
+- **allyouneed** (~15K) -- все нужные подсети (= `ipsum` + `subnet`); рекомендуемый выбор
+- **community** (~900) -- подсети сообщества
+- **ipsum** / **subnet** / **ip** (~48K) -- альтернативные срезы, сильно пересекаются с `allyouneed`
+- **ipresolve** (~154K) -- IP из DNS-резолва; очень большой список
+- **community домены** (~485) -- небольшой список доменов → dnsmasq
+
+Полный `domains.lst` (1.4M доменов / 27 МБ) намеренно не подключается — он слишком велик для dnsmasq на роутере. Обновляются той же кнопкой **Update Now** и автообновлением, что и остальные гео-списки.
+
 ### Свои записи
 
 - **Custom Domains** -- домены через запятую (например `example.com,service.org`)
@@ -227,7 +240,7 @@ opkg remove amneziawg
 ```
 Интернет <-- awg0 (туннель) <-- iptables mangle цепочка AWG <-- br0 (устройства LAN)
                                           |
-                                  ipset awg_dst (GeoIP CIDR + DNS-резолвы)
+                                  ipset awg_dst (GeoIP/Antifilter CIDR + DNS-резолвы)
                                           |
                                   fwmark 0x100 -> таблица маршрутов 300 -> awg0
 ```

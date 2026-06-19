@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.50"
+AWG_VERSION="1.1.51"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -19,6 +19,9 @@ SETTINGS="/jffs/addons/custom_settings.txt"
 CLIENTS_FILE="$AWG_DIR/clients.list"
 GEO_DIR="$AWG_DIR/geo"
 IPSET_NAME="awg_dst"
+# ipset capacity. Raised above the old 131072 so antifilter.download lists fit
+# (ipresolve alone is ~154K) alongside GeoIP/GeoSite/custom entries.
+IPSET_MAXELEM=262144
 FWMARK="0x100"
 DNSMASQ_AWG_CONF="$AWG_DIR/dnsmasq_awg.conf"
 DNSMASQ_INCLUDE="/jffs/configs/dnsmasq.conf.add"
@@ -246,6 +249,75 @@ prune_geoip(){
     done
 }
 
+# --- antifilter.download lists (RKN-blocked subnets/domains) ---
+# Registry of supported lists: key -> source URL. IP/CIDR lists load into the awg_dst
+# ipset alongside GeoIP; community_domains is a small domain list fed to dnsmasq.
+antifilter_url(){
+    case "$1" in
+        allyouneed)        echo "https://antifilter.download/list/allyouneed.lst" ;;
+        ipsum)             echo "https://antifilter.download/list/ipsum.lst" ;;
+        subnet)            echo "https://antifilter.download/list/subnet.lst" ;;
+        ip)                echo "https://antifilter.download/list/ip.lst" ;;
+        ipresolve)         echo "https://antifilter.download/list/ipresolve.lst" ;;
+        community)         echo "https://community.antifilter.download/list/community.lst" ;;
+        community_domains) echo "https://community.antifilter.download/list/domains.lst" ;;
+    esac
+}
+
+# True for keys that are domain lists (fed to dnsmasq), false for IP/CIDR lists.
+antifilter_is_domain(){ [ "$1" = "community_domains" ]; }
+
+# Selected antifilter lists: the UI checkboxes (awg_antifilter_lists, comma-separated)
+selected_antifilter(){
+    echo $(get_setting awg_antifilter_lists | tr ',' ' ' | tr 'A-Z' 'a-z')
+}
+
+# Download a single antifilter list. IP lists -> antifilter/af_<key>.cidr (IPv4 only,
+# bare IPs/CIDR both valid in hash:net); the domain list -> domains/antifilter_<key>.lst.
+# Temp + swap so a failed download keeps the existing list; reject HTML error pages.
+download_antifilter_list(){
+    local key="$1" url out tmp
+    url=$(antifilter_url "$key"); [ -z "$url" ] && return 1
+    if antifilter_is_domain "$key"; then
+        out="$GEO_DIR/domains/antifilter_${key}.lst"
+        tmp="$GEO_DIR/domains/.dl_af_${key}.tmp"
+        mkdir -p "$GEO_DIR/domains"
+        if fetch_with_mirrors "$url" "$tmp" 60 && [ -s "$tmp" ]; then
+            grep -E '^[a-zA-Z0-9]' "$tmp" > "$out"
+            rm -f "$tmp"
+            [ -s "$out" ] || { rm -f "$out"; return 1; }
+            return 0
+        fi
+    else
+        out="$GEO_DIR/antifilter/af_${key}.cidr"
+        tmp="$GEO_DIR/antifilter/.dl_af_${key}.tmp"
+        mkdir -p "$GEO_DIR/antifilter"
+        if fetch_with_mirrors "$url" "$tmp" 60 && [ -s "$tmp" ]; then
+            grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$tmp" > "$out"
+            rm -f "$tmp"
+            [ -s "$out" ] || { rm -f "$out"; return 1; }
+            return 0
+        fi
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# Remove antifilter files for lists no longer selected (mirror of prune_geoip)
+prune_antifilter(){
+    local sel=" $(selected_antifilter) " f fkey
+    for f in "$GEO_DIR"/antifilter/af_*.cidr; do
+        [ -f "$f" ] || continue
+        fkey=$(basename "$f" .cidr); fkey=${fkey#af_}
+        case "$sel" in *" $fkey "*) ;; *) rm -f "$f" ;; esac
+    done
+    for f in "$GEO_DIR"/domains/antifilter_*.lst; do
+        [ -f "$f" ] || continue
+        fkey=$(basename "$f" .lst); fkey=${fkey#antifilter_}
+        case "$sel" in *" $fkey "*) ;; *) rm -f "$f" ;; esac
+    done
+}
+
 # Download the v2fly GeoSite domain DB (the full category set). To temp + swap on
 # success, so a failed download keeps the existing DB.
 download_geosite(){
@@ -288,6 +360,16 @@ download_all_geo(){
     log_msg "GeoIP: $ok/$total service lists downloaded"
 
     download_geosite
+
+    # Download selected antifilter.download lists (RKN-blocked subnets/domains)
+    mkdir -p "$GEO_DIR/antifilter"
+    prune_antifilter   # drop files for lists removed from the selection
+    local af_key
+    for af_key in $(selected_antifilter); do
+        log_msg "Antifilter: downloading $af_key..."
+        download_antifilter_list "$af_key" || log_msg "WARNING: Antifilter $af_key failed"
+        update_status
+    done
 
     # Save timestamp
     date +%s > "$GEO_DIR/.last_update"
@@ -470,7 +552,7 @@ setup_firewall(){
     # current IP on each resolution (refreshing it), so active domains stay while stale
     # IPs age out instead of accumulating forever. Static GeoIP/custom-IP entries are
     # added with an explicit "timeout 0" (permanent), overriding this default.
-    ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem 131072 timeout 86400 2>/dev/null
+    ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem "$IPSET_MAXELEM" timeout 86400 2>/dev/null
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
         log_msg "ERROR: ipset $IPSET_NAME creation failed, geo routing disabled"
         has_geo=false
@@ -488,11 +570,24 @@ setup_firewall(){
         ip_count=$((ip_count + $(wc -l < "$gf")))
     done
 
+    # --- Load selected antifilter.download IP/CIDR lists into the same ipset (bulk) ---
+    # Domain lists (community_domains) are skipped here; their .lst file lives in
+    # $GEO_DIR/domains/ and is picked up by the dnsmasq builder loop below.
+    prune_antifilter
+    local akey af
+    for akey in $(selected_antifilter); do
+        antifilter_is_domain "$akey" && continue
+        af="$GEO_DIR/antifilter/af_${akey}.cidr"
+        [ -f "$af" ] || continue
+        ipset_load_file "$af" "$IPSET_NAME"
+        ip_count=$((ip_count + $(wc -l < "$af")))
+    done
+
     # Check ipset fill level
     local ipset_entries
     ipset_entries=$(ipset list "$IPSET_NAME" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
-    [ -n "$ipset_entries" ] && [ "$ipset_entries" -ge 131072 ] 2>/dev/null && \
-        log_msg "WARNING: ipset $IPSET_NAME full ($ipset_entries/131072), some geo routes may be missing"
+    [ -n "$ipset_entries" ] && [ "$ipset_entries" -ge "$IPSET_MAXELEM" ] 2>/dev/null && \
+        log_msg "WARNING: ipset $IPSET_NAME full ($ipset_entries/$IPSET_MAXELEM), some geo routes may be missing"
 
     # --- Extract v2fly domains from downloaded database ---
     local geo_v2fly=$(get_setting awg_geo_v2fly)
@@ -703,9 +798,11 @@ save_clients(){
     fi
 }
 
-# Check if geo databases exist locally
+# Check if geo databases exist locally (GeoIP CIDRs or antifilter lists)
 geo_available(){
-    [ -d "$GEO_DIR/geoip" ] && [ -n "$(ls "$GEO_DIR/geoip/"*.cidr 2>/dev/null)" ]
+    { [ -d "$GEO_DIR/geoip" ] && [ -n "$(ls "$GEO_DIR/geoip/"*.cidr 2>/dev/null)" ]; } && return 0
+    { [ -d "$GEO_DIR/antifilter" ] && [ -n "$(ls "$GEO_DIR/antifilter/"*.cidr 2>/dev/null)" ]; } && return 0
+    return 1
 }
 
 update_geo_if_needed(){
@@ -723,7 +820,7 @@ update_geo_lists(){
     [ -n "$GEO_DIR" ] || return 1
     if [ "$(get_setting awg_geo_wipe_update)" = "1" ]; then
         log_msg "Full geo refresh (wipe enabled): clearing old lists..."
-        rm -rf "$GEO_DIR/geoip" "$GEO_DIR/domains" 2>/dev/null
+        rm -rf "$GEO_DIR/geoip" "$GEO_DIR/domains" "$GEO_DIR/antifilter" 2>/dev/null
         rm -f "$GEO_DIR/v2fly_all.yml" "$GEO_DIR/v2fly_all.yml.tmp" "$GEO_DIR/v2fly_categories.txt" 2>/dev/null
     fi
     download_all_geo
@@ -733,7 +830,7 @@ update_geo_lists(){
 geo_in_use(){
     case "$(get_setting awg_default_policy)" in *geo*) return 0 ;; esac
     case "$(get_setting awg_clients)" in *vpn_geo*) return 0 ;; esac
-    [ -n "$(get_setting awg_geo_v2fly)$(get_setting awg_geo_v2fly_ip)$(get_setting awg_geo_custom_domains)$(get_setting awg_geo_custom_ips)" ] && return 0
+    [ -n "$(get_setting awg_geo_v2fly)$(get_setting awg_geo_v2fly_ip)$(get_setting awg_geo_custom_domains)$(get_setting awg_geo_custom_ips)$(get_setting awg_antifilter_lists)" ] && return 0
     return 1
 }
 
@@ -743,6 +840,7 @@ geo_in_use(){
 # progress and setup_firewall is re-applied afterwards.
 ensure_geo(){
     prune_geoip   # delete .cidr of services removed from the field (sync on Apply/update)
+    prune_antifilter   # likewise for de-selected antifilter lists
     geo_in_use || return 0
     # Collect ONLY what's missing — don't re-download lists that are already present
     # (adding one GeoIP service shouldn't re-fetch the others or the big v2fly DB).
@@ -752,16 +850,29 @@ ensure_geo(){
     done
     local need_yml=0
     [ -n "$(get_setting awg_geo_v2fly)" ] && [ ! -f "$GEO_DIR/v2fly_all.yml" ] && need_yml=1
-    [ -z "$need_svcs" ] && [ "$need_yml" = 0 ] && return 0
+    local need_af="" af_key
+    for af_key in $(selected_antifilter); do
+        if antifilter_is_domain "$af_key"; then
+            [ -f "$GEO_DIR/domains/antifilter_${af_key}.lst" ] || need_af="$need_af $af_key"
+        else
+            [ -f "$GEO_DIR/antifilter/af_${af_key}.cidr" ] || need_af="$need_af $af_key"
+        fi
+    done
+    [ -z "$need_svcs" ] && [ "$need_yml" = 0 ] && [ -z "$need_af" ] && return 0
     log_msg "Downloading missing geo lists in background..."
     (
-        mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains"
+        mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains" "$GEO_DIR/antifilter"
         for svc in $need_svcs; do
             log_msg "GeoIP: downloading $svc..."
             download_geoip_service "$svc" || log_msg "WARNING: GeoIP $svc failed"
             update_status
         done
         [ "$need_yml" = 1 ] && download_geosite
+        for af_key in $need_af; do
+            log_msg "Antifilter: downloading $af_key..."
+            download_antifilter_list "$af_key" || log_msg "WARNING: Antifilter $af_key failed"
+            update_status
+        done
         is_running && setup_firewall
         update_status
     ) </dev/null >/dev/null 2>&1 &
