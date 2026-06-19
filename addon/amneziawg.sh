@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.63"
+AWG_VERSION="1.1.64"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -39,6 +39,32 @@ GEOIP_SERVICES="telegram google facebook twitter netflix cloudflare fastly cloud
 
 # Ensure Entware binaries are in PATH (not set when called from httpd/service-event)
 export PATH="/opt/bin:/opt/sbin:/sbin:/usr/sbin:$PATH"
+
+# Resolve a WORKING `ipset` once, then route every call through a wrapper. The addon runs
+# without Entware's /opt/etc/profile, so the Entware ipset in /opt/sbin loads the firmware's
+# older /usr/lib/libipset.so.13 and dies at dynamic-link time with "version `LIBIPSET_x.y'
+# not found" — which silently disabled ALL geo (create AND the `ipset list` guards fail).
+# Probe each candidate's `version` (fails the same way on a lib mismatch) and keep the first
+# that runs. Firmware ipset (/usr/sbin,/sbin) is self-consistent with its libipset, dnsmasq
+# and the kernel set modules; the Entware build needs LD_LIBRARY_PATH=/opt/lib (its own lib).
+AWG_IPSET_BIN=""; AWG_IPSET_LIB=""
+_awg_try_ipset(){   # $1=binary  $2=libdir (optional)
+    [ -x "$1" ] || return 1
+    if [ -n "$2" ]; then LD_LIBRARY_PATH="$2${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$1" version >/dev/null 2>&1
+    else "$1" version >/dev/null 2>&1; fi
+}
+if   _awg_try_ipset /usr/sbin/ipset;          then AWG_IPSET_BIN=/usr/sbin/ipset
+elif _awg_try_ipset /sbin/ipset;              then AWG_IPSET_BIN=/sbin/ipset
+elif _awg_try_ipset /opt/sbin/ipset /opt/lib; then AWG_IPSET_BIN=/opt/sbin/ipset; AWG_IPSET_LIB=/opt/lib
+fi
+# Wrapper named `ipset` so all existing call sites work unchanged. Absolute-path branches and
+# `command ipset` both bypass this function (no recursion). Forked pipeline subshells (e.g.
+# `awk … | ipset restore`) inherit the function + AWG_IPSET_* vars, so they route through here too.
+ipset(){
+    if   [ -n "$AWG_IPSET_LIB" ]; then LD_LIBRARY_PATH="$AWG_IPSET_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$AWG_IPSET_BIN" "$@"
+    elif [ -n "$AWG_IPSET_BIN" ]; then "$AWG_IPSET_BIN" "$@"
+    else command ipset "$@"; fi
+}
 
 # --- Helpers ---
 
@@ -1182,6 +1208,10 @@ do_diag(){
     ls -la "$AWG_GO" "$AWG_BIN" 2>/dev/null | sed 's/^/  /'
     echo "  amneziawg-go : $(elf_arch "$AWG_GO")"
     echo "  awg          : $(elf_arch "$AWG_BIN")"
+    echo "--- ipset (selected: ${AWG_IPSET_BIN:-NONE}${AWG_IPSET_LIB:+ +LD_LIBRARY_PATH=$AWG_IPSET_LIB}) ---"
+    for _b in /usr/sbin/ipset /sbin/ipset /opt/sbin/ipset; do
+        [ -x "$_b" ] && echo "  $_b : $("$_b" version 2>&1 | head -1)"
+    done
     echo "--- live probes (which binary raises Illegal instruction?) ---"
     probe_bin "amneziawg-go --version" "$AWG_GO" --version
     probe_bin "awg (usage)"            "$AWG_BIN"
@@ -1273,6 +1303,7 @@ do_start(){
     # Breadcrumb on every start: host arch + the arch of both binaries, so a wrong-arch
     # install is visible in the log without running 'diag' separately.
     log_msg "Platform $(uname -m): amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")"
+    log_msg "ipset binary: ${AWG_IPSET_BIN:-NONE (no working ipset found — geo will be disabled)}${AWG_IPSET_LIB:+ (LD_LIBRARY_PATH=$AWG_IPSET_LIB)}"
     "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1 &
     if ! wait_for_iface "$IFACE" 10; then
         log_msg "ERROR: amneziawg-go failed to create interface"
