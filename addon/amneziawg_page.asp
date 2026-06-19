@@ -291,6 +291,9 @@ function openUpdateModal(){
         : ('История изменений' + (awgCurrentVersion ? ' — v' + awgCurrentVersion : ''));
     if(body) body.innerHTML = '<div style="opacity:0.7;">Загрузка списка изменений…</div>';
     m.style.display = 'block';
+    awgManualUI(false);    // hide any leftover upload progress
+    awgManualEnd(false);   // re-enable the install button
+    awgModeUI();           // show the input matching the current mode
     refreshModalState();   // status line + "Обновить" button visibility
     loadChangelog(ref, function(text, ok){
         if(!body) return;
@@ -300,29 +303,253 @@ function openUpdateModal(){
 }
 
 function closeUpdateModal(){
+    if(awgUploading && !confirm('Идёт загрузка/установка. Закрыть окно и прекратить отслеживание?')) return;
+    awgRun++;             // invalidate any in-flight upload/poll loops
+    awgManualEnd(false);  // reset the install button + awgUploading flag
     var m = document.getElementById('awg_update_modal');
     if(m) m.style.display = 'none';
 }
 
-// Single update action. Empty field = install the latest (auto-detected, like the old
-// "Обновить"); a filled field = install that exact published version (X.Y.Z).
+// Show the version field / file field for the selected install mode.
+function awgModeUI(){
+    var mode = document.getElementById('awg_install_mode').value;
+    var vin = document.getElementById('awg_version_input');
+    var fin = document.getElementById('awg_ipk_file');
+    if(vin) vin.style.display = (mode === 'version') ? '' : 'none';
+    if(fin) fin.style.display = (mode === 'file') ? '' : 'none';
+}
+
+// Install action, dispatched by the mode selector:
+//   auto    -> latest published version (auto-detected)
+//   version -> an exact published version X.Y.Z
+//   file    -> a locally chosen .ipk, uploaded chunk-by-chunk (see awgManualStart)
 function installUpdate(){
-    var inp = document.getElementById('awg_version_input');
-    var v = ((inp && inp.value) || '').trim().replace(/^v/i, '');
-    if(v){
+    if(awgUploading) return;
+    var mode = document.getElementById('awg_install_mode').value;
+
+    if(mode === 'file'){
+        var fsel = document.getElementById('awg_ipk_file');
+        var f = (fsel && fsel.files && fsel.files[0]) || null;
+        if(!f){ alert('Выберите .ipk файл для установки.'); return; }
+        if(!/\.ipk$/i.test(f.name) && !confirm('Файл не похож на .ipk. Всё равно установить?')) return;
+        awgManualStart(f);
+        return;
+    }
+
+    if(mode === 'version'){
+        var inp = document.getElementById('awg_version_input');
+        var v = ((inp && inp.value) || '').trim().replace(/^v/i, '');
+        if(!v){ alert('Введите версию в формате X.Y.Z, например 1.1.49'); return; }
         if(!/^\d+\.\d+\.\d+$/.test(v)){ alert('Версия в формате X.Y.Z, например 1.1.49'); return; }
-        if(awgCurrentVersion && v === awgCurrentVersion){ alert('Версия v' + v + ' уже установлена.'); return; }
+        if(awgCurrentVersion && v === awgCurrentVersion && !confirm('Версия v' + v + ' уже установлена. Переустановить?')) return;
         closeUpdateModal();
         doUpdate(v);
         return;
     }
-    // Empty -> latest. If we're already on the newest, say so instead of a no-op update.
+
+    // auto -> latest. If we're already on the newest, say so instead of a no-op update.
     if(!awgUpdateAvailable){
         alert('У вас последняя версия' + (awgCurrentVersion ? ' (v' + awgCurrentVersion + ')' : '') + '.');
         return;
     }
     closeUpdateModal();
     doUpdate(awgLatestVersion || '');
+}
+
+// ---- Manual .ipk upload --------------------------------------------------------------
+// The firmware's apply path can't carry a multi-MB binary (httpd caps the POST body and
+// reads it line-by-line), so we base64-encode the file in the browser and stream it to
+// the router as a sequence of small custom-settings writes (awg_ipk_chunk). The backend
+// (awgupload event) appends each chunk by sequence number and acks via awg_upload.htm;
+// once every chunk is acked we trigger awgmanualinstall, which decodes, verifies
+// (length + gzip CRC + .ipk structure) and installs. A corrupt upload fails verification
+// and is never installed.
+var awgUploading = false;
+// Generation counter: bumped when a new upload starts and when the modal is closed.
+// Every poll/retry loop captures the generation it belongs to and stops itself once the
+// generation changes — so a stale loop from a previous or aborted upload can never drive
+// the UI (e.g. reload the page mid-install on a quick retry).
+var awgRun = 0;
+function awgStale(runId){ return runId !== awgRun; }
+
+function awgManualUI(show){
+    var p = document.getElementById('awg_manual_progress');
+    if(p) p.style.display = show ? 'block' : 'none';
+}
+function awgSetProgress(frac, msg){
+    var bar = document.getElementById('awg_manual_bar');
+    var m = document.getElementById('awg_manual_msg');
+    if(bar) bar.style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%';
+    if(m && msg != null) m.textContent = msg;
+}
+function awgManualEnd(uploading){
+    awgUploading = uploading;
+    var btn = document.getElementById('awg_install_btn');
+    if(btn){ btn.disabled = uploading; btn.value = uploading ? 'Установка…' : 'Установить'; }
+}
+function awgManualFail(msg){
+    awgManualEnd(false);
+    awgSetProgress(0, '');
+    awgManualUI(false);
+    alert('Не удалось установить: ' + msg);
+}
+
+// Encode a Uint8Array to base64 without blowing the call stack on large files.
+function awgBytesToB64(bytes){
+    var bin = '', step = 0x8000;
+    for(var i = 0; i < bytes.length; i += step){
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+    }
+    return btoa(bin);
+}
+
+// Submit the shared form (-> hidden_frame, proven auth path) with the current settings
+// plus one-shot upload keys in `extra`. cb() fires when the POST has been processed.
+function awgPostSettings(actionScript, extra, waitVal, cb){
+    var fr = document.getElementById('hidden_frame');
+    var done = false;
+    var to = setTimeout(function(){ if(!done){ done = true; cleanup(); cb(false); } }, 12000);
+    function cleanup(){ try{ fr.removeEventListener('load', onl); }catch(e){} clearTimeout(to); }
+    function onl(){ if(done) return; done = true; cleanup(); cb(true); }
+    fr.addEventListener('load', onl);
+
+    var merged = {};
+    for(var k in custom_settings){ if(custom_settings.hasOwnProperty(k)) merged[k] = custom_settings[k]; }
+    if(extra){ for(var k2 in extra){ if(extra.hasOwnProperty(k2)) merged[k2] = extra[k2]; } }
+    var ac = document.getElementById('amng_custom');
+    if(ac) ac.value = JSON.stringify(merged);
+
+    var aw = document.form.action_wait;
+    var oldwait = aw ? aw.value : null;
+    if(aw && waitVal != null) aw.value = String(waitVal);
+    document.form.action_script.value = actionScript;
+    document.form.submit();
+    if(aw && oldwait != null) aw.value = oldwait;   // submit() snapshots fields synchronously
+}
+
+// Poll awg_upload.htm until the backend acks sequence `wantSeq` for this upload `token`.
+// cb(ackObjOrNull): {status:'ok'} on success; {status:'gap'|'err'} is a hard failure;
+// null on timeout (caller retries). Acks from other uploads (token mismatch) are ignored.
+function awgPollAck(token, wantSeq, timeoutMs, runId, cb){
+    var t0 = Date.now();
+    (function tick(){
+        if(awgStale(runId)) return;   // a newer upload (or close) superseded this one
+        var x = new XMLHttpRequest();
+        x.open('GET', '/user/awg_upload.htm?_=' + Date.now(), true);
+        x.timeout = 3000;
+        x.onload = function(){
+            if(awgStale(runId)) return;
+            var j = null;
+            try { j = JSON.parse(x.responseText); } catch(e){}
+            if(j && j.tok === token){
+                if(j.status === 'ok' && j.seq === wantSeq){ cb(j); return; }
+                if(j.status === 'gap' || j.status === 'err'){ cb(j); return; }
+            }
+            if(Date.now() - t0 > timeoutMs){ cb(null); return; }
+            setTimeout(tick, 300);
+        };
+        x.onerror = x.ontimeout = function(){
+            if(awgStale(runId)) return;
+            if(Date.now() - t0 > timeoutMs){ cb(null); return; }
+            setTimeout(tick, 400);
+        };
+        x.send();
+    })();
+}
+
+function awgManualStart(file){
+    var myRun = ++awgRun;   // claim a new generation; supersedes any prior upload's loops
+    awgManualEnd(true);
+    awgManualUI(true);
+    awgSetProgress(0, 'Чтение файла…');
+
+    var reader = new FileReader();
+    reader.onerror = function(){ awgManualFail('не удалось прочитать файл.'); };
+    reader.onload = function(){
+        var bytes = new Uint8Array(reader.result);
+        var total = bytes.length;
+        if(total === 0){ awgManualFail('файл пуст.'); return; }
+        var b64 = awgBytesToB64(bytes);
+
+        // Size each chunk so the whole POST (current settings + chunk, URL-encoded) stays
+        // well under the firmware's ~64 KB body cap. If the existing settings alone are
+        // already too big, bail out cleanly rather than send a silently-truncated POST.
+        var baseLen = encodeURIComponent(JSON.stringify(custom_settings)).length;
+        // -256: the "amng_custom=" prefix, the other form fields, and the chunk key names
+        // (awg_ipk_chunk/seq/token/first) that ride along in the same POST body.
+        var budget = 52000 - baseLen - 256;
+        if(budget < 2000){ awgManualFail('настройки слишком велики для загрузки файла через UI.'); return; }
+        var chunkChars = Math.floor(budget / 1.06);
+        var total_chunks = Math.ceil(b64.length / chunkChars);
+        var token = 'u' + Date.now() + Math.floor(Math.random() * 1e9).toString(36);
+
+        function sendChunk(i){
+            if(awgStale(myRun)) return;
+            if(i >= total_chunks){ triggerInstall(); return; }
+            var piece = b64.substr(i * chunkChars, chunkChars);
+            var extra = { awg_ipk_chunk: piece, awg_ipk_seq: String(i), awg_ipk_token: token };
+            if(i === 0) extra.awg_ipk_first = '1';
+            attemptChunk(i, extra, 0);
+        }
+        function attemptChunk(i, extra, attempt){
+            if(awgStale(myRun)) return;
+            awgSetProgress(i / total_chunks, 'Загрузка ' + (i + 1) + '/' + total_chunks + '…');
+            awgPostSettings('start_awgupload', extra, 1, function(){
+                awgPollAck(token, i, 15000, myRun, function(ack){
+                    if(ack && ack.status === 'ok'){ sendChunk(i + 1); return; }
+                    if(ack && (ack.status === 'gap' || ack.status === 'err')){
+                        awgManualFail((ack.msg ? ack.msg + ' ' : 'сбой передачи ') + '(часть ' + (i + 1) + '/' + total_chunks + ').');
+                        return;
+                    }
+                    if(attempt < 4){ attemptChunk(i, extra, attempt + 1); return; }   // timeout -> retry
+                    awgManualFail('нет ответа роутера (часть ' + (i + 1) + '/' + total_chunks + ').');
+                });
+            });
+        }
+        function triggerInstall(){
+            if(awgStale(myRun)) return;
+            awgSetProgress(1, 'Проверка и установка пакета…');
+            awgPostSettings('start_awgmanualinstall', { awg_ipk_len: String(total), awg_ipk_token: token }, 30, function(){
+                awgPollManualInstall(token, myRun);
+            });
+        }
+
+        awgSetProgress(0, 'Загрузка 1/' + total_chunks + '…');
+        sendChunk(0);
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+// After awgmanualinstall is triggered, poll awg_upload.htm for the final result. Both the
+// generation (runId) and the per-upload token are checked, so a leaked poller can never
+// act on another upload's completion.
+function awgPollManualInstall(token, runId){
+    var t0 = Date.now();
+    (function tick(){
+        if(awgStale(runId)) return;
+        var x = new XMLHttpRequest();
+        x.open('GET', '/user/awg_upload.htm?_=' + Date.now(), true);
+        x.timeout = 3000;
+        x.onload = function(){
+            if(awgStale(runId)) return;
+            var j = null;
+            try { j = JSON.parse(x.responseText); } catch(e){}
+            if(j && j.tok === token && j.status === 'installed'){
+                awgSetProgress(1, 'Готово! Перезагрузка страницы…');
+                setTimeout(awgReload, 1500);
+                return;
+            }
+            if(j && j.tok === token && j.status === 'install_err'){ awgManualFail(j.msg || 'установка не удалась.'); return; }
+            if(Date.now() - t0 > 180000){ awgManualEnd(false); awgReload(); return; }
+            setTimeout(tick, 2000);
+        };
+        x.onerror = x.ontimeout = function(){
+            if(awgStale(runId)) return;
+            if(Date.now() - t0 > 180000){ awgManualEnd(false); awgReload(); return; }
+            setTimeout(tick, 2500);
+        };
+        x.send();
+    })();
 }
 
 // Load the changelog straight from the repo, fetched by the frontend. Use the
@@ -1459,10 +1686,22 @@ function initAutocompleteIp(){
             <span style="margin-left:auto; cursor:pointer; font-size:22px; line-height:1; opacity:0.6;" onclick="closeUpdateModal();" title="Закрыть">&times;</span>
         </div>
         <div id="awg_modal_body" style="padding:14px 18px; overflow-y:auto; font-size:12px; line-height:1.5;"></div>
-        <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; font-size:12px;">
-            <span style="opacity:0.75;">Установить версию (пусто — последняя):</span>
-            <input type="text" id="awg_version_input" placeholder="напр. 1.1.49" maxlength="12" style="width:100px; margin-left:8px; padding:2px 6px; background:#222; color:#e0e0e0; border:1px solid #555; border-radius:4px;">
-            <input type="button" class="button_gen" value="Установить" onclick="installUpdate();" style="margin-left:8px;">
+        <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:12px;">
+            <span style="opacity:0.75;">Установить:</span>
+            <select id="awg_install_mode" onchange="awgModeUI();" style="padding:2px 6px; background:#222; color:#e0e0e0; border:1px solid #555; border-radius:4px;">
+                <option value="auto">Автоматически (последняя)</option>
+                <option value="version">Выбрать версию</option>
+                <option value="file">Вручную через файл</option>
+            </select>
+            <input type="text" id="awg_version_input" placeholder="напр. 1.1.49" maxlength="12" style="width:100px; padding:2px 6px; background:#222; color:#e0e0e0; border:1px solid #555; border-radius:4px; display:none;">
+            <input type="file" id="awg_ipk_file" accept=".ipk" style="display:none; color:#e0e0e0; max-width:240px;">
+            <input type="button" id="awg_install_btn" class="button_gen" value="Установить" onclick="installUpdate();">
+        </div>
+        <div id="awg_manual_progress" style="display:none; padding:0 18px 12px;">
+            <div style="height:10px; background:#1c2226; border:1px solid #555; border-radius:5px; overflow:hidden;">
+                <div id="awg_manual_bar" style="height:100%; width:0%; background:#cf0a2c; transition:width 0.2s;"></div>
+            </div>
+            <div id="awg_manual_msg" style="font-size:11px; opacity:0.85; margin-top:5px;"></div>
         </div>
         <div style="padding:12px 18px; border-top:1px solid #444; display:flex; align-items:center;">
             <span id="awg_modal_status" style="font-size:12px; opacity:0.75; margin-right:auto;"></span>

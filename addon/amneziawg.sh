@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.51"
+AWG_VERSION="1.1.52"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -13,6 +13,11 @@ AWG_BIN="$AWG_DIR/awg"
 IFACE="awg0"
 STATUS_FILE="/www/user/awg_status.htm"
 UI_LOG="/www/user/awg_log.htm"
+# Manual .ipk upload (web UI): base64 text is appended here chunk-by-chunk (awgupload
+# event), then decoded + installed (awgmanualinstall). Progress/result the UI polls:
+AWG_UPLOAD_B64="/tmp/amneziawg_manual.ipk.b64"
+AWG_UPLOAD_SEQ="/tmp/.amneziawg_manual.seq"
+AWG_UPLOAD_STATUS="/www/user/awg_upload.htm"
 STARTING_FLAG="/tmp/.awg_starting"
 STOPPING_FLAG="/tmp/.awg_stopping"
 SETTINGS="/jffs/addons/custom_settings.txt"
@@ -1442,6 +1447,132 @@ check_update(){
     echo "{\"current\":\"$AWG_VERSION\",\"latest\":\"$latest\",\"update\":$update}"
 }
 
+# Install a ready .ipk at $1 (human label $2, e.g. "v1.2.3" or "uploaded package").
+# Shared by do_update (after a verified download) and do_manual_install (after a
+# verified upload). Preserves geo lists across the opkg upgrade, stops the VPN, installs,
+# restores geo, re-installs the web page from the new version and refreshes status.
+finalize_ipk_install(){
+    local tmp="$1" label="$2"
+
+    # Preserve geo lists across the upgrade unless "wipe before update" is on. The
+    # package prerm runs 'rm -rf /opt/amneziawg', so move geo to a sibling dir (same
+    # filesystem = instant rename, no extra space) that survives, and restore it after.
+    local geo_bak="${AWG_DIR}_geobak"
+    rm -rf "$geo_bak" 2>/dev/null
+    if [ "$(get_setting awg_geo_wipe_update)" != "1" ] && [ -d "$GEO_DIR" ]; then
+        mv "$GEO_DIR" "$geo_bak" 2>/dev/null && log_msg "Update: preserving geo lists"
+    fi
+
+    log_msg "Update: stopping VPN"
+    do_stop 2>/dev/null
+    wait_for_pid_exit amneziawg-go 10
+    # Block auto-start during opkg install (S99amneziawg is triggered by opkg)
+    touch /tmp/.awg_no_autostart
+    log_msg "Update: installing package via opkg"
+    if ! opkg install "$tmp" && ! opkg install --force-architecture "$tmp"; then
+        log_msg "Update: ERROR opkg install failed — staying on v$AWG_VERSION"
+        rm -f "$tmp" /tmp/.awg_no_autostart
+        if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
+        update_status; return 1
+    fi
+    rm -f "$tmp"
+    # Stop VPN if opkg's init script started it
+    do_stop 2>/dev/null
+    wait_for_pid_exit amneziawg-go 10
+    rm -f /tmp/.awg_no_autostart
+    # Restore preserved geo lists (if we moved them aside above)
+    if [ -d "$geo_bak" ]; then
+        rm -rf "$GEO_DIR" 2>/dev/null
+        mkdir -p "$AWG_DIR"
+        mv "$geo_bak" "$GEO_DIR" 2>/dev/null && log_msg "Update: geo lists restored"
+    fi
+    # Install page from new version
+    /jffs/addons/amneziawg/amneziawg.sh install_page
+    log_msg "Update: complete — now on $label. Start VPN from the UI."
+    # Refresh status with the NEW script (this process still runs the old code in memory,
+    # so calling update_status directly would re-write the OLD version number).
+    /jffs/addons/amneziawg/amneziawg.sh status 2>/dev/null
+    # If geo wasn't preserved (wipe option on, or restore failed), re-download with the NEW script.
+    /jffs/addons/amneziawg/amneziawg.sh ensure_geo 2>/dev/null
+    return 0
+}
+
+# Manual install: assemble a base64-encoded .ipk uploaded chunk-by-chunk from the web UI
+# (see the awgupload service event), verify it, and install it. The browser cannot POST a
+# multi-MB binary through the firmware's apply path (httpd caps it and is line-oriented),
+# so the file arrives as base64 text appended to AWG_UPLOAD_B64; here we decode it once,
+# check the exact byte length the browser reported, validate the gzip CRC (an .ipk is a
+# tar.gz, so a corrupt/truncated upload fails this) and the opkg .ipk structure, then
+# hand off to finalize_ipk_install. Progress/result is written to AWG_UPLOAD_STATUS for
+# the UI to poll. Nothing is installed unless every check passes.
+do_manual_install(){
+    local b64="$AWG_UPLOAD_B64" tmp="/tmp/amneziawg_manual.ipk"
+    local want_len got_len tok
+    # Read the upload token BEFORE clearing the one-shot keys, and stamp it on every final
+    # status line (awg_man_status). The UI matches on this token, so a stale poller from a
+    # previous/aborted upload can never act on another run's result.
+    tok=$(get_setting awg_ipk_token)
+    tok=$(printf '%s' "$tok" | tr -cd 'A-Za-z0-9_-')
+    want_len=$(get_setting awg_ipk_len)
+    # One-shot keys: clear now so a stale chunk/length can never affect a later operation.
+    clear_setting awg_ipk_len
+    clear_setting awg_ipk_chunk
+    clear_setting awg_ipk_seq
+    clear_setting awg_ipk_first
+    clear_setting awg_ipk_token
+    rm -f "$AWG_UPLOAD_SEQ"
+    case "$want_len" in *[!0-9]*) want_len="" ;; esac
+
+    ui_log_reset
+    log_msg "Manual install: assembling uploaded package"
+    if [ ! -s "$b64" ]; then
+        log_msg "Manual install: ERROR no upload data received"
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"Нет данных загрузки\"}" > "$AWG_UPLOAD_STATUS"
+        rm -f "$b64"; update_status; return 1
+    fi
+
+    # Decode base64 text -> binary .ipk (busybox base64 -d, openssl fallback).
+    if ! base64 -d "$b64" > "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
+        if ! openssl base64 -d -A -in "$b64" -out "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
+            log_msg "Manual install: ERROR base64 decode failed"
+            echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"Ошибка декодирования\"}" > "$AWG_UPLOAD_STATUS"
+            rm -f "$b64" "$tmp"; update_status; return 1
+        fi
+    fi
+    rm -f "$b64"
+
+    got_len=$(wc -c < "$tmp" 2>/dev/null)
+    if [ -n "$want_len" ] && [ "$got_len" != "$want_len" ]; then
+        log_msg "Manual install: ERROR size mismatch (got ${got_len}, expected ${want_len})"
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"Размер не совпал — загрузка повреждена\"}" > "$AWG_UPLOAD_STATUS"
+        rm -f "$tmp"; update_status; return 1
+    fi
+
+    # An .ipk is a gzip-compressed tar. Decompress the WHOLE stream (reads to EOF and
+    # verifies the trailing gzip CRC32/length), so any corruption or truncation that
+    # slipped through the upload is caught here, BEFORE we touch opkg. gzip/gunzip is
+    # always present (opkg itself needs it); try both applet spellings.
+    if ! gzip -dc "$tmp" > /dev/null 2>&1 && ! gunzip -c "$tmp" > /dev/null 2>&1; then
+        log_msg "Manual install: ERROR archive is corrupt (gzip CRC check failed)"
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"Файл повреждён или не .ipk\"}" > "$AWG_UPLOAD_STATUS"
+        rm -f "$tmp"; update_status; return 1
+    fi
+    # Must be an opkg .ipk: a gzip tar that contains control.tar.gz (the last member, so a
+    # successful listing also proves the archive decompressed fully).
+    if ! tar tzf "$tmp" 2>/dev/null | grep -q 'control\.tar\.gz'; then
+        log_msg "Manual install: ERROR not an opkg package (no control.tar.gz)"
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"Это не пакет opkg (.ipk)\"}" > "$AWG_UPLOAD_STATUS"
+        rm -f "$tmp"; update_status; return 1
+    fi
+
+    log_msg "Manual install: package OK ($(human_size "$got_len")) — installing"
+    if finalize_ipk_install "$tmp" "загруженный пакет"; then
+        echo "{\"status\":\"installed\",\"tok\":\"$tok\"}" > "$AWG_UPLOAD_STATUS"
+    else
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"opkg install не удался\"}" > "$AWG_UPLOAD_STATUS"
+    fi
+}
+
 do_update(){
     local repo="william-aqn/asuswrt-merlin-amneziawg"
     # Target version: explicit CLI arg ($1), else a one-shot version pinned by the UI
@@ -1540,46 +1671,7 @@ do_update(){
         log_msg "Update: SHA256 verified"
     fi
 
-    # Preserve geo lists across the upgrade unless "wipe before update" is on. The
-    # package prerm runs 'rm -rf /opt/amneziawg', so move geo to a sibling dir (same
-    # filesystem = instant rename, no extra space) that survives, and restore it after.
-    local geo_bak="${AWG_DIR}_geobak"
-    rm -rf "$geo_bak" 2>/dev/null
-    if [ "$(get_setting awg_geo_wipe_update)" != "1" ] && [ -d "$GEO_DIR" ]; then
-        mv "$GEO_DIR" "$geo_bak" 2>/dev/null && log_msg "Update: preserving geo lists"
-    fi
-
-    log_msg "Update: stopping VPN"
-    do_stop 2>/dev/null
-    wait_for_pid_exit amneziawg-go 10
-    # Block auto-start during opkg install (S99amneziawg is triggered by opkg)
-    touch /tmp/.awg_no_autostart
-    log_msg "Update: installing package via opkg"
-    if ! opkg install "$tmp" && ! opkg install --force-architecture "$tmp"; then
-        log_msg "Update: ERROR opkg install failed — staying on v$AWG_VERSION"
-        rm -f "$tmp" /tmp/.awg_no_autostart
-        if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
-        update_status; return 1
-    fi
-    rm -f "$tmp"
-    # Stop VPN if opkg's init script started it
-    do_stop 2>/dev/null
-    wait_for_pid_exit amneziawg-go 10
-    rm -f /tmp/.awg_no_autostart
-    # Restore preserved geo lists (if we moved them aside above)
-    if [ -d "$geo_bak" ]; then
-        rm -rf "$GEO_DIR" 2>/dev/null
-        mkdir -p "$AWG_DIR"
-        mv "$geo_bak" "$GEO_DIR" 2>/dev/null && log_msg "Update: geo lists restored"
-    fi
-    # Install page from new version
-    /jffs/addons/amneziawg/amneziawg.sh install_page
-    log_msg "Update: complete — now on v$version. Start VPN from the UI."
-    # Refresh status with the NEW script (this process still runs the old code in memory,
-    # so calling update_status directly would re-write the OLD version number).
-    /jffs/addons/amneziawg/amneziawg.sh status 2>/dev/null
-    # If geo wasn't preserved (wipe option on, or restore failed), re-download with the NEW script.
-    /jffs/addons/amneziawg/amneziawg.sh ensure_geo 2>/dev/null
+    finalize_ipk_install "$tmp" "v$version"
 }
 
 do_wan_event(){
@@ -1660,6 +1752,45 @@ do_service_event(){
         awgstart|awgstop|awgrestart|awgforceapply|awgsaveconf|awgupdategeo|awgdoupdate) ui_log_reset ;;
     esac
     case "$event" in
+        # Manual upload: append one base64 chunk. Kept out of the ui_log_reset list above
+        # (it fires once per chunk — would wipe the log repeatedly). Idempotent by seq so a
+        # retried/duplicated POST never double-appends; ack is written for the UI to poll.
+        awgupload)
+            local seq first chunk tok st exp
+            seq=$(get_setting awg_ipk_seq)
+            first=$(get_setting awg_ipk_first)
+            chunk=$(get_setting awg_ipk_chunk)
+            tok=$(get_setting awg_ipk_token)
+            # Token identifies this upload run; the UI ignores acks whose token doesn't
+            # match, so a stale awg_upload.htm from a previous attempt can't be mistaken
+            # for a fresh ack. Keep only the safe charset (alnum/_/-) in the echoed JSON.
+            tok=$(printf '%s' "$tok" | tr -cd 'A-Za-z0-9_-')
+            case "$seq" in ''|*[!0-9]*)
+                echo "{\"status\":\"err\",\"tok\":\"$tok\",\"msg\":\"bad seq\"}" > "$AWG_UPLOAD_STATUS"; return ;;
+            esac
+            if [ "$first" = "1" ]; then : > "$AWG_UPLOAD_B64"; echo "-1" > "$AWG_UPLOAD_SEQ"; fi
+            st=$(cat "$AWG_UPLOAD_SEQ" 2>/dev/null)
+            case "$st" in ''|*[!0-9-]*) st="-1" ;; esac
+            exp=$((st + 1))
+            if [ "$seq" -le "$st" ]; then
+                : # duplicate -> re-ack current state, do not append again
+            elif [ "$seq" -eq "$exp" ]; then
+                # Guard the append: /tmp is a small tmpfs, and a silent short-write here
+                # would only surface much later as a confusing size mismatch. Fail fast.
+                if ! printf '%s' "$chunk" >> "$AWG_UPLOAD_B64"; then
+                    echo "{\"status\":\"err\",\"tok\":\"$tok\",\"msg\":\"write failed (disk full?)\"}" > "$AWG_UPLOAD_STATUS"
+                    return
+                fi
+                st="$seq"; echo "$st" > "$AWG_UPLOAD_SEQ"
+            else
+                echo "{\"status\":\"gap\",\"tok\":\"$tok\",\"have\":$st,\"got\":$seq}" > "$AWG_UPLOAD_STATUS"
+                return
+            fi
+            echo "{\"status\":\"ok\",\"tok\":\"$tok\",\"seq\":$st,\"bytes\":$(wc -c < "$AWG_UPLOAD_B64" 2>/dev/null)}" > "$AWG_UPLOAD_STATUS"
+            ;;
+        awgmanualinstall)
+            do_manual_install
+            ;;
         awgstart)       do_start ;;
         awgstop)        do_stop ;;
         awgrestart)     do_stop; wait_for_pid_exit amneziawg-go 10; do_start ;;
@@ -1703,6 +1834,7 @@ case "$1" in
     update_geo)     update_geo_lists; do_firewall_restart; update_status ;;
     check_update)   check_update ;;
     update)         do_update "$2" ;;
+    manual_install) do_manual_install ;;
     watchdog)       do_watchdog ;;
     install_page)   do_install_page ;;
     mount_ui)       do_mount_ui ;;
