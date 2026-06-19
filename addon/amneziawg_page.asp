@@ -139,8 +139,9 @@ function checkForUpdate(){
     awgChecking = true; awgCheckFailed = false;
     refreshModalState();
     var repo = 'william-aqn/asuswrt-merlin-amneziawg';
+    var bust = '?_=' + Date.now();   // bypass the browser cache — jsDelivr data API lags otherwise
     var sources = [
-        { url: 'https://data.jsdelivr.com/v1/packages/gh/' + repo + '/resolved',
+        { url: 'https://data.jsdelivr.com/v1/packages/gh/' + repo + '/resolved' + bust,
           pick: function(d){ return (d.version || ''); } },
         { url: 'https://api.github.com/repos/' + repo + '/releases/latest',
           pick: function(d){ return (d.tag_name || '').replace(/^v/, ''); } }
@@ -179,9 +180,23 @@ function showVersionInfo(currentIgnored, latest, hasUpdateIgnored){
     recomputeUpdate();
 }
 
-// Recompute "update available" from current (local status) + latest (GitHub), then redraw.
+// Compare X.Y.Z version strings: >0 if a is newer than b, <0 if older, 0 if equal.
+function cmpVersions(a, b){
+    var pa = String(a).split('.'), pb = String(b).split('.');
+    for(var i = 0; i < 3; i++){
+        var na = parseInt(pa[i], 10) || 0, nb = parseInt(pb[i], 10) || 0;
+        if(na > nb) return 1;
+        if(na < nb) return -1;
+    }
+    return 0;
+}
+
+// Recompute "update available" from current (local status) + latest (GitHub/jsDelivr),
+// then redraw. Only a STRICTLY newer latest counts — a stale/older resolve (e.g. jsDelivr
+// data-API lag returning an old tag) must not be offered as an "update" (it would be a
+// downgrade).
 function recomputeUpdate(){
-    awgUpdateAvailable = !!(awgLatestVersion && awgCurrentVersion && awgLatestVersion !== awgCurrentVersion);
+    awgUpdateAvailable = !!(awgLatestVersion && awgCurrentVersion && cmpVersions(awgLatestVersion, awgCurrentVersion) > 0);
     renderVersionButton();
     refreshModalState();
 }
