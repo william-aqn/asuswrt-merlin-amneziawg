@@ -217,14 +217,12 @@ function refreshModalState(){
     var m = document.getElementById('awg_update_modal');
     if(!m || m.style.display === 'none') return;
     var st = document.getElementById('awg_modal_status');
-    var ob = document.getElementById('awg_modal_update');
     if(st){
         if(awgChecking) st.textContent = 'Проверка обновлений…';
         else if(awgCheckFailed) st.textContent = '⚠ Не удалось проверить обновления (GitHub недоступен)';
         else if(awgUpdateAvailable && awgLatestVersion) st.textContent = 'Доступно обновление: v' + awgLatestVersion;
         else st.textContent = 'Обновлений нет' + (awgCurrentVersion ? ' — установлена v' + awgCurrentVersion : '');
     }
-    if(ob) ob.style.display = awgUpdateAvailable ? '' : 'none';
 }
 
 // Reload via a fresh GET (cache-busted), never location.reload() — reload() repeats
@@ -306,21 +304,25 @@ function closeUpdateModal(){
     if(m) m.style.display = 'none';
 }
 
-function confirmUpdate(){
-    closeUpdateModal();
-    // Pass the version the frontend already resolved (avoids backend jsDelivr lag);
-    // empty string falls back to backend resolution.
-    doUpdate(awgLatestVersion || '');
-}
-
-// Install a user-specified published version (X.Y.Z) from the modal input field.
-function installSpecificVersion(){
+// Single update action. Empty field = install the latest (auto-detected, like the old
+// "Обновить"); a filled field = install that exact published version (X.Y.Z).
+function installUpdate(){
     var inp = document.getElementById('awg_version_input');
     var v = ((inp && inp.value) || '').trim().replace(/^v/i, '');
-    if(!/^\d+\.\d+\.\d+$/.test(v)){ alert('Укажите версию в формате X.Y.Z, например 1.1.46'); return; }
-    if(awgCurrentVersion && v === awgCurrentVersion){ alert('Версия v' + v + ' уже установлена.'); return; }
+    if(v){
+        if(!/^\d+\.\d+\.\d+$/.test(v)){ alert('Версия в формате X.Y.Z, например 1.1.49'); return; }
+        if(awgCurrentVersion && v === awgCurrentVersion){ alert('Версия v' + v + ' уже установлена.'); return; }
+        closeUpdateModal();
+        doUpdate(v);
+        return;
+    }
+    // Empty -> latest. If we're already on the newest, say so instead of a no-op update.
+    if(!awgUpdateAvailable){
+        alert('У вас последняя версия' + (awgCurrentVersion ? ' (v' + awgCurrentVersion + ')' : '') + '.');
+        return;
+    }
     closeUpdateModal();
-    doUpdate(v);
+    doUpdate(awgLatestVersion || '');
 }
 
 // Load the changelog straight from the repo, fetched by the frontend. Use the
@@ -1420,15 +1422,14 @@ function initAutocompleteIp(){
         </div>
         <div id="awg_modal_body" style="padding:14px 18px; overflow-y:auto; font-size:12px; line-height:1.5;"></div>
         <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; font-size:12px;">
-            <span style="opacity:0.75;">Установить конкретную версию:</span>
-            <input type="text" id="awg_version_input" placeholder="напр. 1.1.46" maxlength="12" style="width:100px; margin-left:8px; padding:2px 6px; background:#222; color:#e0e0e0; border:1px solid #555; border-radius:4px;">
-            <input type="button" class="button_gen" value="Установить" onclick="installSpecificVersion();" style="margin-left:8px;">
+            <span style="opacity:0.75;">Установить версию (пусто — последняя):</span>
+            <input type="text" id="awg_version_input" placeholder="напр. 1.1.49" maxlength="12" style="width:100px; margin-left:8px; padding:2px 6px; background:#222; color:#e0e0e0; border:1px solid #555; border-radius:4px;">
+            <input type="button" class="button_gen" value="Установить" onclick="installUpdate();" style="margin-left:8px;">
         </div>
         <div style="padding:12px 18px; border-top:1px solid #444; display:flex; align-items:center;">
             <span id="awg_modal_status" style="font-size:12px; opacity:0.75; margin-right:auto;"></span>
             <input type="button" class="button_gen" value="Проверить обновления" onclick="checkForUpdate();">
             <input type="button" class="button_gen" value="Закрыть" onclick="closeUpdateModal();" style="margin-left:8px;">
-            <input type="button" class="button_gen" id="awg_modal_update" value="Обновить" onclick="confirmUpdate();" style="margin-left:8px;">
         </div>
     </div>
 </div>
