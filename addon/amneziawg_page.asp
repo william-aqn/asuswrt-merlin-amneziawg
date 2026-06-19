@@ -1291,6 +1291,13 @@ function initAutocompleteIp(){
                         <span id="awg_active_rules" style="margin-left:12px; color:#666; font-size:11px;"></span>
                     </td>
                 </tr>
+                <tr>
+                    <th>Prevent IPv6 Leaks</th>
+                    <td>
+                        <label><input type="checkbox" id="awg_block_ipv6_dns"> Block IPv6 DNS resolution (filter-AAAA)</label>
+                        <div style="color:#666; font-size:11px; margin-top:3px;">Critical for Geo routing reliability. Prevents dual-stack domains from bypassing the VPN.</div>
+                    </td>
+                </tr>
                 </table>
 
                 <div class="awg-section">Device Rules</div>
@@ -1357,15 +1364,12 @@ function initAutocompleteIp(){
                         <div style="color:#666; font-size:11px; margin-top:3px;">Comma-separated IPs or CIDR subnets</div>
                     </td>
                 </tr>
+                </table>
+
+                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
+                <thead><tr><td colspan="2">Geo update settings</td></tr></thead>
                 <tr>
-                    <th>Prevent IPv6 Leaks</th>
-                    <td>
-                        <label><input type="checkbox" id="awg_block_ipv6_dns"> Block IPv6 DNS resolution (filter-AAAA)</label>
-                        <div style="color:#666; font-size:11px; margin-top:3px;">Critical for Geo routing reliability. Prevents dual-stack domains from bypassing the VPN.</div>
-                    </td>
-                </tr>
-                <tr>
-                    <th>Auto-update Lists</th>
+                    <th width="35%">Auto-update Lists</th>
                     <td>
                         <label><input type="checkbox" id="geo_autoupdate"> Daily at 4:00 AM</label>
                         &nbsp;&nbsp;
