@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.62"
+AWG_VERSION="1.1.63"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1258,6 +1258,18 @@ do_start(){
 
     # Start userspace daemon
     mkdir -p /var/run/amneziawg
+    # Clean slate: a previous botched start can leave an orphaned amneziawg-go (and/or the
+    # awg0 link) alive, holding the TUN — then a fresh daemon dies with "Failed to create
+    # TUN device: device or resource busy". is_running already returned above if awg0 was
+    # up, so anything left here is stale. Kill it and remove the link + stale control sock.
+    if pidof amneziawg-go >/dev/null 2>&1; then
+        log_msg "Clearing stale amneziawg-go before start (frees the TUN)"
+        kill $(pidof amneziawg-go) 2>/dev/null
+        wait_for_pid_exit amneziawg-go 5
+        pidof amneziawg-go >/dev/null 2>&1 && kill -9 $(pidof amneziawg-go) 2>/dev/null
+    fi
+    ip link del "$IFACE" 2>/dev/null
+    rm -f /var/run/amneziawg/"$IFACE".sock 2>/dev/null
     # Breadcrumb on every start: host arch + the arch of both binaries, so a wrong-arch
     # install is visible in the log without running 'diag' separately.
     log_msg "Platform $(uname -m): amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")"
@@ -1265,6 +1277,7 @@ do_start(){
     if ! wait_for_iface "$IFACE" 10; then
         log_msg "ERROR: amneziawg-go failed to create interface"
         [ -f /tmp/awg_daemon.log ] && log_msg "Daemon output: $(cat /tmp/awg_daemon.log)"
+        pidof amneziawg-go >/dev/null 2>&1 && kill $(pidof amneziawg-go) 2>/dev/null
         update_status; release_lock; return 1
     fi
     log_msg "Userspace daemon started"
@@ -1281,7 +1294,9 @@ do_start(){
         else
             log_msg "ERROR: setconf failed (exit $sc_rc)"
         fi
-        ip link del "$IFACE" 2>/dev/null; update_status; release_lock; return 1
+        ip link del "$IFACE" 2>/dev/null
+        pidof amneziawg-go >/dev/null 2>&1 && kill $(pidof amneziawg-go) 2>/dev/null
+        update_status; release_lock; return 1
     fi
 
     [ -f "$AWG_DIR/awg0.addr" ] && ip addr add "$(cat "$AWG_DIR/awg0.addr")" dev "$IFACE"
