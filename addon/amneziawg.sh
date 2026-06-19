@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.64"
+AWG_VERSION="1.1.65"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1149,26 +1149,14 @@ generate_config(){
 # (dd + od) — the router has neither `file` nor `readelf`. Echoes e.g.
 # "ELF32 ARM eabi=05 float=soft", "ELF64 AARCH64", or "missing" / "not-ELF(...)".
 elf_arch(){
-    local f="$1" sz mg mw mach
+    local f="$1"
     [ -f "$f" ] || { echo "missing"; return; }
-    sz=$(wc -c < "$f" 2>/dev/null)
-    # This firmware's busybox od is minimal; -b (octal bytes) is the mode that reliably
-    # works here (an earlier -A/-t/-x approach printed nothing -> "not-ELF(magic=)"). Match
-    # the ELF magic and e_machine by octal byte pattern, tolerant of od's address column.
-    # The live probes in do_diag are the authoritative arch check; this is a size/sanity tag.
-    mg=$(dd if="$f" bs=1 count=4 2>/dev/null | od -b 2>/dev/null | tr '\n' ' ')
-    case "$mg" in
-        *"177 105 114 106"*) ;;            # \177 E L F
-        *) echo "${sz}B (not ELF)"; return ;;
-    esac
-    # e_machine (LE) at offset 18: 050 000 = ARM (0x28), 267 000 = AARCH64 (0xB7)
-    mw=$(dd if="$f" bs=1 skip=18 count=2 2>/dev/null | od -b 2>/dev/null | tr '\n' ' ')
-    case "$mw" in
-        *"050 000"*) mach="ARM" ;;
-        *"267 000"*) mach="AARCH64" ;;
-        *)           mach="ELF" ;;
-    esac
-    echo "$mach ${sz}B"
+    # Just report the byte size — it reliably distinguishes builds (e.g. 176752 = soft-float
+    # arm awg, 635816 = old hard-float, 3342498 = go daemon). Parsing the ELF header for
+    # arch proved unreliable across this firmware's minimal busybox od (it rejected -A/-t,
+    # and -b/-x didn't match either), and the live probes below are the authoritative arch
+    # check anyway, so don't risk a misleading "not ELF" on a parse miss.
+    echo "$(wc -c < "$f" 2>/dev/null)B"
 }
 
 # Run a command, capturing its exit/signal without aborting. Translates the shell's
@@ -1218,6 +1206,16 @@ do_diag(){
     probe_bin "awg genkey (crypto)"    "$AWG_BIN" genkey
     echo "--- last amneziawg-go output (/tmp/awg_daemon.log) ---"
     [ -f /tmp/awg_daemon.log ] && sed 's/^/  /' /tmp/awg_daemon.log || echo "  (none)"
+    echo "--- runtime / network / TUN ---"
+    echo "memory (free):"; free 2>/dev/null | sed 's/^/  /'
+    echo "amneziawg-go running : $(pidof amneziawg-go 2>/dev/null || echo no)"
+    echo "dnsmasq running      : $(pidof dnsmasq 2>/dev/null || echo no)"
+    echo "lan_ipaddr           : $(nvram get lan_ipaddr 2>/dev/null)"
+    echo "awg0 link            :"; ip link show "$IFACE" 2>&1 | sed 's/^/  /'
+    echo "awg0 inet            : $(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2}')"
+    echo "tun module loaded    : $(lsmod 2>/dev/null | grep -q '^tun ' && echo yes || echo no)"
+    echo "modprobe tun         : $(modprobe tun 2>&1; echo rc=$?)"
+    echo "/dev/net/tun         :"; ls -la /dev/net/tun 2>&1 | sed 's/^/  /'
     echo "================================================="
 }
 
