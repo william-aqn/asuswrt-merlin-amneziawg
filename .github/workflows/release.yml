@@ -62,6 +62,20 @@ jobs:
           docker run --rm --platform linux/arm/v7 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git clone --depth 1 --branch $AWG_TOOLS_TAG https://github.com/amnezia-vpn/amneziawg-tools.git /t && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg-arm 2>/dev/null || cp wg /out/awg-arm; } && chmod +x /out/awg-arm"
           file "$GITHUB_WORKSPACE/output/awg-arm"
 
+      - name: Build awg-arm5 (old ARM, static musl, ARMv6 for Cortex-A9 / armv7-2.6)
+        run: |
+          set -eux
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          # RT-AC68U/RT-AC66U etc. are Cortex-A9 (ARMv7-A) WITHOUT hardware divide, on
+          # the armv7-2.6 Entware target. The armv7 awg above (Alpine linux/arm/v7, built
+          # on an A15-like QEMU core) emits udiv/NEON and dies with SIGILL there, while the
+          # GOARM=5 amneziawg-go runs fine — hence "amneziawg-go works but awg setconf =
+          # Illegal instruction". Build under linux/arm/v6 (Alpine armhf = ARMv6 + VFPv2):
+          # a strict instruction subset that also runs on every newer ARMv7 core. This is
+          # the awg counterpart to amneziawg-go-arm5; it ships in the armv7-2.6 package.
+          docker run --rm --platform linux/arm/v6 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git clone --depth 1 --branch $AWG_TOOLS_TAG https://github.com/amnezia-vpn/amneziawg-tools.git /t && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg-arm5 2>/dev/null || cp wg /out/awg-arm5; } && chmod +x /out/awg-arm5"
+          file "$GITHUB_WORKSPACE/output/awg-arm5"
+
       - name: Build .ipk packages
         run: |
           set -eux

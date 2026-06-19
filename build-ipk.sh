@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PKG_NAME="amneziawg"
-PKG_VERSION="1.1.54-1"
+PKG_VERSION="1.1.55-1"
 
 build_ipk(){
     local arch="$1"
@@ -169,8 +169,13 @@ echo ""
 # Build aarch64 (ARM64) — GT-AX11000, RT-AX86U, RT-AX88U, etc.
 build_ipk "aarch64-3.10" "output/amneziawg-go" "output/awg" || true
 
-# Build arm (ARM32, GOARM=5) — RT-AC68U, RT-AC66U, older ARM routers
-build_ipk "armv7-2.6" "output/amneziawg-go-arm5" "output/awg-arm" || true
+# Build arm (ARM32) — RT-AC68U, RT-AC66U and other Cortex-A9 / armv7-2.6 routers.
+# Both the Go daemon (GOARM=5) AND the awg tool (awg-arm5) are built to the lowest
+# common denominator here: the shared armv7 awg-arm below is an Alpine linux/arm/v7
+# build (ARMv7-A, emits NEON + hardware divide udiv/sdiv) and dies with "Illegal
+# instruction" on the Cortex-A9, which lacks those. awg-arm5 is an ARMv6 build (a
+# strict subset that also runs on every newer ARMv7 core).
+build_ipk "armv7-2.6" "output/amneziawg-go-arm5" "output/awg-arm5" || true
 
 # Build arm (ARM32, newer Entware/HND) — RT-AX56U, RT-AX58U, etc.
 build_ipk "armv7-3.2" "output/amneziawg-go-arm" "output/awg-arm" || true
