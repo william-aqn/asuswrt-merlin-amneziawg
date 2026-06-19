@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.65"
+AWG_VERSION="1.1.66"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -499,6 +499,16 @@ ipset_load_file(){
 
 # --- Unified firewall setup ---
 
+# Detect a co-resident DPI-bypass tool (zapret/zapret2 by bol-van) that we must not fight:
+# its userspace daemons (nfqws/tpws) running, or NFQUEUE/TPROXY targets present in iptables.
+# When detected we skip the global DNS hijack below so we don't collide with its DNS/NFQUEUE
+# handling and lock out the LAN — the addon's marks/table/conntrack flush are already its own.
+zapret_active(){
+    { pidof nfqws || pidof tpws; } >/dev/null 2>&1 && return 0
+    iptables-save 2>/dev/null | grep -qE 'NFQUEUE|TPROXY' && return 0
+    return 1
+}
+
 setup_dns_interception(){
     # Never DNAT :53 to a dead resolver — that black-holes all LAN DNS. If dnsmasq isn't
     # up, skip interception (clients keep working DNS); reload_dnsmasq + the start deadman
@@ -885,8 +895,19 @@ setup_firewall(){
     ip rule add fwmark "$FWMARK" lookup $RT_TABLE prio 98
 
     # --- Force DNS through dnsmasq whenever VPN is active ---
+    # The global :53 DNAT + DoH/DoT REJECT is the one piece that collides with a co-resident
+    # DPI-bypass tool (zapret/zapret2) and can lock out the LAN. Skip it when the user opted
+    # out (awg_no_dns_intercept=1) OR when zapret/NFQUEUE is detected — geo-by-IP (GeoIP /
+    # antifilter CIDR) keeps working; only forced domain-geo is weakened for clients that use
+    # an external resolver instead of the router. This is what lets AWG coexist like xray+zapret.
     if [ "$default_policy" != "direct" ] || [ "$has_geo" = true ]; then
-        setup_dns_interception
+        if [ "$(get_setting awg_no_dns_intercept)" = "1" ]; then
+            log_msg "DNS interception OFF (awg_no_dns_intercept=1) — coexistence mode"
+        elif zapret_active; then
+            log_msg "DNS interception OFF — zapret/NFQUEUE detected, coexisting (geo-by-IP still active)"
+        else
+            setup_dns_interception
+        fi
     fi
 
     # --- Reload dnsmasq if geo active (deferred + retried; see reload_dnsmasq) ---
@@ -1210,6 +1231,7 @@ do_diag(){
     echo "memory (free):"; free 2>/dev/null | sed 's/^/  /'
     echo "amneziawg-go running : $(pidof amneziawg-go 2>/dev/null || echo no)"
     echo "dnsmasq running      : $(pidof dnsmasq 2>/dev/null || echo no)"
+    echo "zapret/NFQUEUE       : $(zapret_active && echo "yes -> DNS interception auto-off (coexist)" || echo no)"
     echo "lan_ipaddr           : $(nvram get lan_ipaddr 2>/dev/null)"
     echo "awg0 link            :"; ip link show "$IFACE" 2>&1 | sed 's/^/  /'
     echo "awg0 inet            : $(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2}')"
