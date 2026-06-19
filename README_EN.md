@@ -94,6 +94,8 @@ ssh admin@<router-ip>
 sh /tmp/install.sh
 ```
 
+> GUI SCP clients: for Windows — [WinSCP](https://winscp.net/eng/download.php), for macOS — [MacSCP](https://www.macscp.co/).
+
 ### Post-installation
 
 1. Log out and log back in to the router web UI

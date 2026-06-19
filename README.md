@@ -101,6 +101,8 @@ ssh admin@<ip-роутера>
 sh /tmp/install.sh
 ```
 
+> SCP-клиенты с графическим интерфейсом: для Windows — [WinSCP](https://winscp.net/eng/download.php), для macOS — [MacSCP](https://www.macscp.co/).
+
 ### После установки
 
 1. Выйдите и войдите заново в веб-интерфейс роутера
