@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.57"
+AWG_VERSION="1.1.58"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1061,31 +1061,26 @@ generate_config(){
 # (dd + od) — the router has neither `file` nor `readelf`. Echoes e.g.
 # "ELF32 ARM eabi=05 float=soft", "ELF64 AARCH64", or "missing" / "not-ELF(...)".
 elf_arch(){
-    local f="$1" magic cls bits m mach flt eabi
+    local f="$1" magic clsw cls mw mach
     [ -f "$f" ] || { echo "missing"; return; }
-    magic=$(dd if="$f" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
-    [ "$magic" = "7f454c46" ] || { echo "not-ELF(magic=$magic)"; return; }
-    cls=$(dd if="$f" bs=1 skip=4 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n')
-    case "$cls" in 1) bits="ELF32" ;; 2) bits="ELF64" ;; *) bits="ELF?" ;; esac
-    # e_machine: 2 bytes little-endian at offset 18 (0x28=ARM, 0xB7=AARCH64)
-    m=$(dd if="$f" bs=1 skip=18 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
-    case "$m" in
-        2800) mach="ARM" ;;
-        b700) mach="AARCH64" ;;
-        0300) mach="x86" ;;
-        3e00) mach="x86_64" ;;
-        *)    mach="machine=0x$m" ;;
+    # This firmware's busybox od supports only -x (16-bit hex words) and prints an address
+    # column, so read 2-byte words and take field 2 of the first line, matching either
+    # print/byte order. Float ABI (the actual culprit on VFP-less CPUs) can't be read here
+    # without readelf — the live probes in do_diag are the authoritative arch check.
+    magic=$(dd if="$f" bs=1 count=2 2>/dev/null | od -x 2>/dev/null | awk 'NR==1{print $2; exit}')
+    case "$magic" in
+        457f|7f45) ;;   # \x7fELF -> first LE16 word
+        *) echo "not-ELF(magic=$magic)"; return ;;
     esac
-    # ARM e_flags at offset 36 (4 bytes LE): float ABI in byte1 (0x4=hard, 0x2=soft),
-    # EABI version in the high byte. Note: the ARM *arch level* (v6 vs v7) lives in the
-    # .ARM.attributes section, not here — so this distinguishes ABI, not v6/v7.
-    if [ "$mach" = "ARM" ]; then
-        set -- $(dd if="$f" bs=1 skip=36 count=4 2>/dev/null | od -An -tx1)
-        eabi="$4"; flt="?"
-        case "$2" in *4*) flt="hard" ;; *2*) flt="soft" ;; *0*) flt="none" ;; esac
-        mach="ARM eabi=$eabi float=$flt"
-    fi
-    echo "$bits $mach"
+    clsw=$(dd if="$f" bs=1 skip=4 count=2 2>/dev/null | od -x 2>/dev/null | awk 'NR==1{print $2; exit}')
+    case "$clsw" in 02*|*02) cls="ELF64" ;; 01*|*01) cls="ELF32" ;; *) cls="ELF?" ;; esac
+    mw=$(dd if="$f" bs=1 skip=18 count=2 2>/dev/null | od -x 2>/dev/null | awk 'NR==1{print $2; exit}')
+    case "$mw" in
+        0028|2800) mach="ARM" ;;
+        00b7|b700) mach="AARCH64" ;;
+        *)         mach="machine=$mw" ;;
+    esac
+    echo "$cls $mach"
 }
 
 # Run a command, capturing its exit/signal without aborting. Translates the shell's

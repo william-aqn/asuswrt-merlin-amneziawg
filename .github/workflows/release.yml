@@ -62,19 +62,36 @@ jobs:
           docker run --rm --platform linux/arm/v7 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git clone --depth 1 --branch $AWG_TOOLS_TAG https://github.com/amnezia-vpn/amneziawg-tools.git /t && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg-arm 2>/dev/null || cp wg /out/awg-arm; } && chmod +x /out/awg-arm"
           file "$GITHUB_WORKSPACE/output/awg-arm"
 
-      - name: Build awg-arm5 (old ARM, static musl, ARMv6 for Cortex-A9 / armv7-2.6)
+      - name: Build awg-arm5 (old ARM, static musl, SOFT-FLOAT for VFP-less Cortex-A9)
         run: |
           set -eux
           mkdir -p "$GITHUB_WORKSPACE/output"
-          # RT-AC68U/RT-AC66U etc. are Cortex-A9 (ARMv7-A) WITHOUT hardware divide, on
-          # the armv7-2.6 Entware target. The armv7 awg above (Alpine linux/arm/v7, built
-          # on an A15-like QEMU core) emits udiv/NEON and dies with SIGILL there, while the
-          # GOARM=5 amneziawg-go runs fine — hence "amneziawg-go works but awg setconf =
-          # Illegal instruction". Build under linux/arm/v6 (Alpine armhf = ARMv6 + VFPv2):
-          # a strict instruction subset that also runs on every newer ARMv7 core. This is
-          # the awg counterpart to amneziawg-go-arm5; it ships in the armv7-2.6 package.
-          docker run --rm --platform linux/arm/v6 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git clone --depth 1 --branch $AWG_TOOLS_TAG https://github.com/amnezia-vpn/amneziawg-tools.git /t && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg-arm5 2>/dev/null || cp wg /out/awg-arm5; } && chmod +x /out/awg-arm5"
+          # RT-AC68U (BCM4708 Cortex-A9) exposes NO hardware float — /proc/cpuinfo Features
+          # is "swp half thumb fastmult edsp" (no vfp/neon). Any HARD-FLOAT (VFP) binary
+          # SIGILLs on its first float op, which is why even the Alpine armhf (ARMv6 + VFP)
+          # build failed. awg must be SOFT-FLOAT, exactly like the GOARM=5 daemon that works.
+          # Alpine has no soft-float port, so cross-build with a musl soft-float gcc
+          # toolchain (arm-linux-musleabi = soft-float ABI, ARMv5TE), statically linked.
+          TC=arm-linux-musleabi-cross
+          for url in \
+            "https://musl.cc/${TC}.tgz" \
+            "https://more.musl.cc/11/x86_64-linux-musl/${TC}.tgz"; do
+            curl -fL --retry 3 --connect-timeout 20 "$url" -o /tmp/tc.tgz && break
+          done
+          tar -xf /tmp/tc.tgz -C /opt
+          export PATH="/opt/${TC}/bin:$PATH"
+          arm-linux-musleabi-gcc --version | head -1
+          git clone --depth 1 --branch "$AWG_TOOLS_TAG" https://github.com/amnezia-vpn/amneziawg-tools.git /tmp/awgtools
+          make -C /tmp/awgtools/src CC=arm-linux-musleabi-gcc LDFLAGS=-static PLATFORM_CFLAGS=
+          cp /tmp/awgtools/src/awg "$GITHUB_WORKSPACE/output/awg-arm5" 2>/dev/null || cp /tmp/awgtools/src/wg "$GITHUB_WORKSPACE/output/awg-arm5"
+          chmod +x "$GITHUB_WORKSPACE/output/awg-arm5"
           file "$GITHUB_WORKSPACE/output/awg-arm5"
+          # Guard: never ship a hard-float awg again. The hard-float ABI emits the
+          # Tag_ABI_VFP_args build attribute; a soft-float build does not.
+          if readelf -A "$GITHUB_WORKSPACE/output/awg-arm5" | grep -q 'Tag_ABI_VFP_args'; then
+            echo "ERROR: awg-arm5 is hard-float (VFP) — would SIGILL on VFP-less routers like RT-AC68U"; exit 1
+          fi
+          echo "awg-arm5 is soft-float — OK"
 
       - name: Build .ipk packages
         run: |
