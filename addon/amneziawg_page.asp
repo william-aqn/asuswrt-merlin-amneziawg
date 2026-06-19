@@ -698,6 +698,7 @@ function applyConfig(actionScript){
     custom_settings.awg_geo_custom_ips = document.getElementById('geo_custom_ips').value;
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
+    custom_settings.awg_no_dns_intercept = document.getElementById('awg_no_dns_intercept').checked ? '1' : '0';
     custom_settings.awg_geo_wipe_update = document.getElementById('awg_geo_wipe_update').checked ? '1' : '0';
     // Download-via-VPN toggles (route geo / program-update downloads through the tunnel)
     custom_settings.awg_geo_via_awg = document.getElementById('awg_geo_via_awg').checked ? '1' : '0';
@@ -813,6 +814,9 @@ function loadGeoSettings(){
     // Block IPv6 DNS (default on)
     var b6 = document.getElementById('awg_block_ipv6_dns');
     if(b6) b6.checked = (custom_settings.awg_block_ipv6_dns !== '0');
+    // Coexistence: don't hijack DNS (default off; backend also auto-skips if zapret detected)
+    var ndi = document.getElementById('awg_no_dns_intercept');
+    if(ndi) ndi.checked = (custom_settings.awg_no_dns_intercept === '1');
     var wp = document.getElementById('awg_geo_wipe_update');
     if(wp) wp.checked = (custom_settings.awg_geo_wipe_update === '1');
     // Download-via-VPN toggles (default off)
@@ -1554,6 +1558,13 @@ function initAutocompleteIp(){
                     <td>
                         <label><input type="checkbox" id="awg_block_ipv6_dns"> Block IPv6 DNS resolution (filter-AAAA)</label>
                         <div style="color:#666; font-size:11px; margin-top:3px;">Critical for Geo routing reliability. Prevents dual-stack domains from bypassing the VPN.</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Совместимость с zapret</th>
+                    <td>
+                        <label><input type="checkbox" id="awg_no_dns_intercept"> Не перехватывать DNS (совместимость с zapret/zapret2 и др.)</label>
+                        <div style="color:#666; font-size:11px; margin-top:3px;">Отключает принудительный DNAT всех DNS-запросов на роутер. Включите, если рядом работает zapret/DPI-обход — иначе их перехваты конфликтуют и могут положить сеть. Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам — только для клиентов, использующих роутер как DNS. Если zapret/NFQUEUE обнаружен рядом, перехват отключается автоматически даже без этой галочки.</div>
                     </td>
                 </tr>
                 </table>
