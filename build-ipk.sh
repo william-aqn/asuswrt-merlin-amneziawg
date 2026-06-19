@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PKG_NAME="amneziawg"
-PKG_VERSION="1.1.56-1"
+PKG_VERSION="1.1.57-1"
 
 build_ipk(){
     local arch="$1"
@@ -140,8 +140,11 @@ case "$1" in
     update)
         /jffs/addons/amneziawg/amneziawg.sh update "$2"
         ;;
+    diag)
+        /jffs/addons/amneziawg/amneziawg.sh diag
+        ;;
     *)
-        echo "Usage: $0 {start|stop|restart|update [version]}"
+        echo "Usage: $0 {start|stop|restart|update [version]|diag}"
         exit 1
         ;;
 esac

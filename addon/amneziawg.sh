@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.56"
+AWG_VERSION="1.1.57"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1055,6 +1055,85 @@ generate_config(){
     return 0
 }
 
+# --- Diagnostics ---
+
+# Print the ELF class / machine / ARM EABI float ABI of a binary using only busybox
+# (dd + od) — the router has neither `file` nor `readelf`. Echoes e.g.
+# "ELF32 ARM eabi=05 float=soft", "ELF64 AARCH64", or "missing" / "not-ELF(...)".
+elf_arch(){
+    local f="$1" magic cls bits m mach flt eabi
+    [ -f "$f" ] || { echo "missing"; return; }
+    magic=$(dd if="$f" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    [ "$magic" = "7f454c46" ] || { echo "not-ELF(magic=$magic)"; return; }
+    cls=$(dd if="$f" bs=1 skip=4 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n')
+    case "$cls" in 1) bits="ELF32" ;; 2) bits="ELF64" ;; *) bits="ELF?" ;; esac
+    # e_machine: 2 bytes little-endian at offset 18 (0x28=ARM, 0xB7=AARCH64)
+    m=$(dd if="$f" bs=1 skip=18 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    case "$m" in
+        2800) mach="ARM" ;;
+        b700) mach="AARCH64" ;;
+        0300) mach="x86" ;;
+        3e00) mach="x86_64" ;;
+        *)    mach="machine=0x$m" ;;
+    esac
+    # ARM e_flags at offset 36 (4 bytes LE): float ABI in byte1 (0x4=hard, 0x2=soft),
+    # EABI version in the high byte. Note: the ARM *arch level* (v6 vs v7) lives in the
+    # .ARM.attributes section, not here — so this distinguishes ABI, not v6/v7.
+    if [ "$mach" = "ARM" ]; then
+        set -- $(dd if="$f" bs=1 skip=36 count=4 2>/dev/null | od -An -tx1)
+        eabi="$4"; flt="?"
+        case "$2" in *4*) flt="hard" ;; *2*) flt="soft" ;; *0*) flt="none" ;; esac
+        mach="ARM eabi=$eabi float=$flt"
+    fi
+    echo "$bits $mach"
+}
+
+# Run a command, capturing its exit/signal without aborting. Translates the shell's
+# 128+signal codes for the ones that matter here (132=SIGILL, the wrong-arch symptom).
+probe_bin(){
+    local label="$1"; shift
+    local out rc note=""
+    out=$("$@" 2>&1); rc=$?
+    case "$rc" in
+        132) note="  <<< SIGILL (Illegal instruction — wrong-arch binary)" ;;
+        134) note="  <<< SIGABRT" ;;
+        139) note="  <<< SIGSEGV" ;;
+        126|127) note="  <<< not executable / exec format error" ;;
+    esac
+    echo "  $label -> exit=$rc$note"
+    [ -n "$out" ] && echo "      $(echo "$out" | head -2 | tr '\n' '|')"
+}
+
+# One-shot debug dump: platform, CPU, installed package, binary architectures, and live
+# SIGILL probes. Read-only — safe to run anytime. Usage: amneziawg.sh diag
+do_diag(){
+    echo "================= AmneziaWG diag ================="
+    echo "addon version    : $AWG_VERSION"
+    echo "date             : $(date 2>/dev/null)"
+    echo "--- platform ---"
+    echo "uname -a         : $(uname -a 2>/dev/null)"
+    echo "uname -m         : $(uname -m 2>/dev/null)"
+    if [ -f /proc/cpuinfo ]; then
+        echo "cpuinfo:"
+        grep -iE 'model name|^processor|features|cpu architecture|cpu part|cpu variant|cpu implementer' /proc/cpuinfo | sed 's/^/  /'
+    fi
+    echo "opkg arch        :"
+    opkg print-architecture 2>/dev/null | sed 's/^/  /' || echo "  (opkg not available)"
+    echo "--- installed package ---"
+    opkg list-installed 2>/dev/null | grep -i amnezia | sed 's/^/  /' || echo "  (amneziawg not in opkg db)"
+    echo "--- binaries ($AWG_DIR) ---"
+    ls -la "$AWG_GO" "$AWG_BIN" 2>/dev/null | sed 's/^/  /'
+    echo "  amneziawg-go : $(elf_arch "$AWG_GO")"
+    echo "  awg          : $(elf_arch "$AWG_BIN")"
+    echo "--- live probes (which binary raises Illegal instruction?) ---"
+    probe_bin "amneziawg-go --version" "$AWG_GO" --version
+    probe_bin "awg (usage)"            "$AWG_BIN"
+    probe_bin "awg genkey (crypto)"    "$AWG_BIN" genkey
+    echo "--- last amneziawg-go output (/tmp/awg_daemon.log) ---"
+    [ -f /tmp/awg_daemon.log ] && sed 's/^/  /' /tmp/awg_daemon.log || echo "  (none)"
+    echo "================================================="
+}
+
 # --- Start ---
 
 do_start(){
@@ -1101,6 +1180,9 @@ do_start(){
 
     # Start userspace daemon
     mkdir -p /var/run/amneziawg
+    # Breadcrumb on every start: host arch + the arch of both binaries, so a wrong-arch
+    # install is visible in the log without running 'diag' separately.
+    log_msg "Platform $(uname -m): amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")"
     "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1 &
     if ! wait_for_iface "$IFACE" 10; then
         log_msg "ERROR: amneziawg-go failed to create interface"
@@ -1109,8 +1191,20 @@ do_start(){
     fi
     log_msg "Userspace daemon started"
 
-    # Configure interface
-    "$AWG_BIN" setconf "$IFACE" "$CONF" || { log_msg "ERROR: setconf failed"; ip link del "$IFACE" 2>/dev/null; update_status; release_lock; return 1; }
+    # Configure interface. Capture the exit code explicitly: a wrong-arch awg dies with
+    # SIGILL (shell exit 132 = 128 + signal 4) — the most common failure on old ARM
+    # routers — so name it in the log instead of a generic "setconf failed".
+    "$AWG_BIN" setconf "$IFACE" "$CONF"
+    local sc_rc=$?
+    if [ "$sc_rc" -ne 0 ]; then
+        if [ "$sc_rc" -eq 132 ]; then
+            log_msg "ERROR: 'awg setconf' killed by SIGILL (Illegal instruction) — wrong-arch awg"
+            log_msg "  awg=$(elf_arch "$AWG_BIN") host=$(uname -m); run '$ADDON_DIR/amneziawg.sh diag'"
+        else
+            log_msg "ERROR: setconf failed (exit $sc_rc)"
+        fi
+        ip link del "$IFACE" 2>/dev/null; update_status; release_lock; return 1
+    fi
 
     [ -f "$AWG_DIR/awg0.addr" ] && ip addr add "$(cat "$AWG_DIR/awg0.addr")" dev "$IFACE"
     # MTU: configurable via awg_mtu (default 1280); fall back if unset/out of range
@@ -1868,6 +1962,7 @@ case "$1" in
     stop)           do_stop ;;
     restart)        do_stop; wait_for_pid_exit amneziawg-go 10; do_start ;;
     status)         update_status ;;
+    diag|diagnostics) do_diag ;;
     update_geo)     update_geo_lists; do_firewall_restart; update_status ;;
     check_update)   check_update ;;
     update)         do_update "$2" ;;
@@ -1881,5 +1976,5 @@ case "$1" in
     firewall_restart) do_firewall_restart ;;
     download_geo)   download_all_geo ;;
     ensure_geo)     ensure_geo ;;
-    *)              echo "Usage: $0 {start|stop|restart|status|update_geo|download_geo|install_page|uninstall}" ;;
+    *)              echo "Usage: $0 {start|stop|restart|status|diag|update_geo|download_geo|install_page|uninstall}" ;;
 esac
