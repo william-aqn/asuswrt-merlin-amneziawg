@@ -70,21 +70,20 @@ jobs:
           # is "swp half thumb fastmult edsp" (no vfp/neon). Any HARD-FLOAT (VFP) binary
           # SIGILLs on its first float op, which is why even the Alpine armhf (ARMv6 + VFP)
           # build failed. awg must be SOFT-FLOAT, exactly like the GOARM=5 daemon that works.
-          # Alpine has no soft-float port, so cross-build with a musl soft-float gcc
-          # toolchain (arm-linux-musleabi = soft-float ABI, ARMv5TE), statically linked.
-          TC=arm-linux-musleabi-cross
-          for url in \
-            "https://musl.cc/${TC}.tgz" \
-            "https://more.musl.cc/11/x86_64-linux-musl/${TC}.tgz"; do
-            curl -fL --retry 3 --connect-timeout 20 "$url" -o /tmp/tc.tgz && break
-          done
-          tar -xf /tmp/tc.tgz -C /opt
-          export PATH="/opt/${TC}/bin:$PATH"
-          arm-linux-musleabi-gcc --version | head -1
-          git clone --depth 1 --branch "$AWG_TOOLS_TAG" https://github.com/amnezia-vpn/amneziawg-tools.git /tmp/awgtools
-          make -C /tmp/awgtools/src CC=arm-linux-musleabi-gcc LDFLAGS=-static PLATFORM_CFLAGS=
-          cp /tmp/awgtools/src/awg "$GITHUB_WORKSPACE/output/awg-arm5" 2>/dev/null || cp /tmp/awgtools/src/wg "$GITHUB_WORKSPACE/output/awg-arm5"
-          chmod +x "$GITHUB_WORKSPACE/output/awg-arm5"
+          # Alpine has no soft-float port, so build with dockcross linux-armv5-musl:
+          # gcc + musl + ARMv5 (no VFP) + soft-float ABI, statically linked.
+          docker run --rm -e AWG_TOOLS_TAG -v "$GITHUB_WORKSPACE/output:/out" dockcross/linux-armv5-musl bash -c '
+            set -eux
+            if [ -z "${CC:-}" ]; then CC=$(command -v arm-unknown-linux-musleabi-gcc arm-linux-musleabi-gcc 2>/dev/null | head -1); fi
+            [ -z "${CC:-}" ] && CC=$(ls /usr/xcc/*/bin/*linux-musleabi-gcc 2>/dev/null | head -1)
+            : "${CC:?no soft-float musl cross gcc found in image}"
+            "$CC" --version | head -1
+            command -v git >/dev/null 2>&1 || { apt-get update && apt-get install -y --no-install-recommends git ca-certificates; }
+            git clone --depth 1 --branch "$AWG_TOOLS_TAG" https://github.com/amnezia-vpn/amneziawg-tools.git /tmp/awgtools
+            make -C /tmp/awgtools/src CC="$CC" LDFLAGS=-static PLATFORM_CFLAGS=
+            cp /tmp/awgtools/src/awg /out/awg-arm5 2>/dev/null || cp /tmp/awgtools/src/wg /out/awg-arm5
+            chmod +x /out/awg-arm5
+          '
           file "$GITHUB_WORKSPACE/output/awg-arm5"
           # Guard: never ship a hard-float awg again. The hard-float ABI emits the
           # Tag_ABI_VFP_args build attribute; a soft-float build does not.
