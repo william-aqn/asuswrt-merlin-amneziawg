@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.68"
+AWG_VERSION="1.1.69"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -124,7 +124,10 @@ flush_conntrack(){
 save_and_set_rp_filter(){
     for iface in all awg0 br0; do
         local f="/proc/sys/net/ipv4/conf/$iface/rp_filter"
-        [ -f "$f" ] && cat "$f" > "/tmp/.awg_rp_$iface" 2>/dev/null
+        # Idempotent save: only capture the TRUE baseline if we haven't already, so a
+        # re-entry (e.g. a concurrent start) can't overwrite the saved value with the
+        # already-modified 2 and leave rp_filter forced loose after stop.
+        [ -f "/tmp/.awg_rp_$iface" ] || { [ -f "$f" ] && cat "$f" > "/tmp/.awg_rp_$iface" 2>/dev/null; }
         echo 2 > "$f" 2>/dev/null
     done
 }
@@ -203,6 +206,11 @@ acquire_lock(){
 }
 
 release_lock(){
+    # Owner-aware: only free the lock if WE hold it (pid matches), so a stray release on an
+    # error path can't free a lock another concurrent actor acquired.
+    local p
+    p=$(cat "$LOCKDIR/pid" 2>/dev/null)
+    [ -n "$p" ] && [ "$p" != "$$" ] && return 0
     rm -rf "$LOCKDIR"
 }
 
@@ -408,14 +416,19 @@ download_geosite(){
     log_msg "Downloading v2fly domain database..."
     update_status
     local tmp_yml="$GEO_DIR/v2fly_all.yml.tmp"
-    if fetch_with_mirrors "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" "$tmp_yml" 120 && [ -s "$tmp_yml" ]; then
+    # Validate the body before the swap: a flaky mirror (ghproxy) can return HTTP 200 with an
+    # HTML/JSON error page that curl -f accepts and [ -s ] passes — an unconditional mv would
+    # then overwrite a good DB with garbage and silently empty every GeoSite category. Require
+    # at least one real category marker (mirrors the GeoIP/antifilter validators); otherwise
+    # keep the existing v2fly_all.yml.
+    if fetch_with_mirrors "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" "$tmp_yml" 120 && [ -s "$tmp_yml" ] && grep -q '^  - name: ' "$tmp_yml"; then
         mv "$tmp_yml" "$GEO_DIR/v2fly_all.yml"
         grep '  - name: ' "$GEO_DIR/v2fly_all.yml" | sed 's/.*- name: //' | sort > "$GEO_DIR/v2fly_categories.txt"
         cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
         log_msg "GeoSite: $(wc -l < "$GEO_DIR/v2fly_categories.txt") categories downloaded"
     else
         rm -f "$tmp_yml"
-        log_msg "WARNING: v2fly domain download failed"
+        log_msg "WARNING: v2fly domain download failed or invalid (kept existing DB)"
     fi
 }
 
@@ -523,6 +536,34 @@ detect_dpi_tool(){
     iptables-save 2>/dev/null | grep -qE 'NFQUEUE|TPROXY' && { echo "DPI (NFQUEUE/TPROXY)"; return; }
 }
 
+# True when the firmware's OWN DNS redirection is active: DNSFilter / DNS Director
+# (dnsfilter_enable_x), or DoT/DNS-over-TLS via stubby (dnspriv_enable). Like the
+# zapret/xray case, we must NOT slam our global :53 DNAT on top of it — that would silently
+# override the user's per-client DNS policy or disable encrypted DNS. When detected we skip
+# our hijack (geo-by-IP still works; only forced domain-geo is weakened for external-resolver
+# clients) instead of fighting the firmware.
+fw_dns_redirect_active(){
+    [ "$(nvram get dnsfilter_enable_x 2>/dev/null)" = "1" ] && return 0
+    [ "$(nvram get dns_director_enable 2>/dev/null)" = "1" ] && return 0
+    [ "$(nvram get dnspriv_enable 2>/dev/null)" = "1" ] && return 0
+    return 1
+}
+
+# Single source of truth for "should the global :53 DNS interception be installed right now?"
+# so setup_firewall and the watchdog reconciler make the SAME decision and can't drift.
+# Returns 0 (wanted) only when a VPN/geo policy needs forced DNS AND no co-resident DNS owner
+# (user opt-out, zapret/xray, or firmware DNSFilter/Director/DoT) is present AND dnsmasq is up.
+intercept_wanted(){
+    local dp
+    dp=$(get_setting awg_default_policy); [ -z "$dp" ] && dp="direct"
+    { [ "$dp" != "direct" ] || geo_in_use; } || return 1
+    [ "$(get_setting awg_no_dns_intercept)" = "1" ] && return 1
+    zapret_active && return 1
+    fw_dns_redirect_active && return 1
+    pidof dnsmasq >/dev/null 2>&1 || return 1
+    return 0
+}
+
 setup_dns_interception(){
     # Never DNAT :53 to a dead resolver — that black-holes all LAN DNS. If dnsmasq isn't
     # up, skip interception (clients keep working DNS); reload_dnsmasq + the start deadman
@@ -574,9 +615,14 @@ setup_ipv6_block(){
     local ipv6_svc
     ipv6_svc=$(nvram get ipv6_service 2>/dev/null)
     [ "$ipv6_svc" = "disabled" ] || [ -z "$ipv6_svc" ] && return 0
-    ip6tables -I FORWARD -i br0 -o "$IFACE" -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null
-    ip6tables -I FORWARD -i "$IFACE" -o br0 -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null
-    log_msg "IPv6 leak protection enabled"
+    # Idempotent (-C guard) so setup_firewall can re-assert it on every Apply without
+    # stacking duplicates. setup_firewall is the single rebuild point that all three trigger
+    # paths (do_start, do_firewall_restart, awgsaveconf) hit, so the IPv6 block stays
+    # symmetric — a bare "Apply" no longer tears it down and leaks IPv6 around the tunnel.
+    ip6tables -C FORWARD -i br0 -o "$IFACE" -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null \
+        || ip6tables -I FORWARD -i br0 -o "$IFACE" -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null
+    ip6tables -C FORWARD -i "$IFACE" -o br0 -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null \
+        || ip6tables -I FORWARD -i "$IFACE" -o br0 -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null
 }
 
 cleanup_ipv6_block(){
@@ -584,20 +630,12 @@ cleanup_ipv6_block(){
     ip6tables -D FORWARD -i "$IFACE" -o br0 -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null
 }
 
-cleanup_firewall(){
-    # Unhook from PREROUTING, flush and delete custom chain
-    iptables -t mangle -D PREROUTING -j "$AWG_CHAIN" 2>/dev/null
-    iptables -t mangle -F "$AWG_CHAIN" 2>/dev/null
-    iptables -t mangle -X "$AWG_CHAIN" 2>/dev/null
-
-    # Remove all ip rules for our table/fwmark
-    local _i=0; while [ $_i -lt 100 ] && ip rule del lookup $RT_TABLE 2>/dev/null; do _i=$((_i+1)); done
-    _i=0; while [ $_i -lt 100 ] && ip rule del fwmark "$FWMARK" 2>/dev/null; do _i=$((_i+1)); done
-    # Direct-policy rules use "lookup main prio 97" — not matched by the deletes above
-    _i=0; while [ $_i -lt 100 ] && ip rule del prio 97 2>/dev/null; do _i=$((_i+1)); done
-
-    # Remove DNS interception rules. Prefer the IP we actually DNAT'd to (saved at
-    # setup) so a changed br0 IP doesn't leave an orphaned DNAT to the old address.
+# Remove ONLY the global :53 DNS-interception rules (DNAT + DoH/DoT REJECTs). Factored out of
+# cleanup_firewall so the watchdog can tear down just the DNS hijack when a co-resident DPI
+# tool appears AFTER us, without rebuilding the whole firewall. Prefer the IP we actually
+# DNAT'd to (saved at setup) so a changed br0 IP doesn't leave an orphaned DNAT to the old
+# address; also drops the saved-IP record so dns_intercept_active reports inactive afterwards.
+cleanup_dns_interception(){
     local router_ip
     router_ip=$(cat /tmp/.awg_dns_ip 2>/dev/null)
     [ -z "$router_ip" ] && router_ip=$(get_router_ip)
@@ -610,6 +648,23 @@ cleanup_firewall(){
         iptables -D FORWARD -i br0 -d "$doh_ip" -p tcp --dport 443 -j REJECT 2>/dev/null
         iptables -D FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT 2>/dev/null
     done
+    rm -f /tmp/.awg_dns_ip 2>/dev/null
+}
+
+cleanup_firewall(){
+    # Unhook from PREROUTING, flush and delete custom chain
+    iptables -t mangle -D PREROUTING -j "$AWG_CHAIN" 2>/dev/null
+    iptables -t mangle -F "$AWG_CHAIN" 2>/dev/null
+    iptables -t mangle -X "$AWG_CHAIN" 2>/dev/null
+
+    # Remove all ip rules for our table/fwmark
+    local _i=0; while [ $_i -lt 100 ] && ip rule del lookup $RT_TABLE 2>/dev/null; do _i=$((_i+1)); done
+    _i=0; while [ $_i -lt 100 ] && ip rule del fwmark "$FWMARK"/"$FWMARK" 2>/dev/null; do _i=$((_i+1)); done
+    # Direct-policy rules use "lookup main prio 97" — not matched by the deletes above
+    _i=0; while [ $_i -lt 100 ] && ip rule del prio 97 2>/dev/null; do _i=$((_i+1)); done
+
+    # Remove the global :53 DNS-interception rules (DNAT + DoH/DoT REJECTs)
+    cleanup_dns_interception
 
     # Destroy ipset
     ipset flush "$IPSET_NAME" 2>/dev/null
@@ -621,9 +676,12 @@ cleanup_firewall(){
     # any-char and could match an unrelated line).
     [ -f "$DNSMASQ_INCLUDE" ] && grep -vF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.tmp" 2>/dev/null && mv "${DNSMASQ_INCLUDE}.tmp" "$DNSMASQ_INCLUDE"
 
-    # Remove cron
+    # Remove the geo-update cron (re-added by setup_firewall only when autoupdate is on, so
+    # toggling it off is honored here). The self-heal watchdog cron is deliberately NOT
+    # dropped here: cleanup_firewall runs on every Apply/firewall-restart AND on the
+    # health-check/deadman auto-rollback, and removing the watchdog there would strand a
+    # rolled-back tunnel with no way to recover. It is removed only on a user stop/uninstall.
     cru d awg_geo_update 2>/dev/null
-    cru d awg_watchdog 2>/dev/null
 
     cleanup_ipv6_block
 
@@ -729,6 +787,10 @@ setup_firewall(){
         log_msg "ERROR: ipset $IPSET_NAME creation failed, geo routing disabled${ipset_err:+: $ipset_err}"
         has_geo=false
     fi
+    # Did the set actually come up? Gate both the mangle match-set rules AND the dnsmasq
+    # ipset= rules on this single check so the two never disagree.
+    local has_set=false
+    ipset list "$IPSET_NAME" >/dev/null 2>&1 && has_set=true
 
     # --- Load selected GeoIP subnets into ipset (bulk) ---
     # Only services in the UI field (default GEOIP_SERVICES) are loaded; prune first so
@@ -758,8 +820,8 @@ setup_firewall(){
     # Check ipset fill level
     local ipset_entries
     ipset_entries=$(ipset list "$IPSET_NAME" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
-    [ -n "$ipset_entries" ] && [ "$ipset_entries" -ge "$IPSET_MAXELEM" ] 2>/dev/null && \
-        log_msg "WARNING: ipset $IPSET_NAME full ($ipset_entries/$IPSET_MAXELEM), some geo routes may be missing"
+    [ -n "$ipset_entries" ] && [ "$ipset_entries" -ge "$maxelem" ] 2>/dev/null && \
+        log_msg "WARNING: ipset $IPSET_NAME full ($ipset_entries/$maxelem), some geo routes may be missing (raise RAM or trim lists)"
 
     # --- Extract v2fly domains from downloaded database ---
     local geo_v2fly=$(get_setting awg_geo_v2fly)
@@ -796,9 +858,19 @@ setup_firewall(){
     local domain_count=0
     local block_ipv6=$(get_setting awg_block_ipv6_dns)
     [ -z "$block_ipv6" ] && block_ipv6="1"
+    # Only emit the GLOBAL filter-AAAA when (a) the user wants it, (b) IPv6 is actually
+    # enabled on the router, and (c) a VPN/geo policy is in play. dnsmasq's filter-AAAA is
+    # LAN-wide (no per-client scoping), so applying it when nothing is tunnelled would strip
+    # IPv6 (AAAA) DNS for every device, including plain "direct" ones.
+    local ipv6_on=1; case "$(nvram get ipv6_service 2>/dev/null)" in disabled|"") ipv6_on=0 ;; esac
+    local want_aaaa=0
+    [ "$block_ipv6" = "1" ] && [ "$ipv6_on" = 1 ] && { [ "$default_policy" != "direct" ] || geo_in_use; } && want_aaaa=1
     echo "# AmneziaWG domain routing - auto-generated" > "$DNSMASQ_AWG_CONF"
-    # Prevent IPv6 leaks: block AAAA records so dual-stack domains can't bypass IPv4 geo-routing
-    [ "$block_ipv6" = "1" ] && echo "filter-AAAA" >> "$DNSMASQ_AWG_CONF"
+    [ "$want_aaaa" = 1 ] && echo "filter-AAAA" >> "$DNSMASQ_AWG_CONF"
+    # Domain->ipset rules only work if the set actually exists. Mirror the mangle vpn_geo
+    # guard (which re-checks `ipset list`) so a failed ipset create doesn't leave dnsmasq
+    # emitting ipset=/dom/awg_dst lines that error on every lookup and silently kill geo.
+    if [ "$has_set" = true ]; then
     for f in "$GEO_DIR"/domains/*.txt "$GEO_DIR"/domains/*.lst; do
         [ ! -f "$f" ] && continue
         local chunk_line="ipset=/"
@@ -820,9 +892,13 @@ setup_firewall(){
         done < "$f"
         [ $chunk_count -gt 0 ] && echo "${chunk_line}${IPSET_NAME}" >> "$DNSMASQ_AWG_CONF"
     done
+    else
+        ls "$GEO_DIR"/domains/*.txt "$GEO_DIR"/domains/*.lst >/dev/null 2>&1 && \
+            log_msg "domain-geo disabled: ipset $IPSET_NAME unavailable (domains configured but not routable)"
+    fi
 
     # Add conf-file include to dnsmasq (idempotent) — also when only filter-AAAA is set
-    if [ $domain_count -gt 0 ] || [ "$block_ipv6" = "1" ]; then
+    if [ $domain_count -gt 0 ] || [ "$want_aaaa" = 1 ]; then
         if ! grep -qF "conf-file=$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" 2>/dev/null; then
             echo "conf-file=$DNSMASQ_AWG_CONF" >> "$DNSMASQ_INCLUDE"
         fi
@@ -877,7 +953,7 @@ setup_firewall(){
             case "$policy" in
                 vpn_all)
                     if [ -n "$mac" ]; then
-                        iptables -t mangle -A "$AWG_CHAIN" -m mac --mac-source "$mac" -j MARK --set-mark "$FWMARK"
+                        iptables -t mangle -A "$AWG_CHAIN" -m mac --mac-source "$mac" -j MARK --set-mark "$FWMARK"/"$FWMARK"
                     else
                         ip rule add from "$dev_id" lookup $RT_TABLE prio 99
                     fi
@@ -887,10 +963,10 @@ setup_firewall(){
                     if ipset list "$IPSET_NAME" >/dev/null 2>&1; then
                         if [ -n "$mac" ]; then
                             iptables -t mangle -A "$AWG_CHAIN" -m mac --mac-source "$mac" \
-                                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
+                                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"/"$FWMARK"
                         else
                             iptables -t mangle -A "$AWG_CHAIN" -s "$dev_id" \
-                                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
+                                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"/"$FWMARK"
                         fi
                         has_geo=true
                         log_msg "Route: $dev_id ($name) -> VPN (geo)"
@@ -905,13 +981,13 @@ setup_firewall(){
     # --- Default policy (last rules in chain) ---
     case "$default_policy" in
         vpn_all)
-            iptables -t mangle -A "$AWG_CHAIN" -j MARK --set-mark "$FWMARK"
+            iptables -t mangle -A "$AWG_CHAIN" -j MARK --set-mark "$FWMARK"/"$FWMARK"
             log_msg "Default: all -> VPN"
             ;;
         vpn_geo)
             if ipset list "$IPSET_NAME" >/dev/null 2>&1; then
                 iptables -t mangle -A "$AWG_CHAIN" \
-                    -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
+                    -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"/"$FWMARK"
                 has_geo=true
                 log_msg "Default: geo -> VPN"
             else
@@ -927,8 +1003,9 @@ setup_firewall(){
     iptables -t mangle -C PREROUTING -j "$AWG_CHAIN" 2>/dev/null || \
         iptables -t mangle -A PREROUTING -j "$AWG_CHAIN"
 
-    # --- Single fwmark rule for all marked traffic ---
-    ip rule add fwmark "$FWMARK" lookup $RT_TABLE prio 98
+    # --- Single fwmark rule for all marked traffic (masked so we match only our own bit
+    #     and don't clash with a co-resident tool that uses other fwmark bits) ---
+    ip rule add fwmark "$FWMARK"/"$FWMARK" lookup $RT_TABLE prio 98
 
     # --- Force DNS through dnsmasq whenever VPN is active ---
     # The global :53 DNAT + DoH/DoT REJECT is the one piece that collides with a co-resident
@@ -944,17 +1021,33 @@ setup_firewall(){
             log_msg "DNS interception OFF (awg_no_dns_intercept=1) — coexistence mode"
         elif zapret_active; then
             log_msg "DNS interception OFF — zapret/xray/NFQUEUE detected, coexisting (geo-by-IP still active)"
+        elif fw_dns_redirect_active; then
+            log_msg "DNS interception OFF — firmware DNSFilter/DNS Director/DoT active, not overriding (geo-by-IP still active)"
         else
             setup_dns_interception
         fi
     fi
 
+    # Coexistence guard: a co-resident proxy/DPI tool + an "all -> VPN" policy is a config
+    # footgun. NOTE the proxy's OWN egress is locally generated (OUTPUT/POSTROUTING) and is
+    # NOT captured by our PREROUTING chain — but vpn_all does pull LAN forward-traffic into
+    # the tunnel that a transparent-proxy setup may want for itself. Warn loudly (the status
+    # JSON also exposes coexist_warn); we never silently override the user's chosen policy.
+    local _dpi
+    _dpi=$(detect_dpi_tool)
+    if [ -n "$_dpi" ] && { [ "$default_policy" = "vpn_all" ] || get_setting awg_clients | grep -q vpn_all; }; then
+        log_msg "WARNING: $_dpi co-resident with an all->VPN policy — the tunnel will capture LAN traffic; use Direct or Geo-Only default policy to coexist"
+    fi
+
     # --- Reload dnsmasq if geo active (deferred + retried; see reload_dnsmasq) ---
-    if [ $domain_count -gt 0 ] || [ "$has_geo" = true ] || [ "$block_ipv6" = "1" ]; then
+    if [ $domain_count -gt 0 ] || [ "$has_geo" = true ] || [ "$want_aaaa" = 1 ]; then
         reload_dnsmasq
     fi
 
-    # --- Always flush conntrack so devices reconnect through VPN ---
+    # --- Flush conntrack of already-marked flows so they re-establish through the tunnel.
+    #     NOTE: this re-routes only flows that ALREADY carry our fwmark; a device just
+    #     switched direct->VPN keeps its in-flight (unmarked) flows on their old path until
+    #     they close. New connections route correctly immediately. ---
     flush_conntrack
 
     # --- Policy route for router-originated traffic. Re-added here (not only in
@@ -971,6 +1064,10 @@ setup_firewall(){
         cru a awg_geo_update "0 4 * * * '$ADDON_DIR/amneziawg.sh' update_geo"
     fi
     cru a awg_watchdog "*/5 * * * * '$ADDON_DIR/amneziawg.sh' watchdog"
+
+    # Re-assert the IPv6 leak block here (idempotent) so it survives a bare Apply
+    # (awgsaveconf -> setup_firewall), which previously tore it down without re-adding it.
+    setup_ipv6_block
 
     log_msg "Firewall configured: $ip_count IPs, $domain_count domains"
 }
@@ -1078,7 +1175,15 @@ ensure_geo(){
             download_antifilter_list "$af_key" || log_msg "WARNING: Antifilter $af_key failed"
             update_status
         done
-        is_running && setup_firewall
+        # Re-apply under the operation lock so this background rebuild can't race
+        # do_start/do_stop/do_firewall_restart (all of which hold LOCKDIR). A full
+        # setup_firewall is required here (not the cheap do_firewall_restart fast-path) so
+        # the freshly downloaded lists actually get loaded into the ipset. release_lock is
+        # owner-aware, so it only frees the lock this subshell took.
+        if is_running && acquire_lock; then
+            setup_firewall
+            release_lock
+        fi
         update_status
     ) </dev/null >/dev/null 2>&1 &
     echo $! > "$GEOLOCK/pid" 2>/dev/null   # real bg-subshell PID, written by the parent
@@ -1306,6 +1411,7 @@ do_diag(){
 # rolls the VPN back and restarts dnsmasq so access returns without a physical reboot.
 # Detached + </dev/null so it survives an SSH disconnect or the parent exiting.
 arm_lan_deadman(){
+    local gen="$1"   # amneziawg-go pid this start armed for; detects a superseding start
     (
         sleep 75
         # reload_dnsmasq bounces dnsmasq; re-check a few times before concluding it's dead.
@@ -1314,10 +1420,18 @@ arm_lan_deadman(){
             pidof dnsmasq >/dev/null 2>&1 && exit 0
             sleep 3; _k=$((_k + 1))
         done
+        # Superseded-start guard: if the VPN is already down, or a DIFFERENT amneziawg-go now
+        # owns the tunnel (a newer start/restart replaced the one we armed for), this is a
+        # stale deadman — don't roll back a tunnel we weren't watching.
+        is_running || exit 0
+        [ -n "$gen" ] && ! pidof amneziawg-go 2>/dev/null | grep -qw "$gen" && exit 0
         logger -t "$SCRIPT_NAME" "DEADMAN: dnsmasq still down ~90s after start — rolling back VPN to restore LAN/DHCP"
         echo "$(date '+%H:%M:%S') DEADMAN: dnsmasq down, rolling back to restore LAN access" >> "$UI_LOG" 2>/dev/null
-        "$ADDON_DIR/amneziawg.sh" stop >/dev/null 2>&1
-        service restart_dnsmasq >/dev/null 2>&1
+        # Auto-rollback (NOT a user stop) — keep the watchdog cron so recovery can continue.
+        "$ADDON_DIR/amneziawg.sh" stop_auto >/dev/null 2>&1
+        # Bounce dnsmasq only if it's actually still dead (do_stop's reload_dnsmasq may have
+        # already revived it) — avoids fighting an in-flight reload.
+        pidof dnsmasq >/dev/null 2>&1 || service restart_dnsmasq >/dev/null 2>&1
     ) </dev/null >/dev/null 2>&1 &
 }
 
@@ -1425,6 +1539,13 @@ do_start(){
     ip route add 0.0.0.0/1 dev "$IFACE" table $RT_TABLE 2>/dev/null
     ip route add 128.0.0.0/1 dev "$IFACE" table $RT_TABLE 2>/dev/null
     [ -n "$lan_net" ] && ip route add "$lan_net" dev br0 table $RT_TABLE 2>/dev/null
+    # Kill-switch (opt-in, awg_killswitch=1): a device-independent blackhole default in the
+    # tunnel table. While awg0 is up the /1 routes (longer prefix) win; if awg0 vanishes
+    # abnormally (daemon crash / OOM) the kernel purges the dev-awg0 routes but the policy
+    # rules persist — without this, marked VPN-only traffic falls through to the WAN in
+    # cleartext (fail-OPEN). With it, that traffic is dropped (fail-CLOSED). The
+    # `ip route flush table $RT_TABLE` on stop/restart removes it.
+    [ "$(get_setting awg_killswitch)" = "1" ] && ip route add blackhole default table $RT_TABLE metric 1000 2>/dev/null
 
     save_and_set_rp_filter
 
@@ -1444,7 +1565,7 @@ do_start(){
     # Arm the LAN deadman BEFORE the risky part: setup_firewall does the ipset load, DNS
     # interception and dnsmasq reload — the steps that can lock the router out. If they
     # kill dnsmasq, the deadman rolls everything back within ~90s even if we hang here.
-    arm_lan_deadman
+    arm_lan_deadman "$(pidof amneziawg-go 2>/dev/null | awk '{print $1}')"
     setup_firewall
 
     log_msg "Started, verifying tunnel connectivity..."
@@ -1489,6 +1610,7 @@ do_start(){
 # --- Stop ---
 
 do_stop(){
+    local user_stop="$1"   # "user" = deliberate user stop/uninstall; removes the watchdog cron
     acquire_lock || { log_msg "Cannot acquire lock, aborting stop"; return 1; }
     rm -f "$STARTING_FLAG"
     # Mark stop-in-progress so the UI shows "Stopping..." even across a page refresh
@@ -1507,6 +1629,10 @@ do_stop(){
     iptables -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null
 
     cleanup_firewall
+    # On a deliberate user stop/uninstall, also drop the self-heal watchdog so the VPN stays
+    # down. Auto-rollbacks (health-check, deadman) call do_stop withOUT "user", so the
+    # watchdog survives and can still recover the tunnel on its own.
+    [ "$user_stop" = "user" ] && cru d awg_watchdog 2>/dev/null
 
     ip route flush table $RT_TABLE 2>/dev/null
     local endpoint
@@ -1515,9 +1641,9 @@ do_stop(){
 
     restore_rp_filter
 
-    # Stop daemon
-    ip link set "$IFACE" down 2>/dev/null
-    ip link del "$IFACE" 2>/dev/null
+    # Stop the daemon FIRST so it releases the TUN before we remove the link — deleting the
+    # link out from under a live amneziawg-go is the "device or resource busy" condition a
+    # subsequent start would otherwise hit.
     local awg_pid
     awg_pid=$(pidof amneziawg-go 2>/dev/null)
     if [ -n "$awg_pid" ]; then
@@ -1526,6 +1652,8 @@ do_stop(){
         # Force kill if still alive (crashed/stuck process)
         pidof amneziawg-go >/dev/null 2>&1 && kill -9 "$(pidof amneziawg-go)" 2>/dev/null
     fi
+    ip link set "$IFACE" down 2>/dev/null
+    ip link del "$IFACE" 2>/dev/null
     rm -f /var/run/amneziawg/"$IFACE".sock
 
     reload_dnsmasq
@@ -1600,10 +1728,17 @@ EOF
     # Co-resident DPI/proxy tool (Xray/zapret/etc.), surfaced to the UI so it can warn that
     # "all->VPN" + DNS interception will collide with it.
     local dpi_tool=$(detect_dpi_tool)
+    # Kill-switch state (opt-in fail-closed routing) for the UI toggle.
+    local killswitch=false
+    [ "$(get_setting awg_killswitch)" = "1" ] && killswitch=true
+    # Coexistence alarm: a DPI/proxy tool present AND an all->VPN policy that pulls LAN
+    # traffic into the tunnel. Surfaced so the page can render a blocking banner.
+    local coexist_warn=false
+    [ -n "$dpi_tool" ] && [ "$default_policy" = "vpn_all" ] && coexist_warn=true
 
     # Write atomically (temp + rename) so the UI never reads a half-written file.
     cat > "${STATUS_FILE}.tmp" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.tmp" "$STATUS_FILE" 2>/dev/null
 }
@@ -1633,7 +1768,7 @@ do_install_page(){
     [ -f "$ADDON_DIR/amneziawg_widget.js" ] && cp "$ADDON_DIR/amneziawg_widget.js" /www/user/awg_widget.js 2>/dev/null
     mount_menu_tree "$am_webui_page"
 
-    echo "{\"running\":false,\"starting\":false,\"stopping\":false,\"version\":\"${AWG_VERSION}\",\"peers\":[],\"log\":\"Installed.\"}" > "$STATUS_FILE"
+    echo "{\"running\":false,\"starting\":false,\"stopping\":false,\"version\":\"${AWG_VERSION}\",\"killswitch\":false,\"coexist_warn\":false,\"dpi_tool\":\"\",\"peers\":[],\"log\":\"Installed.\"}" > "$STATUS_FILE"
 
     [ ! -f /jffs/scripts/service-event ] && echo "#!/bin/sh" > /jffs/scripts/service-event
     chmod +x /jffs/scripts/service-event 2>/dev/null
@@ -1688,7 +1823,7 @@ do_mount_ui(){
 }
 
 do_uninstall(){
-    do_stop
+    do_stop user   # user intent: remove the watchdog cron too
 
     [ -f /jffs/scripts/service-event ] && sed -i '/amneziawg/d' /jffs/scripts/service-event
     [ -f /jffs/scripts/services-start ] && sed -i '/amneziawg/d' /jffs/scripts/services-start
@@ -1711,11 +1846,44 @@ do_uninstall(){
     log_msg "Uninstalled"
 }
 
+# Cheap WAN-renumber heal: if the endpoint host-route points via a stale gateway (PPPoE
+# re-dial / DHCP-WAN lease change), just re-pin it instead of a full VPN teardown. Returns 0
+# if it re-pinned (caller should re-probe). Skips hostname endpoints (no host-route exists).
+repin_endpoint_route(){
+    local endpoint cur have
+    endpoint=$(get_endpoint)
+    [ -n "$endpoint" ] || return 1
+    case "$endpoint" in *[!0-9.]*) return 1 ;; esac   # not an IPv4 literal -> no host-route
+    cur=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')
+    [ -n "$cur" ] || return 1
+    have=$(ip route show "$endpoint" 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="via") print $(i+1)}')
+    [ "$have" = "$cur" ] && return 1
+    ip route del "$endpoint" 2>/dev/null
+    ip route add "$endpoint" via "$cur" 2>/dev/null
+    log_msg "WATCHDOG: endpoint route re-pinned $endpoint via $cur (was ${have:-none})"
+    return 0
+}
+
 # --- Watchdog (called by cron every 5 min) ---
 
 do_watchdog(){
     # Skip if lock held (another operation in progress)
     [ -d "$LOCKDIR" ] && return 0
+
+    # DNS-interception coexistence reconcile (only while the tunnel is up). Our one-shot
+    # decision at setup_firewall time goes stale when a DPI/proxy tool starts AFTER us, when
+    # dnsmasq wasn't up yet at boot, or when the DPI tool is later removed. Re-evaluate here —
+    # cheap, idempotent — and catch the br0-side ":53 collision" that dns_ok (which probes
+    # 127.0.0.1, bypassing the DNAT) can't see, WITHOUT a full VPN restart.
+    if is_running; then
+        if dns_intercept_active && { zapret_active || fw_dns_redirect_active || [ "$(get_setting awg_no_dns_intercept)" = "1" ]; }; then
+            log_msg "WATCHDOG: co-resident DNS owner detected — removing our :53 interception (coexist)"
+            cleanup_dns_interception
+        elif ! dns_intercept_active && intercept_wanted; then
+            log_msg "WATCHDOG: DNS interception now warranted (DPI gone / dnsmasq up) — installing"
+            setup_dns_interception
+        fi
+    fi
 
     local reason=""
     if ! ip link show "$IFACE" >/dev/null 2>&1; then
@@ -1723,7 +1891,13 @@ do_watchdog(){
     elif ! pidof amneziawg-go >/dev/null 2>&1; then
         reason="amneziawg-go process dead"
     elif ! ping -c 1 -W 5 -I "$IFACE" 8.8.8.8 >/dev/null 2>&1; then
-        reason="tunnel not passing traffic"
+        # Before a full teardown, try the cheap WAN-renumber heal: a stale endpoint gateway
+        # (PPPoE re-dial / DHCP renumber) black-holes the handshake. Re-pin and re-probe once.
+        if repin_endpoint_route && ping -c 1 -W 5 -I "$IFACE" 8.8.8.8 >/dev/null 2>&1; then
+            : # re-pin fixed it; tunnel passing again
+        else
+            reason="tunnel not passing traffic"
+        fi
     elif dns_intercept_active && pidof dnsmasq >/dev/null 2>&1 && ! dns_ok; then
         # Confirm before acting: dnsmasq gets bounced by many unrelated events (DHCP lease
         # churn, other addons, our own reload_dnsmasq). Re-probe after a short settle so a
@@ -2077,6 +2251,16 @@ do_wan_event(){
 
 do_firewall_restart(){
     is_running || return 0
+    # Fast path (the firewall-start hook passes "fast"): if the firmware's firewall restart
+    # did NOT actually clobber our mangle hook or the tunnel routes, there's nothing to
+    # rebuild — skip the full teardown+rebuild and its brief leak/blackhole window. Internal
+    # callers (awgupdategeo, update_geo, watchdog heal) call WITHOUT "fast" to force a full
+    # rebuild (e.g. to reload a freshly downloaded ipset).
+    if [ "$1" = "fast" ] \
+       && iptables -t mangle -C PREROUTING -j "$AWG_CHAIN" 2>/dev/null \
+       && ip route show table $RT_TABLE 2>/dev/null | grep -q "0.0.0.0/1"; then
+        return 0
+    fi
     log_msg "Firewall restart detected, re-applying routes and rules"
     acquire_lock || { log_msg "Cannot acquire lock, aborting firewall restart"; return 1; }
 
@@ -2108,6 +2292,8 @@ do_firewall_restart(){
     ip route add 0.0.0.0/1 dev "$IFACE" table $RT_TABLE 2>/dev/null
     ip route add 128.0.0.0/1 dev "$IFACE" table $RT_TABLE 2>/dev/null
     [ -n "$lan_net" ] && ip route add "$lan_net" dev br0 table $RT_TABLE 2>/dev/null
+    # Kill-switch (opt-in) — see do_start for rationale; survives awg0 disappearing.
+    [ "$(get_setting awg_killswitch)" = "1" ] && ip route add blackhole default table $RT_TABLE metric 1000 2>/dev/null
 
     save_and_set_rp_filter
 
@@ -2177,7 +2363,7 @@ do_service_event(){
             do_manual_install
             ;;
         awgstart)       do_start ;;
-        awgstop)        do_stop ;;
+        awgstop)        do_stop user ;;
         awgrestart)     do_stop; wait_for_pid_exit amneziawg-go 10; do_start ;;
         awgforceapply)
             # Force Apply: persist settings, then full restart (re-runs setconf +
@@ -2191,7 +2377,14 @@ do_service_event(){
         awgsaveconf)
             local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_privatekey)" ]; do sleep 1; _wt=$((_wt+1)); done
             generate_config
-            is_running && setup_firewall
+            # Apply WITHOUT a VPN restart, but under the operation lock so this rebuild can't
+            # race the firewall-start hook's do_firewall_restart, and with the LAN deadman
+            # armed so a config that kills dnsmasq still rolls back (same net as do_start).
+            if is_running && acquire_lock; then
+                arm_lan_deadman "$(pidof amneziawg-go 2>/dev/null | awk '{print $1}')"
+                setup_firewall
+                release_lock
+            fi
             ensure_geo   # download configured-but-missing geo lists (bg), then re-apply
             update_status
             ;;
@@ -2213,7 +2406,8 @@ do_service_event(){
 
 case "$1" in
     start)          do_start ;;
-    stop)           do_stop ;;
+    stop)           do_stop user ;;
+    stop_auto)      do_stop ;;          # internal: auto-rollback stop (deadman); keeps watchdog cron
     restart)        do_stop; wait_for_pid_exit amneziawg-go 10; do_start ;;
     status)         update_status ;;
     diag|diagnostics) do_diag ;;
@@ -2227,7 +2421,7 @@ case "$1" in
     uninstall)      do_uninstall ;;
     service_event)  do_service_event "$2" "$3" ;;
     wan_event)      do_wan_event "$2" "$3" ;;
-    firewall_restart) do_firewall_restart ;;
+    firewall_restart) do_firewall_restart fast ;;
     download_geo)   download_all_geo ;;
     ensure_geo)     ensure_geo ;;
     *)              echo "Usage: $0 {start|stop|restart|status|diag|update_geo|download_geo|install_page|uninstall}" ;;

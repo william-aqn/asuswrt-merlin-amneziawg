@@ -699,6 +699,7 @@ function applyConfig(actionScript){
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
     custom_settings.awg_no_dns_intercept = document.getElementById('awg_no_dns_intercept').checked ? '1' : '0';
+    custom_settings.awg_killswitch = document.getElementById('awg_killswitch').checked ? '1' : '0';
     custom_settings.awg_geo_wipe_update = document.getElementById('awg_geo_wipe_update').checked ? '1' : '0';
     // Download-via-VPN toggles (route geo / program-update downloads through the tunnel)
     custom_settings.awg_geo_via_awg = document.getElementById('awg_geo_via_awg').checked ? '1' : '0';
@@ -817,6 +818,9 @@ function loadGeoSettings(){
     // Coexistence: don't hijack DNS (default off; backend also auto-skips if zapret detected)
     var ndi = document.getElementById('awg_no_dns_intercept');
     if(ndi) ndi.checked = (custom_settings.awg_no_dns_intercept === '1');
+    // Kill-switch (default off — preserves prior fail-open behavior unless the user opts in)
+    var ks = document.getElementById('awg_killswitch');
+    if(ks) ks.checked = (custom_settings.awg_killswitch === '1');
     var wp = document.getElementById('awg_geo_wipe_update');
     if(wp) wp.checked = (custom_settings.awg_geo_wipe_update === '1');
     // Download-via-VPN toggles (default off)
@@ -1591,6 +1595,13 @@ function initAutocompleteIp(){
                     <td>
                         <label><input type="checkbox" id="awg_block_ipv6_dns"> Block IPv6 DNS resolution (filter-AAAA)</label>
                         <div style="color:#666; font-size:11px; margin-top:3px;">Critical for Geo routing reliability. Prevents dual-stack domains from bypassing the VPN.</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Kill-switch</th>
+                    <td>
+                        <label><input type="checkbox" id="awg_killswitch"> Блокировать VPN-трафик при падении туннеля (strict kill-switch)</label>
+                        <div style="color:#666; font-size:11px; margin-top:3px;">По умолчанию выключено. Когда включено: если туннель внезапно падает (краш демона / нехватка памяти), трафик устройств с политикой «VPN» не уходит в обход в WAN открытым текстом, а блокируется до восстановления (watchdog поднимает туннель в течение ~5 мин). Выключено — прежнее поведение (трафик может временно идти мимо VPN). Влияет только на устройства с политикой VPN/Geo; при политике по умолчанию «VPN — All Traffic» затрагивает весь LAN.</div>
                     </td>
                 </tr>
                 <tr>
