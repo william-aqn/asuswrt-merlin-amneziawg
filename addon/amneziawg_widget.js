@@ -49,7 +49,7 @@
       st.id = "awgWidgetStyle";
       st.textContent =
         "#awgHeaderInd{display:inline-flex;align-items:center;gap:5px;cursor:pointer;" +
-        "font:11px/1 Arial,Helvetica,sans-serif;color:#e8e8e8;padding:3px 8px;margin:0 5px;" +
+        "font:11px/1 Arial,Helvetica,sans-serif;color:#e8e8e8;padding:3px 8px;margin:0 0 0 8px;" +
         "border-radius:11px;background:rgba(0,0,0,.30);vertical-align:middle;white-space:nowrap;" +
         "user-select:none;-webkit-user-select:none;}" +
         "#awgHeaderInd .awg-dot{width:9px;height:9px;border-radius:50%;background:#888;" +
@@ -84,6 +84,7 @@
 
     function findContainer() {
       var sels = [
+        "#status_block", ".statusBar",
         "#statusicon", ".statusbar", "#status_icon", ".status_icon",
         "#topbar", ".topbar", ".top_bar",
         "#TopBanner .product", "#TopBanner"
@@ -110,8 +111,22 @@
     }
 
     function placeIndicator(d) {
+      // Prefer: right after the QoS (Adaptive QoS / "bwdpi") icon in the status row.
+      var block = document.getElementById("status_block");
+      var qos = document.getElementById("bwdpi_status");
+      if (block && qos) {
+        // climb to the direct child of #status_block that holds the QoS icon
+        var node = qos;
+        while (node.parentNode && node.parentNode !== block) node = node.parentNode;
+        if (node.parentNode === block) {
+          try { block.insertBefore(d, node.nextSibling); return; } catch (e) {}
+        }
+      }
+      if (block) { try { block.appendChild(d); return; } catch (e) {} }
+      // Else: other known header containers
       var c = findContainer();
       if (c) { try { c.appendChild(d); return; } catch (e) {} }
+      // Else: floating pill top-right
       if (d.className.indexOf("awg-fixed") === -1) d.className += " awg-fixed";
       document.body.appendChild(d);
     }
