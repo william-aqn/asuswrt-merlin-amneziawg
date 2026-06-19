@@ -193,6 +193,12 @@ Output: `output/amneziawg_1.0.0-1_aarch64-3.10.ipk`
 /opt/etc/init.d/S99amneziawg stop
 /opt/etc/init.d/S99amneziawg restart
 
+# Update the program to the latest version
+/opt/etc/init.d/S99amneziawg update
+
+# Install a specific version (e.g. rollback or pin)
+/opt/etc/init.d/S99amneziawg update 1.1.50
+
 # Show tunnel status
 awg show
 

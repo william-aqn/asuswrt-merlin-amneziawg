@@ -202,6 +202,12 @@ DOCKER_BUILDKIT=1 docker build -f Dockerfile.arm32 --output=output .
 /opt/etc/init.d/S99amneziawg stop
 /opt/etc/init.d/S99amneziawg restart
 
+# Обновление программы до последней версии
+/opt/etc/init.d/S99amneziawg update
+
+# Установка конкретной версии (например, откат или фикс)
+/opt/etc/init.d/S99amneziawg update 1.1.50
+
 # Статус туннеля
 awg show
 
