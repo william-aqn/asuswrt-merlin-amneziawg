@@ -81,6 +81,13 @@
     border-radius: 3px;
 }
 
+/* Mask secret fields (WG private key / PSK) WITHOUT type=password, so the browser never
+   offers to "save password" when the page form is submitted (Start/Stop/Restart). Disabling
+   the fields at submit (1.1.74) didn't help — Chromium captures the value as you type, not
+   only at submit. -webkit-text-security masks in Chromium/Edge/Safari (the router-UI
+   browsers); Firefox lacks it and would show the value as plain text. */
+.awg-secret { -webkit-text-security: disc; }
+
 #awg_peers_table { width: 100%; table-layout: fixed; }
 #awg_peers_table thead td {
     font-weight: bold;
@@ -428,19 +435,13 @@ function awgBytesToB64(bytes){
     return btoa(bin);
 }
 
-// Submit the shared form. Some browsers pop a "Save password?" prompt whenever a form that
-// contains an <input type="password"> is submitted — here the WG private key / PSK fields.
-// Those fields have NO `name` and are never POSTed (their values reach the backend via
-// amng_custom, set by JS), so disable them for the instant of submit: the form stops looking
-// like a login and the browser stops offering to save it. Purely cosmetic — the POST body is
-// unchanged. Re-enabled immediately (the submit targets hidden_frame, so the page doesn't
-// navigate and the finally always runs).
+// Single submit point for the shared form. The browser's "Save password?" prompt fires
+// whenever a form containing an <input type="password"> is submitted — here the WG private
+// key / PSK. Those fields are rendered as masked type=text (class awg-secret, see CSS) rather
+// than type=password specifically so the browser never treats the form as a login. (Disabling
+// the fields at submit — 1.1.74 — was not enough: Chromium captures the value while typing.)
 function awgSubmitForm(){
-    var pw = [document.getElementById('awg_privatekey'), document.getElementById('awg_peer_psk')];
-    var i;
-    for(i = 0; i < pw.length; i++){ if(pw[i]) pw[i].disabled = true; }
-    try { document.form.submit(); }
-    finally { for(i = 0; i < pw.length; i++){ if(pw[i]) pw[i].disabled = false; } }
+    document.form.submit();
 }
 
 // Submit the shared form (-> hidden_frame, proven auth path) with the current settings
@@ -1496,7 +1497,7 @@ function initAutocompleteIp(){
                 <thead><tr><td colspan="2">Interface</td></tr></thead>
                 <tr>
                     <th width="35%">Private Key</th>
-                    <td><input type="password" class="input_32_table" id="awg_privatekey" maxlength="64" autocomplete="off"></td>
+                    <td><input type="text" class="input_32_table awg-secret" id="awg_privatekey" maxlength="64" autocomplete="off"></td>
                 </tr>
                 <tr>
                     <th>Address</th>
@@ -1525,7 +1526,7 @@ function initAutocompleteIp(){
                 </tr>
                 <tr>
                     <th>Preshared Key</th>
-                    <td><input type="password" class="input_32_table" id="awg_peer_psk" maxlength="64" autocomplete="off" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table awg-secret" id="awg_peer_psk" maxlength="64" autocomplete="off" placeholder="(optional)"></td>
                 </tr>
                 <tr>
                     <th>Endpoint</th>
