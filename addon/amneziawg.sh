@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.76"
+AWG_VERSION="1.1.77"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -20,6 +20,7 @@ AWG_UPLOAD_SEQ="/tmp/.amneziawg_manual.seq"
 AWG_UPLOAD_STATUS="/www/user/awg_upload.htm"
 STARTING_FLAG="/tmp/.awg_starting"
 STOPPING_FLAG="/tmp/.awg_stopping"
+GEO_BUSY_FLAG="/tmp/.awg_geo_busy"
 SETTINGS="/jffs/addons/custom_settings.txt"
 CLIENTS_FILE="$AWG_DIR/clients.list"
 GEO_DIR="$AWG_DIR/geo"
@@ -1684,12 +1685,12 @@ update_status(){
         if [ -n "$dump" ]; then
             local p_items=""
             while IFS='	' read -r pkey psk endpoint aips handshake rx tx keepalive; do
-                local hs_text="never"
+                local hs_text="никогда"
                 if [ "$handshake" != "0" ] && [ -n "$handshake" ]; then
                     local ago=$(( $(date +%s) - handshake ))
-                    if [ $ago -lt 60 ]; then hs_text="${ago}s ago"
-                    elif [ $ago -lt 3600 ]; then hs_text="$(( ago / 60 ))m ago"
-                    else hs_text="$(( ago / 3600 ))h ago"; fi
+                    if [ $ago -lt 60 ]; then hs_text="${ago} с назад"
+                    elif [ $ago -lt 3600 ]; then hs_text="$(( ago / 60 )) мин назад"
+                    else hs_text="$(( ago / 3600 )) ч назад"; fi
                 fi
                 local rx_h=$(human_size "${rx:-0}")
                 local tx_h=$(human_size "${tx:-0}")
@@ -1719,6 +1720,8 @@ EOF
 
     local geo_downloaded=false
     geo_available && geo_downloaded=true
+    local geo_busy=false
+    [ -f "$GEO_BUSY_FLAG" ] && geo_busy=true
 
     local starting=false
     [ -f "$STARTING_FLAG" ] && starting=true
@@ -1738,7 +1741,7 @@ EOF
 
     # Write atomically (temp + rename) so the UI never reads a half-written file.
     cat > "${STATUS_FILE}.tmp" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.tmp" "$STATUS_FILE" 2>/dev/null
 }
@@ -2436,7 +2439,10 @@ do_service_event(){
             update_status
             ;;
         awgupdategeo)
+            touch "$GEO_BUSY_FLAG"
+            update_status            # let the UI show "downloading…" immediately (sync download blocks update_status)
             update_geo_lists
+            rm -f "$GEO_BUSY_FLAG"
             do_firewall_restart
             update_status
             ;;

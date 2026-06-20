@@ -3,6 +3,7 @@
 <head>
 <meta http-equiv="X-UA-Compatible" content="IE=Edge"/>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta HTTP-EQUIV="Pragma" CONTENT="no-cache">
 <meta HTTP-EQUIV="Expires" CONTENT="-1">
 <link rel="shortcut icon" href="images/favicon.png">
@@ -133,6 +134,46 @@
 .awg-ac-list div:hover, .awg-ac-list div.selected { background:#666; color:#fff; }
 .awg-ac-list::-webkit-scrollbar { width:5px; }
 .awg-ac-list::-webkit-scrollbar-thumb { background:#888; border-radius:3px; }
+
+/* ---- UX pass: responsive / focus / hierarchy / utilities ---- */
+/* Keep the desktop 760px look but never force horizontal scroll on phones. */
+#FormTitle { width:760px; max-width:100%; box-sizing:border-box; }
+#FormTitle table, #FormTitle input, #FormTitle select, #FormTitle textarea { max-width:100%; box-sizing:border-box; }
+@media (max-width:480px){ #FormTitle { width:100%; } }
+
+/* Visible keyboard focus (firmware stylesheets often strip outlines). */
+:focus-visible { outline:2px solid #5db0ff; outline-offset:1px; }
+
+/* One accent identity for top-level section headers (ROG red). */
+.awg-section { border-left:3px solid #cf0a2c; padding-left:8px; color:#e8edf2; }
+
+/* Secondary source caption + wide inputs — kill inline drift. */
+.awg-src { color:#b6bdc7; font-weight:normal; font-size:11px; }
+.awg-input-wide { width:95%; }
+
+/* Horizontal-scroll wrapper for data grids on narrow screens. */
+.awg-tablewrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+
+/* Status badge + buttons row: flex like the header cluster. */
+.awg-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+
+/* Collapsible <details> for Obfuscation + long hints (no JS). */
+.awg-details > summary { cursor:pointer; }
+.awg-details > summary::-webkit-details-marker, .awg-hint summary::-webkit-details-marker { color:#b6bdc7; }
+.awg-hint summary { cursor:pointer; color:#d7dce3; }
+
+/* Inline Apply ack + invalid-field highlight. */
+.awg-ack { display:inline-block; margin-left:10px; font-size:12px; opacity:0; transition:opacity .2s; }
+.awg-ack.show { opacity:1; }
+.awg-ack.ok { color:#5bd75b; }
+.awg-ack.err { color:#f0ad4e; }
+.awg-invalid { border:1px solid #c00 !important; }
+
+/* Top-of-form quick Apply bar. */
+.awg-applybar-top { margin:8px 0 2px; padding:6px 8px; background:rgba(255,255,255,0.04); border:1px solid #5a6b70; border-radius:4px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+
+/* Modal inputs aligned to the page palette (was a separate color island). */
+.awg-modal-input { padding:2px 6px; background:#1c2226; color:#e0e0e0; border:1px solid #5a6b70; border-radius:4px; }
 </style>
 <script>
 var custom_settings = <% get_custom_settings(); %>;
@@ -279,7 +320,7 @@ function syncViaVpnToggles(){
 
 function doUpdate(version){
     var badge = document.getElementById('awg_badge');
-    if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; Updating...'; }
+    if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; Обновление…'; }
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
 
     // Carry the current "download via VPN" choice even without a prior Apply.
@@ -337,6 +378,10 @@ function openUpdateModal(){
         : ('История изменений' + (awgCurrentVersion ? ' — v' + awgCurrentVersion : ''));
     if(body) body.innerHTML = '<div style="opacity:0.7;">Загрузка списка изменений…</div>';
     m.style.display = 'block';
+    awgModalPrevFocus = document.activeElement;
+    document.addEventListener('keydown', awgModalKeydown);
+    var firstCtl = document.getElementById('awg_install_mode');
+    if(firstCtl){ try { firstCtl.focus(); } catch(e){} }
     awgManualUI(false);    // hide any leftover upload progress
     awgManualEnd(false);   // re-enable the install button
     awgModeUI();           // show the input matching the current mode
@@ -352,8 +397,16 @@ function closeUpdateModal(){
     if(awgUploading && !confirm('Идёт загрузка/установка. Закрыть окно и прекратить отслеживание?')) return;
     awgRun++;             // invalidate any in-flight upload/poll loops
     awgManualEnd(false);  // reset the install button + awgUploading flag
+    document.removeEventListener('keydown', awgModalKeydown);
     var m = document.getElementById('awg_update_modal');
     if(m) m.style.display = 'none';
+    if(awgModalPrevFocus){ try { awgModalPrevFocus.focus(); } catch(e){} awgModalPrevFocus = null; }
+}
+
+// Esc closes the update modal (listener added while it's open, removed on close).
+var awgModalPrevFocus = null;
+function awgModalKeydown(e){
+    if(e.key === 'Escape' || e.keyCode === 27) closeUpdateModal();
 }
 
 // Show the version field / file field for the selected install mode.
@@ -691,13 +744,63 @@ function loadSettings(){
     // Load geo settings
     loadGeoSettings();
     updateGeoVisibility();
+    updateFirstRun();
 }
 
 function saveSettings(){ applyConfig('start_awgsaveconf'); }
 
 function forceApply(){
-    if(!confirm('Force Apply: сохранить настройки, перезапустить VPN и полностью пересобрать маршруты и firewall?')) return;
+    if(!confirm('Принудительно применить: VPN будет полностью перезапущен (stop → start) — соединение временно прервётся (устройства с политикой VPN потеряют доступ на несколько секунд). Заодно пересоберутся маршруты и firewall. Продолжить?')) return;
     applyConfig('start_awgforceapply');
+}
+
+// ---- UX helpers: apply feedback, validation, first-run --------------------------------
+// Both Apply buttons (top quick-bar + bottom) are matched by their onclick so we don't
+// have to thread ids through the markup.
+function awgApplyBtns(){
+    return document.querySelectorAll('input[onclick^="saveSettings"], input[onclick^="forceApply"]');
+}
+function awgSetApplyBusy(busy){
+    var b = awgApplyBtns();
+    for(var i = 0; i < b.length; i++){
+        b[i].disabled = busy;
+        if(busy){ b[i]._lbl = b[i].value; b[i].value = 'Применение…'; }
+        else if(b[i]._lbl){ b[i].value = b[i]._lbl; }
+    }
+}
+function awgShowAck(msg, ok){
+    var ids = ['awg_ack_top', 'awg_ack_bottom'];
+    for(var i = 0; i < ids.length; i++){
+        var el = document.getElementById(ids[i]);
+        if(el){ el.textContent = msg; el.className = 'awg-ack show ' + (ok ? 'ok' : 'err'); }
+    }
+    setTimeout(function(){
+        for(var j = 0; j < ids.length; j++){ var e = document.getElementById(ids[j]); if(e) e.className = 'awg-ack'; }
+    }, ok ? 2500 : 5000);
+}
+// Focus + highlight the first offending field (instead of a bare alert that names no field).
+function awgFlagField(id, msg){
+    var prev = document.querySelectorAll('.awg-invalid');
+    for(var i = 0; i < prev.length; i++) prev[i].className = prev[i].className.replace(/\s*awg-invalid/, '');
+    var el = document.getElementById(id);
+    if(el){
+        el.className += ' awg-invalid';
+        try { el.scrollIntoView({block:'center'}); } catch(e){ try { el.scrollIntoView(); } catch(e2){} }
+        try { el.focus(); } catch(e3){}
+        var clr = function(){ el.className = el.className.replace(/\s*awg-invalid/, ''); el.removeEventListener('input', clr); };
+        el.addEventListener('input', clr);
+    }
+    if(msg) alert(msg);
+}
+// First-run: no key/peer yet → guide to Import and don't let Start run an empty config.
+function updateFirstRun(){
+    var pk = (document.getElementById('awg_privatekey') || {}).value || '';
+    var pubk = (document.getElementById('awg_peer_pubkey') || {}).value || '';
+    var empty = !pk && !pubk;
+    var fr = document.getElementById('awg_firstrun');
+    if(fr) fr.style.display = empty ? '' : 'none';
+    var sb = document.getElementById('btn_start');
+    if(sb){ sb.disabled = empty; sb.title = empty ? 'Сначала импортируйте конфигурацию (.conf)' : ''; }
 }
 
 function applyConfig(actionScript){
@@ -733,7 +836,7 @@ function applyConfig(actionScript){
     try {
         custom_settings.awg_initdata = initData ? btoa(initData) : '';
     } catch(e){
-        alert('I1-I5 contain invalid (non-ASCII) characters.');
+        alert('Поля I1–I5 содержат недопустимые (не-ASCII) символы.');
         return;
     }
 
@@ -763,21 +866,28 @@ function applyConfig(actionScript){
     var pubk = document.getElementById('awg_peer_pubkey').value;
     var ep = document.getElementById('awg_peer_endpoint').value;
     if(!pk || !pubk || !ep){
-        alert('Required: Private Key, Peer Public Key, and Endpoint.');
+        awgFlagField(!pk ? 'awg_privatekey' : (!pubk ? 'awg_peer_pubkey' : 'awg_peer_endpoint'),
+                     'Обязательные поля: Private Key, Peer Public Key и Endpoint.');
         return;
     }
     if(pk.length !== 44 || pubk.length !== 44){
-        alert('Invalid key format. Keys must be 44 characters (base64).');
+        awgFlagField(pk.length !== 44 ? 'awg_privatekey' : 'awg_peer_pubkey',
+                     'Неверный формат ключа. Ключи должны быть длиной 44 символа (base64).');
         return;
     }
     if(!/:\d{1,5}$/.test(ep)){
-        alert('Endpoint must include port (e.g. server:51820).');
+        awgFlagField('awg_peer_endpoint', 'Endpoint должен содержать порт (например, server:51820).');
         return;
     }
 
-    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
-    document.form.action_script.value = actionScript;
-    awgSubmitForm();
+    // Submit via the shared helper so we get a completion callback for the ack, and disable
+    // the Apply buttons meanwhile so an impatient second tap can't queue a redundant
+    // firewall rebuild / tunnel restart under the backend lock.
+    awgSetApplyBusy(true);
+    awgPostSettings(actionScript, null, null, function(ok){
+        awgSetApplyBusy(false);
+        awgShowAck(ok ? 'Сохранено ✓' : 'Не удалось отправить — повторите', ok);
+    });
     // No full-page reload: status + log refresh live via polling. Reloading after a
     // form POST makes the browser prompt to resubmit the form ("Повторить отправку").
 }
@@ -805,16 +915,55 @@ function addClientRow(ip, name, policy){
     var tr = document.createElement('tr');
     policy = policy || 'vpn_all';
     tr.innerHTML =
-        '<td><input type="text" class="client_ip input_25_table" value="' + escHtml(ip) + '" placeholder="192.168.1.100"></td>' +
-        '<td><input type="text" class="client_name input_25_table" value="' + escHtml(name) + '" placeholder="iPhone, PS5, TV..."></td>' +
-        '<td><select class="client_policy input_option" onchange="updateGeoVisibility();" style="width:100%;">' +
-            '<option value="vpn_all"' + (policy==='vpn_all'?' selected':'') + '>VPN (All)</option>' +
-            '<option value="vpn_geo"' + (policy==='vpn_geo'?' selected':'') + '>VPN (Geo)</option>' +
-            '<option value="direct"' + (policy==='direct'?' selected':'') + '>Direct</option>' +
+        '<td><input type="text" class="client_ip input_25_table" value="' + escHtml(ip) + '" placeholder="192.168.1.100" aria-label="IP-адрес устройства"></td>' +
+        '<td><input type="text" class="client_name input_25_table" value="' + escHtml(name) + '" placeholder="iPhone, PS5, TV..." aria-label="Имя устройства"></td>' +
+        '<td><select class="client_policy input_option" onchange="updateGeoVisibility();" style="width:100%;" aria-label="Политика маршрутизации устройства">' +
+            '<option value="vpn_all"' + (policy==='vpn_all'?' selected':'') + '>VPN: весь трафик</option>' +
+            '<option value="vpn_geo"' + (policy==='vpn_geo'?' selected':'') + '>VPN: только Geo</option>' +
+            '<option value="direct"' + (policy==='direct'?' selected':'') + '>Напрямую</option>' +
         '</select></td>' +
-        '<td style="text-align:center;"><button type="button" class="awg-remove-btn" onclick="this.closest(\'tr\').remove(); updateGeoVisibility();">&times;</button></td>';
+        '<td style="text-align:center;"><button type="button" class="awg-remove-btn" aria-label="Удалить устройство" title="Удалить" onclick="awgRemoveClientRow(this);">&times;</button></td>';
     tbody.appendChild(tr);
     updateGeoVisibility();
+}
+
+// Remove a device row with one-level undo: a mis-tap on the × (which sits right next to the
+// policy select) is easy, and the deletion only becomes permanent on Apply. Stash the row
+// and offer "Отменить" near the Add buttons.
+var awgLastRemoved = null;
+function awgRemoveClientRow(btn){
+    var tr = btn.closest('tr');
+    if(!tr) return;
+    var rows = Array.prototype.slice.call(document.querySelectorAll('#awg_client_rows tr'));
+    awgLastRemoved = {
+        ip: (tr.querySelector('.client_ip') || {}).value || '',
+        name: (tr.querySelector('.client_name') || {}).value || '',
+        policy: (tr.querySelector('.client_policy') || {}).value || 'vpn_all',
+        idx: rows.indexOf(tr)
+    };
+    tr.parentNode.removeChild(tr);
+    updateGeoVisibility();
+    awgRenderUndo();
+}
+function awgRenderUndo(){
+    var bar = document.getElementById('awg_client_undo');
+    if(!bar) return;
+    if(awgLastRemoved){
+        bar.innerHTML = 'Устройство удалено. <a href="javascript:void(0)" onclick="awgUndoRemove();" style="color:#5db0ff;">Отменить</a>';
+        bar.style.display = '';
+    } else { bar.style.display = 'none'; bar.innerHTML = ''; }
+}
+function awgUndoRemove(){
+    if(!awgLastRemoved) return;
+    var r = awgLastRemoved;
+    awgLastRemoved = null;
+    addClientRow(r.ip, r.name, r.policy);   // appends at the end…
+    var rows = document.querySelectorAll('#awg_client_rows tr');
+    var tb = document.getElementById('awg_client_rows');
+    if(r.idx >= 0 && r.idx < rows.length - 1){   // …move it back to its original slot
+        tb.insertBefore(rows[rows.length - 1], rows[r.idx]);
+    }
+    awgRenderUndo();
 }
 
 function serializeClients(){
@@ -888,20 +1037,41 @@ function loadGeoSettings(){
 }
 
 function updateGeoLists(){
+    if(awgGeoBusy) return;
     var btn = document.getElementById('btn_geo_update');
-    var isDownload = btn && btn.value === 'Download Lists';
+    var isDownload = btn && btn.value === 'Скачать списки';
     var msg = isDownload
-        ? 'Download all GeoIP and domain lists?\nThis may take 1-2 minutes.'
-        : 'Force re-download all GeoIP and domain lists?\nThis may take 1-2 minutes.';
+        ? 'Скачать все списки GeoIP и доменов?\nЭто может занять 1–2 минуты.'
+        : 'Принудительно перекачать все списки GeoIP и доменов?\nЭто может занять 1–2 минуты.';
+    var wipe = document.getElementById('awg_geo_wipe_update');
+    if(wipe && wipe.checked){
+        msg += '\n\nВключена «Очистка перед обновлением»: все скачанные geo-списки будут удалены перед загрузкой. При сбое загрузки списки останутся отсутствующими.';
+    }
     if(!confirm(msg)) return;
     var log = document.getElementById('awg_log');
-    if(log) log.textContent = 'Downloading geo lists... Please wait.';
+    if(log) log.textContent = 'Загрузка geo-списков… Подождите.';
+    awgSetGeoBusy(true);
     // Carry the current "download via VPN" choice even without a prior Apply.
     syncViaVpnToggles();
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = "start_awgupdategeo";
     awgSubmitForm();
     // No reload: geo progress and result show live in the log + status via polling.
+}
+
+// Geo update takes 1-2 min. Disable the button + show "Загрузка…" so it isn't re-triggered;
+// updateStatusUI clears it when the backend reports geo_busy=false, with a safety timeout
+// so we always recover even if that flag never arrives.
+var awgGeoBusy = false;
+var awgGeoBusySeen = false;   // observed the backend's geo_busy=true yet? (race guard)
+var awgGeoBusyTimer = null;
+function awgSetGeoBusy(busy){
+    awgGeoBusy = busy;
+    if(busy) awgGeoBusySeen = false;
+    var btn = document.getElementById('btn_geo_update');
+    if(btn){ btn.disabled = busy; if(busy) btn.value = 'Загрузка…'; }
+    if(awgGeoBusyTimer){ clearTimeout(awgGeoBusyTimer); awgGeoBusyTimer = null; }
+    if(busy) awgGeoBusyTimer = setTimeout(function(){ awgSetGeoBusy(false); }, 180000);
 }
 
 function fetchDhcpClients(){
@@ -939,30 +1109,63 @@ function fetchDhcpClients(){
 function fetchDhcpLeases(){
     // Fallback when the get_clientlist hook is unavailable: ask for IPs directly.
     // (Parsing the firmware's client pages is version-specific and unreliable.)
-    var input = prompt('Could not read the DHCP client list.\nEnter device IPs to add (comma-separated):');
+    var input = prompt('Не удалось получить список клиентов DHCP.\nВведите IP устройств для добавления (через запятую):');
     if(input) addManualIPs(input);
 }
 
+// Real selection UI (replaces the old numbered prompt()): a checkbox list of DHCP clients
+// with one shared policy, rendered as a lightweight overlay.
+var awgDhcpClients = [];
 function showClientPicker(clients){
-    var msg = 'DHCP clients:\n\n';
+    awgCloseDhcp();
+    awgDhcpClients = clients;
+    var rows = '';
     for(var i = 0; i < clients.length; i++){
-        msg += (i+1) + ') ' + clients[i].ip + ' — ' + clients[i].name + '\n';
+        rows += '<label style="display:flex; align-items:center; gap:8px; padding:6px 4px; border-bottom:1px solid #3a4548;">' +
+                '<input type="checkbox" class="awg-dhcp-cb" value="' + i + '">' +
+                '<span style="font-family:monospace;">' + escHtml(clients[i].ip) + '</span>' +
+                '<span style="color:#b6bdc7; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escHtml(clients[i].name) + '</span>' +
+                '</label>';
     }
-    msg += '\nEnter numbers (e.g. 1,3,5) or IPs directly:';
-    var input = prompt(msg);
-    if(!input) return;
-
-    var items = input.split(',');
-    for(var i = 0; i < items.length; i++){
-        var v = items[i].trim();
-        var num = parseInt(v);
-        if(!isNaN(num) && num >= 1 && num <= clients.length){
-            var c = clients[num - 1];
-            addClientRow(c.ip, c.name, 'vpn_all');
-        } else if(v.match(/^\d+\.\d+\.\d+\.\d+$/)){
-            addClientRow(v, '', 'vpn_all');
+    var ov = document.createElement('div');
+    ov.id = 'awg_dhcp_modal';
+    ov.setAttribute('role', 'dialog');
+    ov.setAttribute('aria-modal', 'true');
+    ov.setAttribute('aria-label', 'Выбор устройств из DHCP');
+    ov.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); z-index:10001;';
+    ov.innerHTML =
+        '<div style="background:#2b3338; color:#e0e0e0; width:90%; max-width:520px; margin:6% auto; border:1px solid #444; border-radius:8px; display:flex; flex-direction:column; max-height:80vh;">' +
+            '<div style="padding:12px 16px; border-bottom:1px solid #444; display:flex; align-items:center;">' +
+                '<span style="font-weight:bold;">Устройства из DHCP</span>' +
+                '<button type="button" aria-label="Закрыть" onclick="awgCloseDhcp();" style="margin-left:auto; background:transparent; border:none; color:inherit; font-size:22px; cursor:pointer;">&times;</button>' +
+            '</div>' +
+            '<div style="padding:8px 16px; overflow-y:auto; font-size:12px;">' + rows + '</div>' +
+            '<div style="padding:10px 16px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">' +
+                '<span style="font-size:12px;">Политика:</span>' +
+                '<select id="awg_dhcp_policy" class="awg-modal-input" aria-label="Политика для выбранных устройств">' +
+                    '<option value="vpn_all">VPN: весь трафик</option>' +
+                    '<option value="vpn_geo">VPN: только Geo</option>' +
+                    '<option value="direct">Напрямую</option>' +
+                '</select>' +
+                '<input type="button" class="button_gen" value="Добавить выбранные" onclick="awgAddDhcpSelected();" style="margin-left:auto;">' +
+            '</div>' +
+        '</div>';
+    document.body.appendChild(ov);
+}
+function awgCloseDhcp(){
+    var ov = document.getElementById('awg_dhcp_modal');
+    if(ov) ov.parentNode.removeChild(ov);
+}
+function awgAddDhcpSelected(){
+    var pol = (document.getElementById('awg_dhcp_policy') || {}).value || 'vpn_all';
+    var cbs = document.querySelectorAll('.awg-dhcp-cb');
+    for(var i = 0; i < cbs.length; i++){
+        if(cbs[i].checked){
+            var c = awgDhcpClients[parseInt(cbs[i].value, 10)];
+            if(c) addClientRow(c.ip, c.name, pol);
         }
     }
+    awgCloseDhcp();
 }
 
 function addManualIPs(input){
@@ -989,7 +1192,7 @@ function awgAction(action){
 
     // Show transitional status
     badge.className = 'awg-status connecting';
-    badge.innerHTML = isStop ? '&#9679; Stopping...' : '&#9679; Connecting...';
+    badge.innerHTML = isStop ? '&#9679; Остановка…' : '&#9679; Подключение…';
 
     // Poll until status is fully ready
     var attempts = 0;
@@ -1099,34 +1302,34 @@ function updateStatusUI(s){
 
     if(s.stopping){
         badge.className = 'awg-status connecting';
-        badge.innerHTML = '&#9679; Stopping...';
+        badge.innerHTML = '&#9679; Остановка…';
         document.getElementById('btn_start').style.display = 'none';
         document.getElementById('btn_stop').style.display = 'none';
         document.getElementById('btn_restart').style.display = 'none';
     } else if(s.running){
         badge.className = 'awg-status running';
-        badge.innerHTML = '&#9679; Connected';
+        badge.innerHTML = '&#9679; Подключено';
         document.getElementById('btn_start').style.display = 'none';
         document.getElementById('btn_stop').style.display = '';
         document.getElementById('btn_restart').style.display = '';
     } else if(s.starting){
         badge.className = 'awg-status connecting';
-        badge.innerHTML = '&#9679; Connecting...';
+        badge.innerHTML = '&#9679; Подключение…';
         document.getElementById('btn_start').style.display = 'none';
         document.getElementById('btn_stop').style.display = '';
         document.getElementById('btn_restart').style.display = 'none';
     } else {
         badge.className = 'awg-status stopped';
-        badge.innerHTML = '&#9679; Stopped';
+        badge.innerHTML = '&#9679; Остановлено';
         document.getElementById('btn_start').style.display = '';
         document.getElementById('btn_stop').style.display = 'none';
         document.getElementById('btn_restart').style.display = 'none';
     }
 
     info.innerHTML = '';
-    if(s.interface_addr) info.innerHTML += 'Address: ' + escHtml(s.interface_addr) + '<br>';
-    if(s.public_key) info.innerHTML += 'Public Key: ' + escHtml(s.public_key.substring(0,12)) + '...<br>';
-    if(s.listen_port) info.innerHTML += 'Listen Port: ' + escHtml(s.listen_port) + '<br>';
+    if(s.interface_addr) info.innerHTML += 'Адрес: ' + escHtml(s.interface_addr) + '<br>';
+    if(s.public_key) info.innerHTML += 'Открытый ключ: ' + escHtml(s.public_key.substring(0,12)) + '...<br>';
+    if(s.listen_port) info.innerHTML += 'Порт: ' + escHtml(s.listen_port) + '<br>';
 
     var html = '';
     if(s.peers && s.peers.length > 0){
@@ -1136,7 +1339,7 @@ function updateStatusUI(s){
             html += '<td>' + escHtml(p.endpoint || '-') + '</td>';
             html += '<td>' + escHtml(p.allowed_ips || '-') + '</td>';
             html += '<td>' + escHtml(p.transfer_rx || '0 B') + ' / ' + escHtml(p.transfer_tx || '0 B') + '</td>';
-            html += '<td>' + escHtml(p.latest_handshake || 'never') + '</td>';
+            html += '<td>' + escHtml(p.latest_handshake || 'никогда') + '</td>';
             html += '</tr>';
         }
     }
@@ -1148,24 +1351,38 @@ function updateStatusUI(s){
     var rulesEl = document.getElementById('awg_active_rules');
     if(s.running){
         var infoParts = [];
-        if(s.active_rules > 0) infoParts.push(s.active_rules + ' routing rule(s)');
-        if(s.ipset_count > 0) infoParts.push(s.ipset_count + ' IP ranges');
-        if(s.geo_domains > 0) infoParts.push(s.geo_domains + ' domain rules');
-        rulesEl.innerHTML = infoParts.join(' &middot; ') || 'no rules active';
+        if(s.active_rules > 0) infoParts.push(s.active_rules + ' правил маршрутизации');
+        if(s.ipset_count > 0) infoParts.push(s.ipset_count + ' диапазонов IP');
+        if(s.geo_domains > 0) infoParts.push(s.geo_domains + ' правил по доменам');
+        rulesEl.innerHTML = infoParts.join(' &middot; ') || 'правил нет';
         rulesEl.style.color = '#93E7FF';
     } else {
         rulesEl.innerHTML = '';
     }
 
-    // Update geo button text based on database availability
+    // Update geo button text based on database availability — unless a geo download is in
+    // flight (then awgSetGeoBusy owns the button). Only clear once we've actually observed
+    // geo_busy=true, so a stale "false" right after the click can't end it prematurely.
+    if(awgGeoBusy){
+        if(s.geo_busy === true) awgGeoBusySeen = true;
+        else if(awgGeoBusySeen && s.geo_busy === false) awgSetGeoBusy(false);
+    }
     var geoBtn = document.getElementById('btn_geo_update');
-    if(geoBtn){
+    if(geoBtn && !awgGeoBusy){
+        geoBtn.disabled = false;
         if(s.geo_downloaded){
-            geoBtn.value = 'Update Now';
+            geoBtn.value = 'Обновить сейчас';
         } else {
-            geoBtn.value = 'Download Lists';
+            geoBtn.value = 'Скачать списки';
             geoBtn.style.fontWeight = 'bold';
         }
+    }
+
+    // "Lists not downloaded yet" banner — shown only while a geo policy is active.
+    var notdl = document.getElementById('awg_geo_notdl');
+    if(notdl){
+        var geoVisible = document.getElementById('geo_section').style.display !== 'none';
+        notdl.style.display = (geoVisible && !s.geo_downloaded && !awgGeoBusy) ? '' : 'none';
     }
 
     renderCoexistWarning(s);
@@ -1189,19 +1406,19 @@ function renderCoexistWarning(s){
     if(!needPolicy && !needDns){ el.style.display = 'none'; el.innerHTML = ''; return; }
 
     var steps = '';
-    if(needPolicy) steps += '<li>Смените <b>Default Policy</b> с <b>«VPN — All Traffic»</b> на <b>«Direct»</b> или <b>«VPN — Geo Only»</b> — иначе маршрутизация заберёт у ' + escHtml(tool) + ' весь трафик.</li>';
-    if(needDns) steps += '<li>Включите галочку <b>«Не перехватывать DNS»</b> (блок «Совместимость с zapret») — чтобы перехват :53 не конфликтовал с ' + escHtml(tool) + '.</li>';
+    if(needPolicy) steps += '<li>Смените <b>Политику по умолчанию</b> с <b>«VPN — весь трафик»</b> на <b>«Напрямую»</b> или <b>«VPN — только Geo»</b> — иначе маршрутизация заберёт у ' + escHtml(tool) + ' весь трафик.</li>';
+    if(needDns) steps += '<li>Включите галочку <b>«Не перехватывать DNS»</b> (блок «Совместимость с zapret2/xray») — чтобы перехват :53 не конфликтовал с ' + escHtml(tool) + '.</li>';
 
     el.innerHTML = '⚠ Обнаружен <b>' + escHtml(tool) + '</b> на роутере. Чтобы AmneziaWG не конфликтовал с ним и не оставил сеть без интернета:'
         + '<ul style="margin:5px 0 4px 0; padding-left:20px;">' + steps + '</ul>'
-        + '<span style="opacity:0.85;">После изменений нажмите <b>Apply</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>';
+        + '<span style="opacity:0.85;">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>';
     el.style.display = '';
 }
 
 function setOfflineUI(){
     var badge = document.getElementById('awg_badge');
     badge.className = 'awg-status stopped';
-    badge.innerHTML = '&#9679; Stopped';
+    badge.innerHTML = '&#9679; Остановлено';
     document.getElementById('btn_start').style.display = '';
     document.getElementById('btn_stop').style.display = 'none';
     document.getElementById('btn_restart').style.display = 'none';
@@ -1229,6 +1446,12 @@ function importConfig(){
 
 function parseConfig(text){
     if(!text) return;
+
+    // Warn before overwriting an existing config (import clears every field first).
+    var hadPk = !!((document.getElementById('awg_privatekey') || {}).value);
+    var hadPub = !!((document.getElementById('awg_peer_pubkey') || {}).value);
+    var hadEp = !!((document.getElementById('awg_peer_endpoint') || {}).value);
+    if((hadPk || hadPub || hadEp) && !confirm('Импорт заменит текущие настройки интерфейса и пира. Продолжить?')) return;
 
     // Reset all import-target fields first, so values absent from the imported
     // config don't keep stale values (e.g. an old S4 lingering after import).
@@ -1289,7 +1512,16 @@ function parseConfig(text){
             }
         }
     }
-    alert('Config imported. Review the fields and click Apply.');
+    // If nothing recognizable was parsed, the file wasn't a valid WG/AWG config.
+    var gotPk = !!((document.getElementById('awg_privatekey') || {}).value);
+    var gotPub = !!((document.getElementById('awg_peer_pubkey') || {}).value);
+    var gotEp = !!((document.getElementById('awg_peer_endpoint') || {}).value);
+    updateFirstRun();
+    if(!gotPk && !gotPub && !gotEp){
+        alert('Не удалось распознать конфигурацию: не найдены поля [Interface]/[Peer] (PrivateKey, PublicKey, Endpoint). Проверьте, что это .conf из приложения Amnezia / WireGuard.');
+        return;
+    }
+    alert('Конфиг импортирован. Проверьте поля и нажмите «Применить».');
 }
 
 function setVal(id, val){
@@ -1307,7 +1539,12 @@ function initAutocomplete(){
     var list = document.createElement('div');
     list.className = 'awg-ac-list';
     list.id = 'awg_ac_list';
+    list.setAttribute('role', 'listbox');
     wrap.appendChild(list);
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-controls', 'awg_ac_list');
+    input.setAttribute('aria-expanded', 'false');
     var selIdx = -1;
 
     function getLastToken(){
@@ -1325,18 +1562,21 @@ function initAutocomplete(){
         var existing = getExisting();
         list.innerHTML = '';
         selIdx = -1;
-        if(q.length < 1){ list.style.display = 'none'; return; }
+        if(q.length < 1){ list.style.display = 'none'; input.setAttribute('aria-expanded', 'false'); return; }
         var matches = v2flyList.filter(function(s){
             return s.indexOf(q) !== -1 && existing.indexOf(s) === -1;
         }).slice(0, 15);
-        if(matches.length === 0){ list.style.display = 'none'; return; }
+        if(matches.length === 0){ list.style.display = 'none'; input.setAttribute('aria-expanded', 'false'); return; }
         for(var i = 0; i < matches.length; i++){
             var d = document.createElement('div');
             d.textContent = matches[i];
+            d.setAttribute('role', 'option');
+            d.id = list.id + '_opt_' + i;
             d.onmousedown = function(e){ e.preventDefault(); pickItem(this.textContent); };
             list.appendChild(d);
         }
         list.style.display = 'block';
+        input.setAttribute('aria-expanded', 'true');
     }
 
     function pickItem(val){
@@ -1344,13 +1584,13 @@ function initAutocomplete(){
         parts.pop();
         parts.push(val);
         input.value = parts.join(',') + ',';
-        list.style.display = 'none';
+        list.style.display = 'none'; input.setAttribute('aria-expanded', 'false');
         input.focus();
     }
 
     input.addEventListener('input', showSuggestions);
     input.addEventListener('focus', showSuggestions);
-    input.addEventListener('blur', function(){ setTimeout(function(){ list.style.display = 'none'; }, 200); });
+    input.addEventListener('blur', function(){ setTimeout(function(){ list.style.display = 'none'; input.setAttribute('aria-expanded', 'false'); }, 200); });
     input.addEventListener('keydown', function(e){
         var items = list.querySelectorAll('div');
         if(e.key === 'ArrowDown'){ e.preventDefault(); selIdx = Math.min(selIdx + 1, items.length - 1); }
@@ -1358,6 +1598,8 @@ function initAutocomplete(){
         else if(e.key === 'Enter' && selIdx >= 0){ e.preventDefault(); pickItem(items[selIdx].textContent); return; }
         else return;
         for(var i = 0; i < items.length; i++) items[i].className = (i === selIdx) ? 'selected' : '';
+        if(selIdx >= 0 && items[selIdx]) input.setAttribute('aria-activedescendant', items[selIdx].id);
+        else input.removeAttribute('aria-activedescendant');
     });
 }
 
@@ -1371,7 +1613,12 @@ function initAutocompleteIp(){
     var list = document.createElement('div');
     list.className = 'awg-ac-list';
     list.id = 'awg_ac_list_ip';
+    list.setAttribute('role', 'listbox');
     wrap.appendChild(list);
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-controls', 'awg_ac_list_ip');
+    input.setAttribute('aria-expanded', 'false');
     var selIdx = -1;
 
     function getLastToken(){
@@ -1386,30 +1633,33 @@ function initAutocompleteIp(){
         var existing = getExisting();
         list.innerHTML = '';
         selIdx = -1;
-        if(q.length < 1){ list.style.display = 'none'; return; }
+        if(q.length < 1){ list.style.display = 'none'; input.setAttribute('aria-expanded', 'false'); return; }
         var matches = v2flyIpList.filter(function(s){
             return s.indexOf(q) !== -1 && existing.indexOf(s) === -1;
         }).slice(0, 15);
-        if(matches.length === 0){ list.style.display = 'none'; return; }
+        if(matches.length === 0){ list.style.display = 'none'; input.setAttribute('aria-expanded', 'false'); return; }
         for(var i = 0; i < matches.length; i++){
             var d = document.createElement('div');
             d.textContent = matches[i];
+            d.setAttribute('role', 'option');
+            d.id = list.id + '_opt_' + i;
             d.onmousedown = function(e){ e.preventDefault(); pickItem(this.textContent); };
             list.appendChild(d);
         }
         list.style.display = 'block';
+        input.setAttribute('aria-expanded', 'true');
     }
     function pickItem(val){
         var parts = input.value.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s; });
         parts.pop();
         parts.push(val);
         input.value = parts.join(',') + ',';
-        list.style.display = 'none';
+        list.style.display = 'none'; input.setAttribute('aria-expanded', 'false');
         input.focus();
     }
     input.addEventListener('input', showSuggestions);
     input.addEventListener('focus', showSuggestions);
-    input.addEventListener('blur', function(){ setTimeout(function(){ list.style.display = 'none'; }, 200); });
+    input.addEventListener('blur', function(){ setTimeout(function(){ list.style.display = 'none'; input.setAttribute('aria-expanded', 'false'); }, 200); });
     input.addEventListener('keydown', function(e){
         var items = list.querySelectorAll('div');
         if(e.key === 'ArrowDown'){ e.preventDefault(); selIdx = Math.min(selIdx + 1, items.length - 1); }
@@ -1417,6 +1667,8 @@ function initAutocompleteIp(){
         else if(e.key === 'Enter' && selIdx >= 0){ e.preventDefault(); pickItem(items[selIdx].textContent); return; }
         else return;
         for(var i = 0; i < items.length; i++) items[i].className = (i === selIdx) ? 'selected' : '';
+        if(selIdx >= 0 && items[selIdx]) input.setAttribute('aria-activedescendant', items[selIdx].id);
+        else input.removeAttribute('aria-activedescendant');
     });
 }
 </script>
@@ -1453,10 +1705,11 @@ function initAutocompleteIp(){
             <table width="760px" border="0" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTitle" id="FormTitle">
             <tr><td bgcolor="#4D595D" valign="top">
                 <div>&nbsp;</div>
-                <div class="formfonttitle" style="display:flex; align-items:center; gap:10px;">
+                <div class="formfonttitle" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px;">
                     <span style="font-size:20px; font-weight:bold; letter-spacing:1px;">AmneziaWG</span>
-                    <span style="font-size:13px; font-weight:normal;">VPN Client</span>
-                    <a href="https://t.me/asusxray" target="_blank" style="margin-left:auto; font-size:12px; text-decoration:none;" title="Telegram-чат">💬 Telegram</a>
+                    <span style="font-size:13px; font-weight:normal;">VPN-клиент</span>
+                    <a href="https://storage.googleapis.com/amnezia/amnezia.org" target="_blank" style="margin-left:auto; display:flex; align-items:center; text-decoration:none;" title="Сайт Amnezia"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAPV0lEQVR4nKyaCXQc5X3Af3PsqWN1rXX5knzK2CDjMwETm9jBNUnKSxsHEpJAk5A2DSYtLwmP5pU2BNricCQ4D0pbHGxwqE2DbRIOO2DjC2PLBzb4vi9J1rmrPWZmZ+brm9VK2pV2V+a1/3mfdjXfN//r+3//a1YVQtAHTzy5nGsHkf5PETAduAMoGOaJ08BG4ARgfwqC/fDTB3/S/11KF2DBkiWoHv+wCExDk41Y91xgIfAVYDwik3HF7UVR3RixcC407cBuYAPw9uiqUZdkR0SHnz6WzG6w4mCbICyuxmVilsLOrTv6kajpGEc3LqZq8mfzMn/1dNOEC/vfegrBF/Otq2mYR2X9dJpeXz54t1IgKoAvpvAkaioqH7n/9rufHlsW1PqXXF4FHbsg3gZaFz9r8vJea0kGlgwB2ueWoH25NitDVntXcXjl2seiWzf/AJAzWMmyXlYUisqr8BQE0CJd+WR1wPXB4b2PHzlz7P4HvvTNZQumzX7N43JnXzmImDx0hTRkRN95f07zN5cdiPxh8w8FyCKFR+Rg3rlZUBLE7y+gZlxjyiyGDjFodEfC1f/8u9+s+/5vHll3uaO1eAhaZ90gilkESHtAN6SOR5/5aedjv94lorH6bESzDgS+ohJcqsLYhlkMFjhD8CwTxy+d+8tvPPmTj7YePzt9KFOfQoCOx3798+jmbf+arvVcRAcPl8eHokBVTT1eX2FOree6NEMf+9CbR3e8e06bnc67GN6EeqH7xVe/Gt2y88e5NJzzEoKCimpKq0aiyOD1qDTOXThAfMjIbl6p4V++W3vxaKeo7tPcYBNSs+1OxxPP/TCycdOvsguY1eqT4B1RzbjbvkZV9QS8Hh8uSeCWBTfNX8yShXNoOX8GS9PZd/Ajmj46iG3nxtUHXZq47p7NrmO/vUWuQ9A5mHxGHFiy4SXn47aO5c+tSwWna+EbyaXiqR1JzS23MaphDoUJiSLnIEuCItUZNmMr/dSWefHYAskQ/GnrDp76r38npsWvhQQlbutglVeffyzsD+3Z+WH//Ywd0M+eq46s3/xbhCjKhaiPiCTLuBbegnrjNEonTqTI9lMckZE0UGSRRKxKNi5F4HYJdE3HrXiQJAlJgUU3zWNCTT2/XPk8h04eycN6L3TrSmO37n8euCv9foaJ9Kx780mRSFTlM9W+G76bZ+H/8Q/wLJyH7Pcj2RKSDYoARRKoKrhd4HILXC6BbRskTAvJcQcKyTGmppYnHniE22/+Qpp6UiO7y10qhLg1qwBbtm75DIK78vu8XiKS103gvrtAdpi2wRRgOa5K4KQDipQSQnGYJymMqkA0rvWikiREMsQIXG4XP/rG97n95kWZPGcnL4N4Op5mdkkBIpGI9IvHf/HEtfh4qaqCogfvxVUdxHCyMTOBbEmgJ9CuXk0KIElgmRqmEUPCRFVttHgPa15dy5lz57GFjdQrZXInHLN6YOl9rHroaXxuzzA8cP1Tzzz17QwB1ry65vZwT/jmYVwaUqCAklX/iP/W2chIyTgtmxbakWOc/PnP6Ni7E9mWkkiP793Je79/BVmyECSorSlj95793Ps3f8/Dj/4LF1uugBsUl50UwuWSCZYW0Vg3Li8PjhC/f/315afPnPH1C7Bt+7a7s21bxvC6KHno63gVNx7nQSGhCht901Zalj+FcbWF0vHTUmdBcOHIRxze/QHtLVdwu2XKA8U03nAdlmWxffcevvN3D/LO9q1IHgnVLZBcAp9H8Midf8HYYFlOGVJfgtu2b1uSFCAcDnuOHju2cDjTKVo0i9I50yhMJvwylikwnl9N+NmV2LqBK1BO8Yg6ZNPJgHVazp7Ctm3WrVyN3+1Keq3bFs3r5yQajfLYM79ixaqVCGECcSQpgs9tsOKbX+C7N9WxeGIx993o4/5Gm3+4Mczogni/Qpua9iYFUJv2NU1FiPK8PkySGLlkDkXIqELF1OHsL1fQs3lb/5LS+qm4LBXZgssnDqPFIsn7F86epfXcZeoqypkypZ7SsgCdnaHknCUsfrdhPaWFPr6+8HNIIowkegh4De6dPQLiEiJ6lR1nLZ5s8ifrgb5IvG///gXJHTh69OjM4VKbkuvqGDVpHGX4KLA8XFz9Oj2b3s/Y2+DEWai6hGzA+cN7M+a2b9uVxKTINp9fMDv9QKLIMqFQG8LuRtghhB0GOwRWFCFivPyJxkM7FFpjUvKZPpy6rgWvNF8pVpv27/uyGJwhpStflpj13aWUiSI028XpnXu5vGZ9hmd1+YoIjpicFECYOpdPHSId585de3jgh/ficdvc/fU/48CBo8iyxNwbG7j9c7OpLPKR6GlHMbpwWV1gRcCK8T+Hwzy3Tycj4xj4Xrhv374Fqq5plUNSvDQIjB9NYW0VVy9cJNTawYnnV2ObZsaaEWMa8Vs+VAPaLpxEj0cyCIa6w7z91tvMnNFAbW0pL/3nw5BIIOk6lhZHD7UjEt0oVgjMMCQiRGIRXtgTwR5SNQ/wqht6pZq1KEm7UTpmFM0HjyNMidildqKXWoY84PVV0nz0ED7Jy9lj72XM+3w+Fi+8FVs32bNzD7UjS5kxfQKKZYClY8RDbNv7MW++/zFaNM4L35oIiSi2EeOuyRYdUYN1Jz3ZtSv6cqFcOyDJjAjW474qYydsug6cgEEZpKJ6KfGMQgqbGHYEU9MYN+YmvF6Z6upKRtaUUx6QwY4i2RZtl1ugoQbbjvHS2u2s2bCXcERLMlMVcIMegkQPxVKMeydrrDvuFPQ5ykvHC/UdpmxQUBCgIF6CiAokU6L7wqWBfDz1ESgajdtwgQmyDZNqv4DLbeL1GRQUWrhtkBIWsmU5foeKch+KFeHypSv8x5odmGkKEcICLQK6M6JEjBj/faIoxV8WJpM7kK3MSYHPU4LdZvc+a0Ms3Jmx1O8uY2xwHnKc3lxIEsiWQMLG5ZYId3bQ3NyKrnfR0tGC1y3zo2/Nh1iESr+gLODlamdsgB9bIIwokh4HO8b6kzLne9ScibZIptMCcnkht12A1O1JpgymZWJaCRTJRVlBHZWl0ygvHIckFNCTeVkSTDnO+bYmmruO0KMN7UZs2n6IxlGNqGaEORNL2bg7OkBPtpG0aK8LtXr4oDmQU7ki9Tf7Ie7bAakcogpOjikJmRmjvo1XLUFVUs0vo7e1lsyJnHIpdoaPWzaSsGI5iX54+CxExiQ9zcKGQjZ8MDA/vkwkmXdcaHdc41D7iMwSMgujeU3IKfkc0xWSjY2Ez12dZNdK5sIDSFVJENFbONT8Oqat5SXY2hmFmHNQY9xQKSh0S0T0Xl85vsRJzbVkNy5uWGimlLdKc+Zkt8fdmiv/kRUvumyhySaaksBQTQyXIEoIXdawXQJcNgnC7L/8KglLy53Tp+4ZCYuLF1oh2oXfiDC/3tU/V1eYADPea0K2PWzx73G7W+UZM2ZuzJY+VAaup7x8Cgm3hekRWD7Q3DGOXVrLvhMriHAVfALVb3OqfQt6IpKfYGrCsgUvbbsI0VByJ+653k4WP17FZnYwmnSh2EbyTImMNHoIysismbO2qNdNmdJEmpuSUJIHtHbEbGy3wHYrCLeEc1Zbzx+gq/t40vcXlJehyCbxnmaaOw4PMcN8W//HjyPcOTHB+JIEo/0GUysk/LJJsRQCoSUP1vvNhb2t6xzm7fF42mpqasLy7FmzPxZCdDjrHObrK26hrLCO9p5TtEVOEqWtt2FeICgZMw5JVikJjsFTDB6fTlS/jG1bQ8wvX1Gim4JV+2MIPYys9/CzmV18Z0ob2PFkoDza5eHZw8E0Mxx6zZg5Y4sjiBoIBPQpDQ1/OnLkyNdsLE63bUWIgQREVlxM/dxdFJYHKSsJMm3BHUhGgpJiCZ9t03qhJ4u2h+/3vHka7msIM9Ifp77ABL/ojTWmxE93VxM3pSF40v+bM3vOm/RVZPPnz3+5t6tmYwsrQ1LLMjjZ9AZeV5ySQptxk+pomDqRioBgRADMRCiLlrM2FjKGaUvsb3FcXaI3PUndX34gyIWIK6vW0xC3LZi/YECAe759zx+Li4p35CIWDXVwdNdbBAt0qosTVBUbBH1xAnI3k6tLcrYY80lQpJqM9Bk42YOz4c5nW0Rhw7niLMszzfOrS5f+ePz48cnWRH9nbtPmTZ9ZtmzZrnzbPrZ+JF9beitex8XGdUplmVl1Nbyx9UNWbz3Axa5Y2jbnOHyy4EtjwnxvcieVvsy0vCWmsvitsanQmBMOHTxw8AYny2Vwa3FSw6Q1gztfg/mZ1TiGO+Y3UOwUJJNGoUYi0NOFGQ5x5Fwzu8+0c6YrTkhLgHCG2c9Pscvie5M6mVBiDOBN47UlqnLb22Pzye8czkUnjp94r+9GRmtxTMXcBy+2711gCasqlwTxUIgyutEMhZUbt3HH5CKCUgI5HuH6Ep1pUyQky0YynaqqE0xjgJI0gMrRW5umcCrsZmLAoMJrUeExqXCbtOlqLu2vRfBe+o2MlUXeyubrar94z6GL64c2d1NQW2hTV2ry5Uc/RE/YvPKuwpKJfr4yTmWkR0e1YqhORKYHLKOXZ2mA+UhCZluzn9fOFnOw05c8zBMDOk/PbWZUgcn08jibLg8mLSh1Wwdr/OZff9KdWdwMEXVq7bR3Rpe9//AbB7uyttfnjnVx8tQVNKPX1XbFLF452MMrB6HUA/VFgoZSmBtUGOl1Ue6x0CyJYz0etjYX8O6VAroNJYO5EyE3a88EeHBaB9eXaWy6VDiYbPjFeVc+/8Kx0tAnXXkEKHBF+NtZLxL0GyvGFiitz+40VzvnLkUnCTdVx1i1L5w1QnZpsM8ZbR5ePhHsrQ+k3qVOApg7OgjWnyvi7nHdNJToGRlomcf65MV5zYumlumdIssLjgwNL6x5m6B1HHpaWdYYWre43lg+ODGLdrWz4ZCW/y1NXwwRkEj1fkXexg10GzL37aimqc2bPhX7pxvb/mpqmd7cL+ogLWR4ofETxg9WjWO5PwEez/s+LU/gzVeODAPnUi/RDwyeOH3qdP/3zPe9QwOHA/8mhPisEOJMvreSua7sIXnYl4SvCcENQnAgW0BLB3moZrIS+BDBdAQrENjZiGYPuNfwUjDzahaIrzoDIcI5Bc8lwDAEwwJxv0BMFog//D9pum8kEDyMoN7RfnYdptMaAPXTmyYngT93PKpI/7FHMum+NgSpZRk/9gAuXdvDmZAhwJ133nmtzzlBYFdq/Pxaf26Tgv/zz23S4X8DAAD//6krBRMCzcQhAAAAAElFTkSuQmCC" alt="Amnezia" style="height:20px; border-radius:4px; display:block;"></a>
+                    <a href="https://t.me/asusxray" target="_blank" style="display:flex; align-items:center; gap:5px; text-decoration:none;" title="Telegram-чат"><svg width="20" height="20" viewBox="0 0 24 24" fill="#29a9eb" xmlns="http://www.w3.org/2000/svg" style="display:block;" aria-hidden="true" focusable="false"><path d="m20.665 3.717-17.73 6.837c-1.21.486-1.203 1.161-.222 1.462l4.552 1.42 10.532-6.645c.498-.303.953-.14.579.192l-8.533 7.701h-.002l.002.001-.314 4.692c.46 0 .663-.211.921-.46l2.211-2.15 4.599 3.397c.848.467 1.457.227 1.668-.785l3.019-14.228c.309-1.239-.473-1.8-1.282-1.434z"/></svg><span style="font-size:12px;">Чат</span></a>
                     <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" title="GitHub репозиторий" style="font-size:12px; text-decoration:none;"><img src="https://img.shields.io/github/v/release/william-aqn/asuswrt-merlin-amneziawg?logo=github&label=release" alt="GitHub" style="height:18px; display:block;" onerror="this.onerror=null; this.outerHTML='🐙 GitHub';"></a>
                     <span id="awg_update_btn" style="display:none;"></span>
                 </div>
@@ -1465,70 +1718,87 @@ function initAutocompleteIp(){
                 <!-- Status & Actions -->
                 <table width="100%" border="0" cellpadding="4" cellspacing="0">
                 <tr>
-                    <th width="20%">Status</th>
+                    <th width="20%">Статус</th>
                     <td>
-                        <span id="awg_badge" class="awg-status connecting">&#9679; Загрузка…</span>
-                        &nbsp;&nbsp;
-                        <input type="button" id="btn_start" class="button_gen awg-btn" value="Start" onclick="awgAction('start_awgstart');">
-                        <input type="button" id="btn_stop" class="button_gen awg-btn" value="Stop" style="display:none;" onclick="awgAction('start_awgstop');">
-                        <input type="button" id="btn_restart" class="button_gen awg-btn" value="Restart" style="display:none;" onclick="awgAction('start_awgrestart');">
+                        <div class="awg-actions">
+                            <span id="awg_badge" class="awg-status connecting">&#9679; Загрузка…</span>
+                            <input type="button" id="btn_start" class="button_gen awg-btn" value="Запустить" onclick="awgAction('start_awgstart');">
+                            <input type="button" id="btn_stop" class="button_gen awg-btn" value="Остановить" style="display:none;" onclick="awgAction('start_awgstop');">
+                            <input type="button" id="btn_restart" class="button_gen awg-btn" value="Перезапустить" style="display:none;" onclick="awgAction('start_awgrestart');">
+                        </div>
                     </td>
                 </tr>
                 <tr>
-                    <th width="20%">Interface</th>
+                    <th width="20%">Интерфейс</th>
                     <td><span id="awg_info">-</span></td>
                 </tr>
                 </table>
+
+                <!-- First-run empty state: shown by loadSettings() when no key/peer is set yet -->
+                <div id="awg_firstrun" style="display:none; margin:8px 0 2px 0; padding:10px 14px; background:#1b2a33; border:1px solid #2e88c7; border-radius:5px; font-size:12px; line-height:1.55;">
+                    <b>Похоже, конфигурация ещё не задана.</b><br>
+                    Начните с импорта <code>.conf</code>-файла из приложения Amnezia VPN, затем проверьте поля и нажмите «Применить».
+                    <div style="margin-top:6px;"><input type="button" class="button_gen" value="Импорт конфига" onclick="importConfig();"></div>
+                </div>
 
                 <!-- Coexistence warning: shown by updateStatusUI() when a co-resident proxy/DPI
                      tool (Xray/XRAYUI, zapret, ...) is detected AND the config would collide with it -->
                 <div id="awg_coexist_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a2e1a; border:1px solid #f0ad4e; border-radius:5px; color:#f0ad4e; font-size:12px; line-height:1.5;"></div>
 
                 <!-- Peers Table -->
-                <div class="awg-section">Connected Peers</div>
-                <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_peers_table">
+                <div class="awg-section">Подключённые пиры</div>
+                <div class="awg-tablewrap">
+                <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_peers_table" style="min-width:520px;">
                 <thead><tr>
-                    <td width="25%">Endpoint</td>
-                    <td width="25%">Allowed IPs</td>
-                    <td width="25%">Transfer (RX/TX)</td>
-                    <td width="25%">Last Handshake</td>
+                    <td width="25%">Адрес сервера</td>
+                    <td width="25%">Разрешённые IP</td>
+                    <td width="25%">Трафик (приём/передача)</td>
+                    <td width="25%">Последнее рукопожатие</td>
                 </tr></thead>
                 <tbody id="awg_peers">
-                    <tr><td colspan="4" style="text-align:center; color:#b6bdc7;">No peers</td></tr>
+                    <tr><td colspan="4" style="text-align:center; color:#b6bdc7;">Нет пиров</td></tr>
                 </tbody>
                 </table>
+                </div>
 
                 <div style="margin:15px 0 10px 0;" class="splitLine"></div>
 
                 <!-- ==================== CONFIG ==================== -->
-                <div class="awg-section">Configuration</div>
+                <div class="awg-section">Конфигурация</div>
                 <div style="margin-bottom:8px;">
-                    <input type="button" class="button_gen" value="Import Config" onclick="importConfig();">
-                    <span style="color:#AAA; margin-left:10px; font-size:12px;">Upload .conf file from Amnezia VPN client</span>
+                    <input type="button" class="button_gen" value="Импорт конфига" onclick="importConfig();">
+                    <span style="color:#b6bdc7; margin-left:10px; font-size:12px;">Загрузите .conf-файл из клиента Amnezia VPN</span>
+                </div>
+
+                <div class="awg-applybar-top">
+                    <input type="button" class="button_gen" value="Применить" onclick="saveSettings();" title="Сохранить и применить без перезапуска VPN">
+                    <input type="button" class="button_gen" value="Принудительно применить" onclick="forceApply();" title="Сохранить + перезапуск VPN + полная пересборка маршрутов и firewall">
+                    <span id="awg_ack_top" class="awg-ack"></span>
+                    <span class="awg-src" style="margin-left:auto;">Те же кнопки с пояснением — внизу страницы.</span>
                 </div>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable">
                 <thead><tr><td colspan="2">Interface</td></tr></thead>
                 <tr>
                     <th width="35%">Private Key</th>
-                    <td><input type="text" class="input_32_table awg-secret" id="awg_privatekey" maxlength="64" autocomplete="off"></td>
+                    <td><input type="text" class="input_32_table awg-secret" id="awg_privatekey" maxlength="64" autocomplete="off" aria-label="Private Key (секрет)"></td>
                 </tr>
                 <tr>
                     <th>Address</th>
-                    <td><input type="text" class="input_20_table" id="awg_address" maxlength="32" placeholder="10.7.0.2/24"></td>
+                    <td><input type="text" class="input_20_table" id="awg_address" maxlength="32" placeholder="10.7.0.2/24" aria-label="Address"></td>
                 </tr>
                 <tr>
                     <th>Listen Port</th>
-                    <td><input type="text" class="input_6_table" id="awg_listenport" maxlength="5" placeholder="51820"></td>
+                    <td><input type="text" class="input_6_table" id="awg_listenport" maxlength="5" placeholder="51820" aria-label="Listen Port"></td>
                 </tr>
                 <tr>
                     <th>MTU</th>
-                    <td><input type="text" class="input_6_table" id="awg_mtu" maxlength="4" placeholder="1280">
+                    <td><input type="text" class="input_6_table" id="awg_mtu" maxlength="4" placeholder="1280" aria-label="MTU">
                         <span style="color:#b6bdc7; font-size:11px; margin-left:6px;">default 1280 (576–1500)</span></td>
                 </tr>
                 <tr>
                     <th>DNS</th>
-                    <td><input type="text" class="input_20_table" id="awg_dns" maxlength="64" placeholder="1.1.1.1"></td>
+                    <td><input type="text" class="input_20_table" id="awg_dns" maxlength="64" placeholder="1.1.1.1" aria-label="DNS"></td>
                 </tr>
                 </table>
 
@@ -1536,156 +1806,162 @@ function initAutocompleteIp(){
                 <thead><tr><td colspan="2">Peer</td></tr></thead>
                 <tr>
                     <th width="35%">Public Key</th>
-                    <td><input type="text" class="input_32_table" id="awg_peer_pubkey" maxlength="64"></td>
+                    <td><input type="text" class="input_32_table" id="awg_peer_pubkey" maxlength="64" aria-label="Public Key"></td>
                 </tr>
                 <tr>
                     <th>Preshared Key</th>
-                    <td><input type="text" class="input_32_table awg-secret" id="awg_peer_psk" maxlength="64" autocomplete="off" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table awg-secret" id="awg_peer_psk" maxlength="64" autocomplete="off" placeholder="(optional)" aria-label="Preshared Key (секрет)"></td>
                 </tr>
                 <tr>
                     <th>Endpoint</th>
-                    <td><input type="text" class="input_25_table" id="awg_peer_endpoint" maxlength="64" placeholder="server.example.com:51820"></td>
+                    <td><input type="text" class="input_25_table" id="awg_peer_endpoint" maxlength="64" placeholder="server.example.com:51820" aria-label="Endpoint"></td>
                 </tr>
                 <tr>
                     <th>Allowed IPs</th>
-                    <td><input type="text" class="input_25_table" id="awg_peer_allowedips" maxlength="128" placeholder="0.0.0.0/0"></td>
+                    <td><input type="text" class="input_25_table" id="awg_peer_allowedips" maxlength="128" placeholder="0.0.0.0/0" aria-label="Allowed IPs"></td>
                 </tr>
                 <tr>
                     <th>Persistent Keepalive</th>
-                    <td><input type="text" class="input_6_table" id="awg_peer_keepalive" maxlength="4" placeholder="25"> sec</td>
+                    <td><input type="text" class="input_6_table" id="awg_peer_keepalive" maxlength="4" placeholder="25" aria-label="Persistent Keepalive"> sec</td>
                 </tr>
                 </table>
 
                 <!-- ==================== OBFUSCATION ==================== -->
-                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">AmneziaWG Obfuscation</td></tr></thead>
+                <details class="awg-details" style="margin-top:8px;">
+                <summary style="padding:8px 10px; font-weight:bold; text-transform:uppercase; font-size:11px; letter-spacing:0.5px; background:#3a4548; border:1px solid #5a6b70; border-radius:3px; color:#e8edf2;">AmneziaWG Obfuscation <span style="font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;">— параметры обфускации (обычно заполняются импортом конфига) ▾</span></summary>
+                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:6px;">
                 <tr>
                     <th width="35%">Jc (junk packet count)</th>
-                    <td><input type="text" class="input_6_table" id="awg_jc" maxlength="3" placeholder="4"> (0-128)</td>
+                    <td><input type="text" class="input_6_table" id="awg_jc" maxlength="3" placeholder="4" aria-label="Jc (junk packet count)"> (0-128)</td>
                 </tr>
                 <tr>
                     <th>Jmin (min junk size)</th>
-                    <td><input type="text" class="input_6_table" id="awg_jmin" maxlength="5" placeholder="40"> bytes</td>
+                    <td><input type="text" class="input_6_table" id="awg_jmin" maxlength="5" placeholder="40" aria-label="Jmin (min junk size)"> bytes</td>
                 </tr>
                 <tr>
                     <th>Jmax (max junk size)</th>
-                    <td><input type="text" class="input_6_table" id="awg_jmax" maxlength="5" placeholder="70"> bytes</td>
+                    <td><input type="text" class="input_6_table" id="awg_jmax" maxlength="5" placeholder="70" aria-label="Jmax (max junk size)"> bytes</td>
                 </tr>
                 <tr>
                     <th>S1 (init padding)</th>
-                    <td><input type="text" class="input_6_table" id="awg_s1" maxlength="3" placeholder="20"> bytes</td>
+                    <td><input type="text" class="input_6_table" id="awg_s1" maxlength="3" placeholder="20" aria-label="S1 (init padding)"> bytes</td>
                 </tr>
                 <tr>
                     <th>S2 (response padding)</th>
-                    <td><input type="text" class="input_6_table" id="awg_s2" maxlength="3" placeholder="30"> bytes</td>
+                    <td><input type="text" class="input_6_table" id="awg_s2" maxlength="3" placeholder="30" aria-label="S2 (response padding)"> bytes</td>
                 </tr>
                 <tr>
                     <th>S3</th>
-                    <td><input type="text" class="input_6_table" id="awg_s3" maxlength="3" placeholder="0"> bytes</td>
+                    <td><input type="text" class="input_6_table" id="awg_s3" maxlength="3" placeholder="0" aria-label="S3"> bytes</td>
                 </tr>
                 <tr>
                     <th>S4</th>
-                    <td><input type="text" class="input_6_table" id="awg_s4" maxlength="3" placeholder="0"> bytes</td>
+                    <td><input type="text" class="input_6_table" id="awg_s4" maxlength="3" placeholder="0" aria-label="S4"> bytes</td>
                 </tr>
                 <tr>
                     <th>H1 (init header)</th>
-                    <td><input type="text" class="input_25_table" id="awg_h1" maxlength="32" placeholder="1234567891"></td>
+                    <td><input type="text" class="input_25_table" id="awg_h1" maxlength="32" placeholder="1234567891" aria-label="H1 (init header)"></td>
                 </tr>
                 <tr>
                     <th>H2 (response header)</th>
-                    <td><input type="text" class="input_25_table" id="awg_h2" maxlength="32" placeholder="1987654321"></td>
+                    <td><input type="text" class="input_25_table" id="awg_h2" maxlength="32" placeholder="1987654321" aria-label="H2 (response header)"></td>
                 </tr>
                 <tr>
                     <th>H3 (cookie header)</th>
-                    <td><input type="text" class="input_25_table" id="awg_h3" maxlength="32" placeholder="1112223334"></td>
+                    <td><input type="text" class="input_25_table" id="awg_h3" maxlength="32" placeholder="1112223334" aria-label="H3 (cookie header)"></td>
                 </tr>
                 <tr>
                     <th>H4 (data header)</th>
-                    <td><input type="text" class="input_25_table" id="awg_h4" maxlength="32" placeholder="4445556667"></td>
+                    <td><input type="text" class="input_25_table" id="awg_h4" maxlength="32" placeholder="4445556667" aria-label="H4 (data header)"></td>
                 </tr>
                 <tr>
                     <th>I1 (init junk)</th>
-                    <td><input type="text" class="input_32_table" id="awg_i1" style="width:95%; font-size:11px;" maxlength="5000" placeholder="Auto-filled by Import Config"></td>
+                    <td><input type="text" class="input_32_table awg-input-wide" id="awg_i1" style="font-size:11px;" maxlength="5000" placeholder="Auto-filled by Import Config" aria-label="I1 (init junk)"></td>
                 </tr>
                 <tr>
                     <th>I2</th>
-                    <td><input type="text" class="input_32_table" id="awg_i2" style="width:95%; font-size:11px;" maxlength="5000" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table awg-input-wide" id="awg_i2" style="font-size:11px;" maxlength="5000" placeholder="(optional)" aria-label="I2"></td>
                 </tr>
                 <tr>
                     <th>I3</th>
-                    <td><input type="text" class="input_32_table" id="awg_i3" style="width:95%; font-size:11px;" maxlength="5000" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table awg-input-wide" id="awg_i3" style="font-size:11px;" maxlength="5000" placeholder="(optional)" aria-label="I3"></td>
                 </tr>
                 <tr>
                     <th>I4</th>
-                    <td><input type="text" class="input_32_table" id="awg_i4" style="width:95%; font-size:11px;" maxlength="5000" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table awg-input-wide" id="awg_i4" style="font-size:11px;" maxlength="5000" placeholder="(optional)" aria-label="I4"></td>
                 </tr>
                 <tr>
                     <th>I5</th>
-                    <td><input type="text" class="input_32_table" id="awg_i5" style="width:95%; font-size:11px;" maxlength="5000" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table awg-input-wide" id="awg_i5" style="font-size:11px;" maxlength="5000" placeholder="(optional)" aria-label="I5"></td>
                 </tr>
                 </table>
+                </details>
 
                 <!-- ==================== ROUTING ==================== -->
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">Routing Policy</td></tr></thead>
+                <thead><tr><td colspan="2">Политика маршрутизации</td></tr></thead>
                 <tr>
-                    <th width="35%">Default Policy</th>
+                    <th width="35%">Политика по умолчанию</th>
                     <td>
                         <select id="default_policy" class="input_option" onchange="updateGeoVisibility();"
-                                style="font-size:13px; font-weight:bold;">
-                            <option value="direct">Direct (no VPN)</option>
-                            <option value="vpn_all">VPN — All Traffic</option>
-                            <option value="vpn_geo">VPN — Geo Only</option>
+                                style="font-size:13px; font-weight:bold;" aria-label="Политика по умолчанию">
+                            <option value="direct">Напрямую (без VPN)</option>
+                            <option value="vpn_all">VPN — весь трафик</option>
+                            <option value="vpn_geo">VPN — только Geo</option>
                         </select>
-                        <span style="color:#b6bdc7; font-size:11px; margin-left:8px;">For devices not in the list below</span>
+                        <span style="color:#b6bdc7; font-size:11px; margin-left:8px;">Для устройств, которых нет в списке ниже</span>
                         <span id="awg_active_rules" style="margin-left:12px; color:#b6bdc7; font-size:11px;"></span>
+                        <div class="awg-hint">Geo по доменам работает только если устройство использует роутер как DNS (настройка — в блоке Geo ниже).</div>
                     </td>
                 </tr>
                 <tr>
-                    <th>Prevent IPv6 Leaks</th>
+                    <th>Защита от утечек IPv6</th>
                     <td>
-                        <label><input type="checkbox" id="awg_block_ipv6_dns"> Block IPv6 DNS resolution (filter-AAAA)</label>
-                        <div class="awg-hint">Critical for Geo routing reliability. Prevents dual-stack domains from bypassing the VPN.</div>
+                        <label><input type="checkbox" id="awg_block_ipv6_dns"> Блокировать разрешение IPv6-адресов в DNS (filter-AAAA)</label>
+                        <div class="awg-hint">Критично для надёжной Geo-маршрутизации. Не даёт доменам с dual-stack (IPv4+IPv6) обходить VPN через IPv6.</div>
                     </td>
                 </tr>
                 <tr>
                     <th>Kill-switch</th>
                     <td>
                         <label><input type="checkbox" id="awg_killswitch"> Блокировать VPN-трафик при падении туннеля (strict kill-switch)</label>
-                        <div class="awg-hint">По умолчанию выключено. Когда включено: если туннель внезапно падает (краш демона / нехватка памяти), трафик устройств с политикой «VPN» не уходит в обход в WAN открытым текстом, а блокируется до восстановления (watchdog поднимает туннель в течение ~5 мин). Выключено — прежнее поведение (трафик может временно идти мимо VPN). Влияет только на устройства с политикой VPN/Geo; при политике по умолчанию «VPN — All Traffic» затрагивает весь LAN.</div>
+                        <details class="awg-hint"><summary>Блокирует трафик VPN-устройств, если туннель упал (вместо утечки в обход в WAN). По умолчанию выключено. <u>Подробнее</u></summary>Когда включено: если туннель внезапно падает (краш демона / нехватка памяти), трафик устройств с политикой «VPN» не уходит в обход в WAN открытым текстом, а блокируется до восстановления (watchdog поднимает туннель в течение ~5 мин). Выключено — прежнее поведение (трафик может временно идти мимо VPN). Влияет только на устройства с политикой VPN/Geo; при политике по умолчанию «VPN — весь трафик» затрагивает весь LAN.</details>
                     </td>
                 </tr>
                 <tr>
                     <th>Адреса проверки туннеля</th>
                     <td>
-                        <input type="text" id="awg_watchdog_hosts" maxlength="200" style="width:320px;" placeholder="8.8.8.8 1.1.1.1">
-                        <div class="awg-hint">Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут, чтобы понять, жив ли он. Туннель считается рабочим, если ответил <b>хоть один</b>.<br><b>Формат:</b> IP или домен, можно несколько — через пробел или запятую (до 4 адресов).<br><b>Пример:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Лучше указывать IP (без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны в какое-то время — иначе watchdog зря перезапускает VPN. Какие адреса проверяются, видно в логе (строка «verifying / tunnel not passing traffic (probed: …)»).</div>
+                        <input type="text" id="awg_watchdog_hosts" maxlength="200" style="width:95%; max-width:320px;" placeholder="8.8.8.8 1.1.1.1" aria-label="Адреса проверки туннеля">
+                        <details class="awg-hint"><summary>Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут (ответил хоть один — туннель живой). <u>Формат и примеры</u></summary><b>Формат:</b> IP или домен, можно несколько — через пробел или запятую (до 4 адресов).<br><b>Пример:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Лучше указывать IP (без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны — иначе watchdog зря перезапускает VPN. Какие адреса проверяются — видно в журнале ниже.</details>
                     </td>
                 </tr>
                 <tr>
-                    <th>Совместимость с zapret</th>
+                    <th>Совместимость с zapret2/xray</th>
                     <td>
-                        <label><input type="checkbox" id="awg_no_dns_intercept"> Не перехватывать DNS (совместимость с zapret/zapret2 и др.)</label>
-                        <div class="awg-hint">Отключает принудительный DNAT всех DNS-запросов на роутер. Включите, если рядом работает zapret/DPI-обход — иначе их перехваты конфликтуют и могут положить сеть. Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам — только для клиентов, использующих роутер как DNS. Если zapret/NFQUEUE обнаружен рядом, перехват отключается автоматически даже без этой галочки.</div>
+                        <label><input type="checkbox" id="awg_no_dns_intercept"> Не перехватывать DNS (совместимость с zapret2 / Xray и др.)</label>
+                        <details class="awg-hint"><summary>Отключает перехват DNS (порт :53). Включите, если рядом работает <b>zapret2</b> или <b>Xray/XRAYUI</b> (v2ray, sing-box) — иначе конфликт DNS может оставить сеть без интернета. <u>Подробнее</u></summary>Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам — только для клиентов, использующих роутер как DNS. Если рядом обнаружен zapret2 / Xray / v2ray / sing-box или правила NFQUEUE/TPROXY, перехват DNS отключается автоматически даже без этой галочки. Важно: галочка решает только конфликт по DNS — при политике «VPN — весь трафик» маршрутизация всё равно заберёт трафик прокси, поэтому для совместимости выбирайте «Напрямую» или «VPN — только Geo».</details>
                     </td>
                 </tr>
                 </table>
 
-                <div class="awg-section">Device Rules</div>
-                <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table">
+                <div class="awg-section">Правила устройств</div>
+                <div class="awg-tablewrap">
+                <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="min-width:480px;">
                 <thead><tr>
-                    <td width="25%">IP Address</td>
-                    <td width="25%">Device Name</td>
-                    <td width="30%">Policy</td>
-                    <td width="20%">Action</td>
+                    <th scope="col" width="25%">IP-адрес</th>
+                    <th scope="col" width="25%">Имя устройства</th>
+                    <th scope="col" width="30%">Политика</th>
+                    <th scope="col" width="20%">Действие</th>
                 </tr></thead>
                 <tbody id="awg_client_rows">
                 </tbody>
                 </table>
-                <div style="margin-top:6px;">
-                    <input type="button" class="button_gen" value="+ Add Device" onclick="addClientRow('','','vpn_all');">
-                    <input type="button" class="button_gen" value="+ From DHCP List" onclick="fetchDhcpClients();" style="margin-left:6px;">
                 </div>
+                <div style="margin-top:6px;">
+                    <input type="button" class="button_gen" value="+ Добавить устройство" onclick="addClientRow('','','vpn_all');">
+                    <input type="button" class="button_gen" value="+ Из списка DHCP" onclick="fetchDhcpClients();" style="margin-left:6px;">
+                </div>
+                <div id="awg_client_undo" class="awg-hint" style="display:none; margin-top:4px;"></div>
 
                 <!-- ==================== GEO ROUTING ==================== -->
                 <div id="geo_section" style="display:none;">
@@ -1696,43 +1972,49 @@ function initAutocompleteIp(){
                     macOS/Windows: укажите <% nvram_get("lan_ipaddr"); %> как DNS в настройках сети. Отключите DNS-over-HTTPS в браузере.
                 </div>
 
+                <!-- Shown by updateStatusUI() when geo routing is on but lists aren't downloaded yet -->
+                <div id="awg_geo_notdl" style="display:none; border:1px solid #f0ad4e; border-radius:4px; padding:9px 12px; margin-top:8px; font-size:12px; color:#f0ad4e;">
+                    ⚠ Списки ещё не загружены — без них Geo-маршрутизация не работает.
+                    <input type="button" class="button_gen" value="Скачать списки" onclick="updateGeoLists();" style="font-size:11px; padding:2px 8px; margin-left:6px;">
+                </div>
+
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">GeoIP — Route by Service IP</td></tr></thead>
+                <thead><tr><td colspan="2">GeoIP — маршрут по IP сервисов</td></tr></thead>
                 <tr>
-                    <th width="35%">GeoIP Service Lists<br><span style="font-weight:normal; font-size:11px; color:#888;">github.com/Loyalsoldier/geoip</span></th>
+                    <th width="35%">Списки сервисов GeoIP<br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">github.com/Loyalsoldier/geoip</span></th>
                     <td>
                         <input type="text" class="input_32_table" id="awg_geo_v2fly_ip" style="width:95%;" maxlength="512"
                             placeholder="telegram,google,facebook,twitter,netflix,cloudflare">
-                        <br><span style="color:#888; font-size:11px;">Comma-separated. Available: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + country codes (us, ru, cn, ...).</span>
-                        <br><span style="color:#f0ad4e; font-size:11px;">⚠ For youtube, discord, microsoft, github, openai etc. there are NO IP lists — use GeoSite below.</span>
+                        <div class="awg-hint">Через запятую. Доступно: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + коды стран (us, ru, cn, …).</div>
+                        <div class="awg-hint" style="color:#f0ad4e;">⚠ Для youtube, discord, microsoft, github, openai и т.п. IP-списков НЕТ — используйте GeoSite ниже.</div>
                     </td>
                 </tr>
                 </table>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">GeoSite — Route by Service / Domain</td></tr></thead>
+                <thead><tr><td colspan="2">GeoSite — маршрут по сервисам / доменам</td></tr></thead>
                 <tr>
-                    <th width="35%">GeoSite Service Lists<br><span style="font-weight:normal; font-size:11px; color:#888;">github.com/v2fly/domain-list-community</span></th>
+                    <th width="35%">Списки сервисов GeoSite<br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">github.com/v2fly/domain-list-community</span></th>
                     <td>
                         <input type="text" class="input_32_table" id="awg_geo_v2fly" style="width:95%;" maxlength="512"
                             placeholder="youtube,google,discord,netflix,telegram,twitter,instagram,facebook,tiktok,spotify">
-                        <br><span style="color:#888; font-size:11px;">Comma-separated. 1500+ lists: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev ...</span>
+                        <div class="awg-hint">Через запятую. 1500+ списков: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …</div>
                     </td>
                 </tr>
                 <tr>
-                    <th>Custom Domains</th>
+                    <th>Свои домены</th>
                     <td>
                         <input type="text" class="input_32_table" id="geo_custom_domains" style="width:95%;"
                                maxlength="2000" placeholder="example.com,another.org,service.net">
-                        <div class="awg-hint">Comma-separated. DNS-resolved → routed through VPN</div>
+                        <div class="awg-hint">Через запятую. Резолвятся через DNS → маршрутизируются в VPN.</div>
                     </td>
                 </tr>
                 <tr>
-                    <th>Custom IPs / Subnets</th>
+                    <th>Свои IP / подсети</th>
                     <td>
                         <input type="text" class="input_32_table" id="geo_custom_ips" style="width:95%;"
                                maxlength="2000" placeholder="8.8.8.8,1.1.1.0/24,203.0.113.0/24">
-                        <div class="awg-hint">Comma-separated IPs or CIDR subnets</div>
+                        <div class="awg-hint">Через запятую: отдельные IP или подсети CIDR.</div>
                     </td>
                 </tr>
                 </table>
@@ -1740,7 +2022,7 @@ function initAutocompleteIp(){
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
                 <thead><tr><td colspan="2">Geo Antifilter — РКН-списки (antifilter.download)</td></tr></thead>
                 <tr>
-                    <th width="35%">Antifilter IP-списки<br><span style="font-weight:normal; font-size:11px; color:#888;">antifilter.download</span></th>
+                    <th width="35%">Antifilter IP-списки<br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">antifilter.download</span></th>
                     <td>
                         <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="allyouneed"> allyouneed — все нужные подсети (~15K) <span style="color:#5bd75b;">рекомендуется</span></label>
                         <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community"> community — подсети сообщества (~900)</label>
@@ -1748,33 +2030,33 @@ function initAutocompleteIp(){
                         <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="subnet"> subnet — крупные подсети (~78)</label>
                         <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ip"> ip — отдельные IP (~48K)</label>
                         <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipresolve"> ipresolve — IP из DNS-резолва (~154K) <span style="color:#f0ad4e;">⚠ очень большой</span></label>
-                        <div style="color:#888; font-size:11px; margin-top:4px;">Загружаются в общий ipset awg_dst вместе с GeoIP и маршрутизируются через VPN. allyouneed = ipsum + subnet; ip/ipresolve сильно пересекаются с allyouneed — обычно достаточно allyouneed.</div>
+                        <div class="awg-hint">Добавляются к спискам GeoIP и маршрутизируются через VPN. allyouneed = ipsum + subnet; ip/ipresolve сильно пересекаются с allyouneed — обычно достаточно allyouneed.</div>
                     </td>
                 </tr>
                 <tr>
                     <th>Antifilter домены</th>
                     <td>
                         <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community_domains"> community домены (~485) → dnsmasq</label>
-                        <div style="color:#888; font-size:11px; margin-top:4px;">Полный domains.lst (1.4M доменов / 27 МБ) не поддерживается — слишком большой для dnsmasq на роутере.</div>
+                        <div class="awg-hint">Полный domains.lst (1.4M доменов / 27 МБ) не поддерживается — слишком большой для dnsmasq на роутере.</div>
                     </td>
                 </tr>
                 </table>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">Geo update settings</td></tr></thead>
+                <thead><tr><td colspan="2">Настройки обновления Geo</td></tr></thead>
                 <tr>
-                    <th width="35%">Auto-update Lists</th>
+                    <th width="35%">Автообновление списков</th>
                     <td>
-                        <label><input type="checkbox" id="geo_autoupdate"> Daily at 4:00 AM</label>
+                        <label><input type="checkbox" id="geo_autoupdate"> Ежедневно в 4:00</label>
                         &nbsp;&nbsp;
-                        <input type="button" class="button_gen" id="btn_geo_update" value="Update Now" onclick="updateGeoLists();">
+                        <input type="button" class="button_gen" id="btn_geo_update" value="Обновить сейчас" onclick="updateGeoLists();">
                     </td>
                 </tr>
                 <tr>
-                    <th>Wipe before update</th>
+                    <th>Очистка перед обновлением</th>
                     <td>
-                        <label><input type="checkbox" id="awg_geo_wipe_update"> Delete all geo files before a full update / program upgrade</label>
-                        <div style="color:#888; font-size:11px; margin-top:3px;">Off (default): keeps existing geo lists — including across a program update (no re-download). On: wipes before re-download (clean set, but a failed download leaves a list missing).</div>
+                        <label><input type="checkbox" id="awg_geo_wipe_update"> Удалять все geo-файлы перед полным обновлением / обновлением программы</label>
+                        <div class="awg-hint">Выключено (по умолчанию): существующие geo-списки сохраняются, в том числе при обновлении программы (без повторной загрузки). Включено: очистка перед перекачкой (чистый набор, но при сбое загрузки какой-то список останется отсутствующим).</div>
                     </td>
                 </tr>
                 </table>
@@ -1790,31 +2072,32 @@ function initAutocompleteIp(){
                     <th width="35%">Geo-списки через VPN</th>
                     <td>
                         <label><input type="checkbox" id="awg_geo_via_awg"> Загружать geo-списки через активный AWG-туннель</label>
-                        <div style="color:#888; font-size:11px; margin-top:3px;">Пока туннель поднят, загрузка GeoIP / GeoSite / antifilter идёт через VPN (обход блокировок GitHub / jsDelivr). Если VPN выключен — загрузка идёт напрямую, как раньше.</div>
+                        <div class="awg-hint">Пока туннель поднят, загрузка GeoIP / GeoSite / antifilter идёт через VPN (обход блокировок GitHub / jsDelivr). Если VPN выключен — загрузка идёт напрямую, как раньше.</div>
                     </td>
                 </tr>
                 <tr>
                     <th>Обновление программы через VPN</th>
                     <td>
                         <label><input type="checkbox" id="awg_update_via_awg"> Загружать обновление программы через активный AWG-туннель</label>
-                        <div style="color:#888; font-size:11px; margin-top:3px;">Проверка версии и загрузка <code>.ipk</code> идут через VPN, пока туннель активен — можно ставить обновления прямо с GitHub в обход региональных блокировок (и проверять SHA256 по GitHub API). DNS-резолвинг остаётся системным; обход работает для блокировок по IP/TCP. Если VPN выключен — напрямую, как раньше.</div>
+                        <div class="awg-hint">Проверка версии и загрузка <code>.ipk</code> идут через VPN, пока туннель активен — можно ставить обновления прямо с GitHub в обход региональных блокировок (и проверять SHA256 по GitHub API). DNS-резолвинг остаётся системным; обход работает для блокировок по IP/TCP. Если VPN выключен — напрямую, как раньше.</div>
                     </td>
                 </tr>
                 </table>
 
                 <!-- Apply -->
                 <div style="margin-top:12px; text-align:center;">
-                    <input type="button" class="button_gen" value="Apply" onclick="saveSettings();" title="Сохранить и применить без перезапуска VPN">
-                    <input type="button" class="button_gen" value="Force Apply" onclick="forceApply();" style="margin-left:8px;" title="Сохранить + перезапуск VPN + полная пересборка маршрутов и firewall">
+                    <input type="button" class="button_gen" value="Применить" onclick="saveSettings();" title="Сохранить и применить без перезапуска VPN">
+                    <input type="button" class="button_gen" value="Принудительно применить" onclick="forceApply();" style="margin-left:8px;" title="Сохранить + перезапуск VPN + полная пересборка маршрутов и firewall">
+                    <span id="awg_ack_bottom" class="awg-ack"></span>
                 </div>
                 <div style="font-size:11px; opacity:0.7; margin:8px auto 0; max-width:640px; line-height:1.55; text-align:left;">
-                    <div><b>Apply</b> — сохранить настройки и применить их «на лету»: обновляет устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite <b>без разрыва VPN-соединения</b>. Если VPN остановлен — настройки просто сохранятся и применятся при следующем Start.</div>
-                    <div style="margin-top:4px;"><b>Force Apply</b> — сохранить и <b>полностью перезапустить VPN</b> (stop → start): заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall. Нужен при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».</div>
+                    <div><b>Применить</b> — сохранить настройки и применить их «на лету»: обновляет устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite <b>без разрыва VPN-соединения</b>. Если VPN остановлен — настройки просто сохранятся и применятся при следующем запуске.</div>
+                    <div style="margin-top:4px;"><b>Принудительно применить</b> — сохранить и <b>полностью перезапустить VPN</b> (stop → start): заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall. Нужен при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».</div>
                 </div>
 
                 <!-- ==================== LOG ==================== -->
-                <div class="awg-section" style="margin-top:15px;">Log</div>
-                <div id="awg_log" class="awg-log">Waiting for data...</div>
+                <div class="awg-section" style="margin-top:15px;">Журнал</div>
+                <div id="awg_log" class="awg-log">Ожидание данных…</div>
                 <div style="text-align:right; font-size:11px; opacity:0.5; margin-top:4px;">
                     <a href="https://github.com/r0otx/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; r0otx</a>
                     &nbsp;&middot;&nbsp;
@@ -1833,22 +2116,22 @@ function initAutocompleteIp(){
 </form>
 
 <!-- Update modal: changelog + confirm -->
-<div id="awg_update_modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); z-index:10000;">
+<div id="awg_update_modal" role="dialog" aria-modal="true" aria-labelledby="awg_modal_title" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); z-index:10000;">
     <div style="background:#2b3338; color:#e0e0e0; width:90%; max-width:680px; margin:4% auto; border:1px solid #444; border-radius:8px; box-shadow:0 6px 40px rgba(0,0,0,0.6); display:flex; flex-direction:column; max-height:84vh;">
         <div style="padding:14px 18px; border-bottom:1px solid #444; display:flex; align-items:center;">
             <span id="awg_modal_title" style="font-size:16px; font-weight:bold;">Обновление</span>
-            <span style="margin-left:auto; cursor:pointer; font-size:22px; line-height:1; opacity:0.6;" onclick="closeUpdateModal();" title="Закрыть">&times;</span>
+            <button type="button" aria-label="Закрыть" onclick="closeUpdateModal();" title="Закрыть" style="margin-left:auto; cursor:pointer; font-size:22px; line-height:1; opacity:0.6; background:transparent; border:none; color:inherit; padding:0;">&times;</button>
         </div>
         <div id="awg_modal_body" style="padding:14px 18px; overflow-y:auto; font-size:12px; line-height:1.5;"></div>
         <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:12px;">
             <span style="opacity:0.75;">Установить:</span>
-            <select id="awg_install_mode" onchange="awgModeUI();" style="padding:2px 6px; background:#222; color:#e0e0e0; border:1px solid #555; border-radius:4px;">
+            <select id="awg_install_mode" onchange="awgModeUI();" class="awg-modal-input" aria-label="Способ установки">
                 <option value="auto">Автоматически (последняя)</option>
                 <option value="version">Выбрать версию</option>
                 <option value="file">Вручную через файл</option>
             </select>
-            <input type="text" id="awg_version_input" placeholder="напр. 1.1.49" maxlength="12" style="width:100px; padding:2px 6px; background:#222; color:#e0e0e0; border:1px solid #555; border-radius:4px; display:none;">
-            <input type="file" id="awg_ipk_file" accept=".ipk" style="display:none; color:#e0e0e0; max-width:240px;">
+            <input type="text" id="awg_version_input" placeholder="напр. 1.1.49" maxlength="12" class="awg-modal-input" aria-label="Версия для установки" style="width:100px; display:none;">
+            <input type="file" id="awg_ipk_file" accept=".ipk" aria-label="Файл .ipk для установки" style="display:none; color:#e0e0e0; max-width:100%;">
             <input type="button" id="awg_install_btn" class="button_gen" value="Установить" onclick="installUpdate();">
         </div>
         <div id="awg_manual_progress" style="display:none; padding:0 18px 12px;">
@@ -1857,7 +2140,7 @@ function initAutocompleteIp(){
             </div>
             <div id="awg_manual_msg" style="font-size:11px; opacity:0.85; margin-top:5px;"></div>
         </div>
-        <div style="padding:12px 18px; border-top:1px solid #444; display:flex; align-items:center;">
+        <div style="padding:12px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
             <span id="awg_modal_status" style="font-size:12px; opacity:0.75; margin-right:auto;"></span>
             <input type="button" class="button_gen" value="Проверить обновления" onclick="checkForUpdate();">
             <input type="button" class="button_gen" value="Закрыть" onclick="closeUpdateModal();" style="margin-left:8px;">
