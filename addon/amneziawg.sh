@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.80"
+AWG_VERSION="1.1.81"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -668,9 +668,12 @@ cleanup_firewall(){
     # Remove the global :53 DNS-interception rules (DNAT + DoH/DoT REJECTs)
     cleanup_dns_interception
 
-    # Destroy ipset
-    ipset flush "$IPSET_NAME" 2>/dev/null
-    ipset destroy "$IPSET_NAME" 2>/dev/null
+    # Destroy the ipset only if it's the one we own (default name). A custom name means the user
+    # shares this set with other connections/tools — leave it intact, just drop our rules above.
+    if [ "$IPSET_NAME" = "awg_dst" ]; then
+        ipset flush "$IPSET_NAME" 2>/dev/null
+        ipset destroy "$IPSET_NAME" 2>/dev/null
+    fi
 
     # Remove dnsmasq config
     rm -f "$DNSMASQ_AWG_CONF"
@@ -2464,6 +2467,12 @@ do_service_event(){
 }
 
 # --- Main ---
+
+# Geo ipset name is configurable (so it can be shared with other connections/tools). Default
+# awg_dst; sanitize to a valid ipset name (letters/digits/_.-, <=31 chars), else keep default.
+_ipn=$(get_setting awg_ipset_name)
+case "$_ipn" in ''|*[!A-Za-z0-9_.-]*) _ipn="" ;; esac
+[ -n "$_ipn" ] && [ ${#_ipn} -le 31 ] && IPSET_NAME="$_ipn"
 
 case "$1" in
     start)          do_start ;;

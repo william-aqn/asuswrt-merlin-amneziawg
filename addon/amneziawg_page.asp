@@ -130,6 +130,9 @@
 #awg_client_table td { padding: 5px 8px; }
 /* Action column: tight padding so the small × button isn't lost in its (narrow) cell. */
 #awg_client_table td:last-child { padding-left: 2px; padding-right: 2px; }
+/* Keep every control inside its fixed-width cell so nothing overflows and forces a scrollbar. */
+#awg_client_table input, #awg_client_table select { box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; }
+#awg_client_table .awg-remove-btn { max-width: 100%; box-sizing: border-box; }
 .awg-remove-btn {
     background: transparent; border: 1px solid #a00; color: #c00;
     padding: 3px 10px; border-radius: 3px; cursor: pointer; font-size: 14px;
@@ -179,6 +182,8 @@
 
 /* Modal inputs aligned to the page palette (was a separate color island). */
 .awg-modal-input { padding:2px 6px; background:#1c2226; color:#e0e0e0; border:1px solid #5a6b70; border-radius:4px; }
+/* DHCP picker: highlight the whole row when its checkbox is ticked. */
+.awg-dhcp-row.sel { background: rgba(93,176,255,0.16); }
 </style>
 <script>
 var custom_settings = <% get_custom_settings(); %>;
@@ -424,6 +429,8 @@ function awgModeUI(){
     var fin = document.getElementById('awg_ipk_file');
     if(vin) vin.style.display = (mode === 'version') ? '' : 'none';
     if(fin) fin.style.display = (mode === 'file') ? '' : 'none';
+    // When the user picks "Выбрать версию", focus the version field right away.
+    if(mode === 'version' && vin){ try { vin.focus(); vin.select(); } catch(e){} }
 }
 
 // Install action, dispatched by the mode selector:
@@ -860,6 +867,8 @@ function applyConfig(actionScript){
     // Watchdog probe hosts: keep only safe host chars (IP/hostname + separators), collapse spaces
     custom_settings.awg_watchdog_hosts = document.getElementById('awg_watchdog_hosts').value.replace(/[^0-9A-Za-z.\-, ]/g, '').replace(/\s+/g, ' ').trim();
     custom_settings.awg_geo_wipe_update = document.getElementById('awg_geo_wipe_update').checked ? '1' : '0';
+    // ipset name — sanitize to a valid set name (letters/digits/_.-, <=31); empty => backend uses awg_dst
+    custom_settings.awg_ipset_name = document.getElementById('awg_ipset_name').value.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 31);
     // Download-via-VPN toggles (route geo / program-update downloads through the tunnel)
     custom_settings.awg_geo_via_awg = document.getElementById('awg_geo_via_awg').checked ? '1' : '0';
     custom_settings.awg_update_via_awg = document.getElementById('awg_update_via_awg').checked ? '1' : '0';
@@ -1031,6 +1040,8 @@ function loadGeoSettings(){
     if(wh) wh.value = custom_settings.awg_watchdog_hosts || '';
     var wp = document.getElementById('awg_geo_wipe_update');
     if(wp) wp.checked = (custom_settings.awg_geo_wipe_update === '1');
+    var ipn = document.getElementById('awg_ipset_name');
+    if(ipn) ipn.value = custom_settings.awg_ipset_name || '';
     // Download-via-VPN toggles (default off)
     var gva = document.getElementById('awg_geo_via_awg');
     if(gva) gva.checked = (custom_settings.awg_geo_via_awg === '1');
@@ -1137,8 +1148,8 @@ function showClientPicker(clients){
                '<span style="flex:1; text-align:center;">Имя</span>' +
                '</div>';
     for(var i = 0; i < clients.length; i++){
-        rows += '<label style="display:flex; align-items:center; gap:10px; padding:6px 4px; border-bottom:1px solid #3a4548;">' +
-                '<input type="checkbox" class="awg-dhcp-cb" value="' + i + '">' +
+        rows += '<label class="awg-dhcp-row" style="display:flex; align-items:center; gap:10px; padding:6px 4px; border-bottom:1px solid #3a4548;">' +
+                '<input type="checkbox" class="awg-dhcp-cb" value="' + i + '" onchange="awgDhcpToggleRow(this);">' +
                 '<span style="font-family:monospace; min-width:115px; flex:0 0 auto; text-align:center;">' + escHtml(clients[i].ip) + '</span>' +
                 '<span style="font-family:monospace; min-width:140px; flex:0 0 auto; color:#9aa3ad; text-align:center;">' + escHtml(clients[i].mac) + '</span>' +
                 '<span style="flex:1; text-align:center; color:#b6bdc7; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (clients[i].name ? escHtml(clients[i].name) : '<span style="opacity:0.45;">—</span>') + '</span>' +
@@ -1168,6 +1179,12 @@ function showClientPicker(clients){
             '</div>' +
         '</div>';
     document.body.appendChild(ov);
+}
+function awgDhcpToggleRow(cb){
+    var row = cb.parentNode;   // the <label> wrapping the checkbox + cells
+    if(!row) return;
+    if(cb.checked){ if(row.className.indexOf('sel') === -1) row.className += ' sel'; }
+    else { row.className = row.className.replace(/\s*\bsel\b/, ''); }
 }
 function awgCloseDhcp(){
     var ov = document.getElementById('awg_dhcp_modal');
@@ -2059,8 +2076,7 @@ function initAutocompleteIp(){
                 </table>
 
                 <div class="awg-section">Правила устройств</div>
-                <div class="awg-tablewrap">
-                <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="min-width:480px; table-layout:fixed;">
+                <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="table-layout:fixed;">
                 <thead><tr>
                     <td width="20%">IP-адрес</td>
                     <td width="35%">Имя устройства</td>
@@ -2070,7 +2086,6 @@ function initAutocompleteIp(){
                 <tbody id="awg_client_rows">
                 </tbody>
                 </table>
-                </div>
                 <div style="margin-top:6px; display:flex; align-items:center; flex-wrap:wrap; gap:6px;">
                     <input type="button" class="button_gen" value="+ Добавить устройство" onclick="addClientRow('','','vpn_all');">
                     <input type="button" class="button_gen" value="+ Из списка DHCP" onclick="fetchDhcpClients();">
@@ -2171,6 +2186,13 @@ function initAutocompleteIp(){
                     <td>
                         <label><input type="checkbox" id="awg_geo_wipe_update"> Удалять все geo-файлы перед полным обновлением / обновлением программы</label>
                         <div class="awg-hint">Выключено (по умолчанию): существующие geo-списки сохраняются, в том числе при обновлении программы (без повторной загрузки). Включено: очистка перед перекачкой (чистый набор, но при сбое загрузки какой-то список останется отсутствующим).</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Имя ipset</th>
+                    <td>
+                        <input type="text" id="awg_ipset_name" maxlength="31" style="width:95%; max-width:260px;" placeholder="awg_dst" aria-label="Имя ipset">
+                        <div class="awg-hint">Имя ipset-набора, в который грузятся GeoIP/antifilter-подсети и который маршрутизируется через VPN. По умолчанию <code>awg_dst</code>. Меняйте, только если хотите использовать <b>общий</b> набор с другими подключениями/инструментами — тогда при остановке он не удаляется (снимаются только наши правила маршрутизации). Допустимы буквы, цифры и <code>_ . -</code>, до 31 символа; пусто = <code>awg_dst</code>.</div>
                     </td>
                 </tr>
                 </table>
