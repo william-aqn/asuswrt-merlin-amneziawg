@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.69"
+AWG_VERSION="1.1.70"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -659,7 +659,7 @@ cleanup_firewall(){
 
     # Remove all ip rules for our table/fwmark
     local _i=0; while [ $_i -lt 100 ] && ip rule del lookup $RT_TABLE 2>/dev/null; do _i=$((_i+1)); done
-    _i=0; while [ $_i -lt 100 ] && ip rule del fwmark "$FWMARK"/"$FWMARK" 2>/dev/null; do _i=$((_i+1)); done
+    _i=0; while [ $_i -lt 100 ] && ip rule del fwmark "$FWMARK" 2>/dev/null; do _i=$((_i+1)); done
     # Direct-policy rules use "lookup main prio 97" — not matched by the deletes above
     _i=0; while [ $_i -lt 100 ] && ip rule del prio 97 2>/dev/null; do _i=$((_i+1)); done
 
@@ -858,13 +858,14 @@ setup_firewall(){
     local domain_count=0
     local block_ipv6=$(get_setting awg_block_ipv6_dns)
     [ -z "$block_ipv6" ] && block_ipv6="1"
-    # Only emit the GLOBAL filter-AAAA when (a) the user wants it, (b) IPv6 is actually
-    # enabled on the router, and (c) a VPN/geo policy is in play. dnsmasq's filter-AAAA is
-    # LAN-wide (no per-client scoping), so applying it when nothing is tunnelled would strip
-    # IPv6 (AAAA) DNS for every device, including plain "direct" ones.
-    local ipv6_on=1; case "$(nvram get ipv6_service 2>/dev/null)" in disabled|"") ipv6_on=0 ;; esac
+    # Emit the GLOBAL filter-AAAA when the user wants it AND a VPN/geo policy is active. We do
+    # NOT gate on ipv6_service: filter-AAAA is useful even with IPv6 disabled on the router —
+    # it stops dual-stack clients (Happy Eyeballs) from trying dead AAAA addresses first and
+    # stalling (a buffering regression in 1.1.69), and forces the IPv4 path that geo-routing
+    # actually covers. The policy gate still avoids stripping AAAA LAN-wide when nothing is
+    # tunnelled (so a pure-"direct" LAN keeps its IPv6 DNS).
     local want_aaaa=0
-    [ "$block_ipv6" = "1" ] && [ "$ipv6_on" = 1 ] && { [ "$default_policy" != "direct" ] || geo_in_use; } && want_aaaa=1
+    [ "$block_ipv6" = "1" ] && { [ "$default_policy" != "direct" ] || geo_in_use; } && want_aaaa=1
     echo "# AmneziaWG domain routing - auto-generated" > "$DNSMASQ_AWG_CONF"
     [ "$want_aaaa" = 1 ] && echo "filter-AAAA" >> "$DNSMASQ_AWG_CONF"
     # Domain->ipset rules only work if the set actually exists. Mirror the mangle vpn_geo
@@ -953,7 +954,7 @@ setup_firewall(){
             case "$policy" in
                 vpn_all)
                     if [ -n "$mac" ]; then
-                        iptables -t mangle -A "$AWG_CHAIN" -m mac --mac-source "$mac" -j MARK --set-mark "$FWMARK"/"$FWMARK"
+                        iptables -t mangle -A "$AWG_CHAIN" -m mac --mac-source "$mac" -j MARK --set-mark "$FWMARK"
                     else
                         ip rule add from "$dev_id" lookup $RT_TABLE prio 99
                     fi
@@ -963,10 +964,10 @@ setup_firewall(){
                     if ipset list "$IPSET_NAME" >/dev/null 2>&1; then
                         if [ -n "$mac" ]; then
                             iptables -t mangle -A "$AWG_CHAIN" -m mac --mac-source "$mac" \
-                                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"/"$FWMARK"
+                                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
                         else
                             iptables -t mangle -A "$AWG_CHAIN" -s "$dev_id" \
-                                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"/"$FWMARK"
+                                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
                         fi
                         has_geo=true
                         log_msg "Route: $dev_id ($name) -> VPN (geo)"
@@ -981,13 +982,13 @@ setup_firewall(){
     # --- Default policy (last rules in chain) ---
     case "$default_policy" in
         vpn_all)
-            iptables -t mangle -A "$AWG_CHAIN" -j MARK --set-mark "$FWMARK"/"$FWMARK"
+            iptables -t mangle -A "$AWG_CHAIN" -j MARK --set-mark "$FWMARK"
             log_msg "Default: all -> VPN"
             ;;
         vpn_geo)
             if ipset list "$IPSET_NAME" >/dev/null 2>&1; then
                 iptables -t mangle -A "$AWG_CHAIN" \
-                    -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"/"$FWMARK"
+                    -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
                 has_geo=true
                 log_msg "Default: geo -> VPN"
             else
@@ -1003,9 +1004,8 @@ setup_firewall(){
     iptables -t mangle -C PREROUTING -j "$AWG_CHAIN" 2>/dev/null || \
         iptables -t mangle -A PREROUTING -j "$AWG_CHAIN"
 
-    # --- Single fwmark rule for all marked traffic (masked so we match only our own bit
-    #     and don't clash with a co-resident tool that uses other fwmark bits) ---
-    ip rule add fwmark "$FWMARK"/"$FWMARK" lookup $RT_TABLE prio 98
+    # --- Single fwmark rule for all marked traffic ---
+    ip rule add fwmark "$FWMARK" lookup $RT_TABLE prio 98
 
     # --- Force DNS through dnsmasq whenever VPN is active ---
     # The global :53 DNAT + DoH/DoT REJECT is the one piece that collides with a co-resident
@@ -1846,6 +1846,21 @@ do_uninstall(){
     log_msg "Uninstalled"
 }
 
+# Is the tunnel passing traffic? True if ANY of a few quick probes (two well-known anycast
+# targets, a few attempts) gets a reply. A SINGLE ICMP can be dropped or delayed past its
+# timeout under heavy tunnel load (e.g. streaming) without the tunnel being down — restarting
+# the whole VPN on one miss tore working tunnels down every 5-min watchdog tick and broke
+# streams (1.1.69 regression). Only a sustained all-miss counts as dead. Returns on the FIRST
+# reply, so the healthy case is fast.
+tunnel_alive(){
+    local t
+    for t in 8.8.8.8 1.1.1.1 8.8.8.8; do
+        ping -c 1 -W 2 -I "$IFACE" "$t" >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    return 1
+}
+
 # Cheap WAN-renumber heal: if the endpoint host-route points via a stale gateway (PPPoE
 # re-dial / DHCP-WAN lease change), just re-pin it instead of a full VPN teardown. Returns 0
 # if it re-pinned (caller should re-probe). Skips hostname endpoints (no host-route exists).
@@ -1890,10 +1905,10 @@ do_watchdog(){
         reason="interface $IFACE missing"
     elif ! pidof amneziawg-go >/dev/null 2>&1; then
         reason="amneziawg-go process dead"
-    elif ! ping -c 1 -W 5 -I "$IFACE" 8.8.8.8 >/dev/null 2>&1; then
+    elif ! tunnel_alive; then
         # Before a full teardown, try the cheap WAN-renumber heal: a stale endpoint gateway
-        # (PPPoE re-dial / DHCP renumber) black-holes the handshake. Re-pin and re-probe once.
-        if repin_endpoint_route && ping -c 1 -W 5 -I "$IFACE" 8.8.8.8 >/dev/null 2>&1; then
+        # (PPPoE re-dial / DHCP renumber) black-holes the handshake. Re-pin and re-probe.
+        if repin_endpoint_route && tunnel_alive; then
             : # re-pin fixed it; tunnel passing again
         else
             reason="tunnel not passing traffic"
