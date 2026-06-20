@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.70"
+AWG_VERSION="1.1.71"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1568,7 +1568,7 @@ do_start(){
     arm_lan_deadman "$(pidof amneziawg-go 2>/dev/null | awk '{print $1}')"
     setup_firewall
 
-    log_msg "Started, verifying tunnel connectivity..."
+    log_msg "Started, verifying tunnel connectivity (probing: $(watchdog_hosts))..."
     update_status
     release_lock
 
@@ -1578,9 +1578,9 @@ do_start(){
     (
         hc_ok=false
         hc_try=0
-        hc_reason="not passing traffic"
+        hc_reason="not passing traffic (probed: $(watchdog_hosts))"
         while [ $hc_try -lt 30 ]; do
-            if ping -c 1 -W 2 -I "$IFACE" 8.8.8.8 >/dev/null 2>&1; then
+            if ping_hosts_once; then
                 # ICMP is up. If we hijacked LAN DNS, also require it to actually resolve:
                 # an ICMP-only "verified" tunnel leaves clients pinned to a dead resolver
                 # (with DoH/DoT REJECTed too) = silent LAN-wide outage that never rolls back.
@@ -1846,17 +1846,45 @@ do_uninstall(){
     log_msg "Uninstalled"
 }
 
-# Is the tunnel passing traffic? True if ANY of a few quick probes (two well-known anycast
-# targets, a few attempts) gets a reply. A SINGLE ICMP can be dropped or delayed past its
-# timeout under heavy tunnel load (e.g. streaming) without the tunnel being down — restarting
-# the whole VPN on one miss tore working tunnels down every 5-min watchdog tick and broke
-# streams (1.1.69 regression). Only a sustained all-miss counts as dead. Returns on the FIRST
-# reply, so the healthy case is fast.
+# The tunnel liveness-probe target hosts: user-configured (awg_watchdog_hosts, space/comma
+# separated) or the default anycast pair. Sanitized to a safe host charset (IPv4 or hostname:
+# digits/letters/dot/dash) so a bad setting can't inject into the ping command, and capped to
+# the first 4 so a long list can't drag out the probe. Empty/all-invalid -> default, so the
+# watchdog can never be left with nothing to probe. Tip: prefer IPs (no DNS dependency). Make
+# these configurable because a fixed target (8.8.8.8) can be blocked/unreachable at certain
+# times, which would make the watchdog false-fail and restart a healthy tunnel.
+watchdog_hosts(){
+    local raw out="" h n=0
+    raw=$(get_setting awg_watchdog_hosts | tr ',' ' ')
+    for h in $raw; do
+        case "$h" in *[!0-9A-Za-z.-]*|"") continue ;; esac
+        out="$out $h"; n=$((n + 1))
+        [ $n -ge 4 ] && break
+    done
+    [ -n "$out" ] && { echo "${out# }"; return; }
+    echo "8.8.8.8 1.1.1.1"
+}
+
+# Ping each configured host once through the tunnel; return 0 on the FIRST reply. Single pass
+# (no sleeps) — callers add their own retry cadence.
+ping_hosts_once(){
+    local h
+    for h in $(watchdog_hosts); do
+        ping -c 1 -W 2 -I "$IFACE" "$h" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+# Is the tunnel passing traffic? True if ANY configured host replies across a couple of quick
+# rounds. A SINGLE ICMP can be dropped/delayed past its timeout under heavy tunnel load (e.g.
+# streaming) without the tunnel being down — restarting the whole VPN on one miss tore working
+# tunnels down every 5-min watchdog tick and broke streams (1.1.69 regression). Only a
+# sustained all-miss across all hosts counts as dead. Returns on the first reply (fast).
 tunnel_alive(){
-    local t
-    for t in 8.8.8.8 1.1.1.1 8.8.8.8; do
-        ping -c 1 -W 2 -I "$IFACE" "$t" >/dev/null 2>&1 && return 0
-        sleep 1
+    local i=0
+    while [ $i -lt 2 ]; do
+        ping_hosts_once && return 0
+        i=$((i + 1)); sleep 1
     done
     return 1
 }
@@ -1911,7 +1939,7 @@ do_watchdog(){
         if repin_endpoint_route && tunnel_alive; then
             : # re-pin fixed it; tunnel passing again
         else
-            reason="tunnel not passing traffic"
+            reason="tunnel not passing traffic (probed: $(watchdog_hosts))"
         fi
     elif dns_intercept_active && pidof dnsmasq >/dev/null 2>&1 && ! dns_ok; then
         # Confirm before acting: dnsmasq gets bounced by many unrelated events (DHCP lease

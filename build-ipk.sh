@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PKG_NAME="amneziawg"
-PKG_VERSION="1.1.70-1"
+PKG_VERSION="1.1.71-1"
 
 build_ipk(){
     local arch="$1"

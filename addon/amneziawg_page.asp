@@ -700,6 +700,8 @@ function applyConfig(actionScript){
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
     custom_settings.awg_no_dns_intercept = document.getElementById('awg_no_dns_intercept').checked ? '1' : '0';
     custom_settings.awg_killswitch = document.getElementById('awg_killswitch').checked ? '1' : '0';
+    // Watchdog probe hosts: keep only safe host chars (IP/hostname + separators), collapse spaces
+    custom_settings.awg_watchdog_hosts = document.getElementById('awg_watchdog_hosts').value.replace(/[^0-9A-Za-z.\-, ]/g, '').replace(/\s+/g, ' ').trim();
     custom_settings.awg_geo_wipe_update = document.getElementById('awg_geo_wipe_update').checked ? '1' : '0';
     // Download-via-VPN toggles (route geo / program-update downloads through the tunnel)
     custom_settings.awg_geo_via_awg = document.getElementById('awg_geo_via_awg').checked ? '1' : '0';
@@ -821,6 +823,9 @@ function loadGeoSettings(){
     // Kill-switch (default off — preserves prior fail-open behavior unless the user opts in)
     var ks = document.getElementById('awg_killswitch');
     if(ks) ks.checked = (custom_settings.awg_killswitch === '1');
+    // Watchdog probe hosts (empty = backend default 8.8.8.8 1.1.1.1)
+    var wh = document.getElementById('awg_watchdog_hosts');
+    if(wh) wh.value = custom_settings.awg_watchdog_hosts || '';
     var wp = document.getElementById('awg_geo_wipe_update');
     if(wp) wp.checked = (custom_settings.awg_geo_wipe_update === '1');
     // Download-via-VPN toggles (default off)
@@ -1602,6 +1607,13 @@ function initAutocompleteIp(){
                     <td>
                         <label><input type="checkbox" id="awg_killswitch"> Блокировать VPN-трафик при падении туннеля (strict kill-switch)</label>
                         <div style="color:#666; font-size:11px; margin-top:3px;">По умолчанию выключено. Когда включено: если туннель внезапно падает (краш демона / нехватка памяти), трафик устройств с политикой «VPN» не уходит в обход в WAN открытым текстом, а блокируется до восстановления (watchdog поднимает туннель в течение ~5 мин). Выключено — прежнее поведение (трафик может временно идти мимо VPN). Влияет только на устройства с политикой VPN/Geo; при политике по умолчанию «VPN — All Traffic» затрагивает весь LAN.</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Адреса проверки туннеля</th>
+                    <td>
+                        <input type="text" id="awg_watchdog_hosts" maxlength="200" style="width:320px;" placeholder="8.8.8.8 1.1.1.1">
+                        <div style="color:#666; font-size:11px; margin-top:3px;">Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут, чтобы понять, жив ли он. Туннель считается рабочим, если ответил <b>хоть один</b>. Через пробел или запятую (IP или домен; лучше IP — без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны в какое-то время — иначе watchdog зря перезапускает VPN. Какие адреса проверяются, видно в логе (строка «verifying / tunnel not passing traffic (probed: …)»).</div>
                     </td>
                 </tr>
                 <tr>
