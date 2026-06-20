@@ -270,7 +270,7 @@ function doUpdate(version){
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     if(version) delete custom_settings.awg_update_version;
     document.form.action_script.value = "start_awgdoupdate";
-    document.form.submit();
+    awgSubmitForm();
 
     // Wait for update to finish (VPN stopped, new version installed), then reload
     var attempts = 0;
@@ -428,6 +428,21 @@ function awgBytesToB64(bytes){
     return btoa(bin);
 }
 
+// Submit the shared form. Some browsers pop a "Save password?" prompt whenever a form that
+// contains an <input type="password"> is submitted — here the WG private key / PSK fields.
+// Those fields have NO `name` and are never POSTed (their values reach the backend via
+// amng_custom, set by JS), so disable them for the instant of submit: the form stops looking
+// like a login and the browser stops offering to save it. Purely cosmetic — the POST body is
+// unchanged. Re-enabled immediately (the submit targets hidden_frame, so the page doesn't
+// navigate and the finally always runs).
+function awgSubmitForm(){
+    var pw = [document.getElementById('awg_privatekey'), document.getElementById('awg_peer_psk')];
+    var i;
+    for(i = 0; i < pw.length; i++){ if(pw[i]) pw[i].disabled = true; }
+    try { document.form.submit(); }
+    finally { for(i = 0; i < pw.length; i++){ if(pw[i]) pw[i].disabled = false; } }
+}
+
 // Submit the shared form (-> hidden_frame, proven auth path) with the current settings
 // plus one-shot upload keys in `extra`. cb() fires when the POST has been processed.
 function awgPostSettings(actionScript, extra, waitVal, cb){
@@ -448,7 +463,7 @@ function awgPostSettings(actionScript, extra, waitVal, cb){
     var oldwait = aw ? aw.value : null;
     if(aw && waitVal != null) aw.value = String(waitVal);
     document.form.action_script.value = actionScript;
-    document.form.submit();
+    awgSubmitForm();
     if(aw && oldwait != null) aw.value = oldwait;   // submit() snapshots fields synchronously
 }
 
@@ -747,7 +762,7 @@ function applyConfig(actionScript){
 
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = actionScript;
-    document.form.submit();
+    awgSubmitForm();
     // No full-page reload: status + log refresh live via polling. Reloading after a
     // form POST makes the browser prompt to resubmit the form ("Повторить отправку").
 }
@@ -870,7 +885,7 @@ function updateGeoLists(){
     syncViaVpnToggles();
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = "start_awgupdategeo";
-    document.form.submit();
+    awgSubmitForm();
     // No reload: geo progress and result show live in the log + status via polling.
 }
 
@@ -945,7 +960,7 @@ function addManualIPs(input){
 
 function awgAction(action){
     document.form.action_script.value = action;
-    document.form.submit();
+    awgSubmitForm();
     var badge = document.getElementById('awg_badge');
     var isStop = action.indexOf('stop') !== -1;
     var expect = !isStop;
