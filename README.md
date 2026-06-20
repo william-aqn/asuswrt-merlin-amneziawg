@@ -1,6 +1,6 @@
 # AmneziaWG for Asuswrt-Merlin
 
-![2026-03-25 12 34 03](https://github.com/user-attachments/assets/0ecdf3bc-f58e-4628-8a92-5f2af5cbd2ce)
+![banner](assets/banner.jpg)
 
 
 [[русский]](README.md) [[english]](README_EN.md)
@@ -31,8 +31,14 @@ VPN-клиент с обходом DPI-блокировок на базе [Amnez
 
 </details>
 
-<img width="768" height="817" alt="AmneziaWG" src="https://github.com/user-attachments/assets/12297a4f-938b-40c8-88a6-b3219940007e" />
+![widget](assets/widget.png)
 
+<details>
+<summary>Скриншот админки</summary>
+
+![screenshot](assets/screenshot.png)
+
+</details>
 
 ## Changelog
 
