@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.77"
+AWG_VERSION="1.1.78"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2370,7 +2370,7 @@ do_firewall_restart(){
 do_service_event(){
     local event="$2"
     case "$event" in
-        awgstart|awgstop|awgrestart|awgforceapply|awgsaveconf|awgupdategeo|awgdoupdate) ui_log_reset ;;
+        awgstart|awgstop|awgrestart|awgforceapply|awgsaveconf|awgupdategeo|awgdoupdate|awgdiag) ui_log_reset ;;
     esac
     case "$event" in
         # Manual upload: append one base64 chunk. Kept out of the ui_log_reset list above
@@ -2451,6 +2451,13 @@ do_service_event(){
             ;;
         awgdoupdate)
             do_update
+            ;;
+        awgdiag)
+            # Diagnostic dump into the on-page log (UI then copies it, wrapped for a TG post).
+            # Log was already cleared by the ui_log_reset list above; append a machine marker
+            # so the UI knows the (possibly multi-second) dump has finished.
+            do_diag >> "$UI_LOG" 2>&1
+            echo "[DIAG_DONE]" >> "$UI_LOG"
             ;;
     esac
 }

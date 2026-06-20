@@ -54,9 +54,11 @@
 
 .awg-log {
     font-family: "Courier New", "Lucida Console", monospace;
-    font-size: 11px;
+    font-size: 12px;
     padding: 10px;
-    height: 180px;
+    height: 340px;
+    min-height: 120px;
+    resize: vertical;
     overflow-y: auto;
     border: 1px solid #444;
     border-radius: 3px;
@@ -109,12 +111,14 @@
     text-transform: uppercase;
     font-size: 11px;
     letter-spacing: 0.5px;
+    text-align: center;
 }
 #awg_peers_table tbody td {
     padding: 6px 8px;
     font-size: 12px;
     word-break: break-all;
     overflow-wrap: anywhere;
+    text-align: center;
 }
 
 #awg_client_table { width: 100%; margin-top: 6px; }
@@ -144,9 +148,6 @@
 /* Visible keyboard focus (firmware stylesheets often strip outlines). */
 :focus-visible { outline:2px solid #5db0ff; outline-offset:1px; }
 
-/* One accent identity for top-level section headers (ROG red). */
-.awg-section { border-left:3px solid #cf0a2c; padding-left:8px; color:#e8edf2; }
-
 /* Secondary source caption + wide inputs — kill inline drift. */
 .awg-src { color:#b6bdc7; font-weight:normal; font-size:11px; }
 .awg-input-wide { width:95%; }
@@ -168,9 +169,6 @@
 .awg-ack.ok { color:#5bd75b; }
 .awg-ack.err { color:#f0ad4e; }
 .awg-invalid { border:1px solid #c00 !important; }
-
-/* Top-of-form quick Apply bar. */
-.awg-applybar-top { margin:8px 0 2px; padding:6px 8px; background:rgba(255,255,255,0.04); border:1px solid #5a6b70; border-radius:4px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 
 /* Modal inputs aligned to the page palette (was a separate color island). */
 .awg-modal-input { padding:2px 6px; background:#1c2226; color:#e0e0e0; border:1px solid #5a6b70; border-radius:4px; }
@@ -750,7 +748,7 @@ function loadSettings(){
 function saveSettings(){ applyConfig('start_awgsaveconf'); }
 
 function forceApply(){
-    if(!confirm('Принудительно применить: VPN будет полностью перезапущен (stop → start) — соединение временно прервётся (устройства с политикой VPN потеряют доступ на несколько секунд). Заодно пересоберутся маршруты и firewall. Продолжить?')) return;
+    if(!confirm('VPN будет полностью перезапущен (stop → start) — соединение временно прервётся (устройства с политикой VPN потеряют доступ на несколько секунд). Заодно пересоберутся маршруты и firewall. Продолжить?')) return;
     applyConfig('start_awgforceapply');
 }
 
@@ -915,8 +913,8 @@ function addClientRow(ip, name, policy){
     var tr = document.createElement('tr');
     policy = policy || 'vpn_all';
     tr.innerHTML =
-        '<td><input type="text" class="client_ip input_25_table" value="' + escHtml(ip) + '" placeholder="192.168.1.100" aria-label="IP-адрес устройства"></td>' +
-        '<td><input type="text" class="client_name input_25_table" value="' + escHtml(name) + '" placeholder="iPhone, PS5, TV..." aria-label="Имя устройства"></td>' +
+        '<td><input type="text" class="client_ip input_25_table" style="width:100%;" value="' + escHtml(ip) + '" placeholder="192.168.1.100" aria-label="IP-адрес устройства"></td>' +
+        '<td><input type="text" class="client_name input_25_table" style="width:100%;" value="' + escHtml(name) + '" placeholder="iPhone, PS5, TV..." aria-label="Имя устройства"></td>' +
         '<td><select class="client_policy input_option" onchange="updateGeoVisibility();" style="width:100%;" aria-label="Политика маршрутизации устройства">' +
             '<option value="vpn_all"' + (policy==='vpn_all'?' selected':'') + '>VPN: весь трафик</option>' +
             '<option value="vpn_geo"' + (policy==='vpn_geo'?' selected':'') + '>VPN: только Geo</option>' +
@@ -1087,7 +1085,7 @@ function fetchDhcpClients(){
                     if(!cl.hasOwnProperty(key)) continue;
                     var c = cl[key];
                     if(c && typeof c === 'object' && c.ip){
-                        lines.push({ip: c.ip, name: c.name || c.nickName || key});
+                        lines.push({ip: c.ip, mac: c.mac || key || '', name: c.nickName || c.name || key});
                     }
                 }
                 if(lines.length > 0){
@@ -1119,11 +1117,17 @@ var awgDhcpClients = [];
 function showClientPicker(clients){
     awgCloseDhcp();
     awgDhcpClients = clients;
-    var rows = '';
+    var rows = '<div style="display:flex; align-items:center; gap:10px; padding:4px 4px; border-bottom:1px solid #555; font-size:11px; text-transform:uppercase; color:#b6bdc7; letter-spacing:0.5px;">' +
+               '<span style="width:13px; flex:0 0 auto;"></span>' +
+               '<span style="min-width:115px; flex:0 0 auto;">IP-адрес</span>' +
+               '<span style="min-width:140px; flex:0 0 auto;">MAC</span>' +
+               '<span>Имя</span>' +
+               '</div>';
     for(var i = 0; i < clients.length; i++){
-        rows += '<label style="display:flex; align-items:center; gap:8px; padding:6px 4px; border-bottom:1px solid #3a4548;">' +
+        rows += '<label style="display:flex; align-items:center; gap:10px; padding:6px 4px; border-bottom:1px solid #3a4548;">' +
                 '<input type="checkbox" class="awg-dhcp-cb" value="' + i + '">' +
-                '<span style="font-family:monospace;">' + escHtml(clients[i].ip) + '</span>' +
+                '<span style="font-family:monospace; min-width:115px; flex:0 0 auto;">' + escHtml(clients[i].ip) + '</span>' +
+                '<span style="font-family:monospace; min-width:140px; flex:0 0 auto; color:#9aa3ad;">' + escHtml(clients[i].mac) + '</span>' +
                 '<span style="color:#b6bdc7; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escHtml(clients[i].name) + '</span>' +
                 '</label>';
     }
@@ -1139,7 +1143,7 @@ function showClientPicker(clients){
                 '<span style="font-weight:bold;">Устройства из DHCP</span>' +
                 '<button type="button" aria-label="Закрыть" onclick="awgCloseDhcp();" style="margin-left:auto; background:transparent; border:none; color:inherit; font-size:22px; cursor:pointer;">&times;</button>' +
             '</div>' +
-            '<div style="padding:8px 16px; overflow-y:auto; font-size:12px;">' + rows + '</div>' +
+            '<div style="padding:8px 16px; overflow:auto; font-size:12px;">' + rows + '</div>' +
             '<div style="padding:10px 16px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">' +
                 '<span style="font-size:12px;">Политика:</span>' +
                 '<select id="awg_dhcp_policy" class="awg-modal-input" aria-label="Политика для выбранных устройств">' +
@@ -1228,6 +1232,88 @@ function awgAction(action){
 function showLoading(){}
 function hideLoading(){}
 
+// Generic clipboard copy. The router UI is usually plain HTTP, where navigator.clipboard is
+// unavailable (and a delayed write loses user-activation) — fall back to a hidden-textarea
+// execCommand, which is the workhorse here.
+function awgCopyText(text, done){
+    if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(function(){ done(true); }, function(){ awgCopyFallback(text, done); });
+    } else {
+        awgCopyFallback(text, done);
+    }
+}
+// "Копировать": copy the on-page log as shown.
+function awgCopyLog(btn){
+    var box = document.getElementById('awg_log');
+    var text = box ? (box.textContent || box.innerText || '') : '';
+    awgCopyText(text, function(ok){
+        if(!btn) return;
+        if(btn._lbl == null) btn._lbl = btn.value;
+        btn.value = ok ? 'Скопировано ✓' : 'Не удалось';
+        setTimeout(function(){ btn.value = btn._lbl; btn._lbl = null; }, 1500);
+    });
+}
+// "Получить диагностические данные": fire the backend diag dump into the log, wait for the
+// [DIAG_DONE] marker, then copy the FULL report (raw log, not the 80-line display) wrapped in
+// a Telegram code block, ready to paste.
+function awgRunDiag(btn){
+    if(btn){ if(btn._dlbl == null) btn._dlbl = btn.value; btn.value = 'Сбор данных…'; btn.disabled = true; }
+    var box = document.getElementById('awg_log');
+    if(box) box.textContent = 'Сбор диагностики… Подождите.';
+    // Carry current settings (no-op save) and fire the diag event — same safe pattern as geo.
+    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
+    document.form.action_script.value = 'start_awgdiag';
+    awgSubmitForm();
+    var t0 = Date.now();
+    (function tick(){
+        var x = new XMLHttpRequest();
+        x.open('GET', '/user/awg_log.htm?_=' + Date.now(), true);
+        x.timeout = 4000;
+        x.onload = function(){
+            var txt = x.responseText || '';
+            if(txt.indexOf('[DIAG_DONE]') !== -1){ awgDiagFinish(btn, txt, false); return; }
+            if(Date.now() - t0 > 45000){ awgDiagFinish(btn, txt, true); return; }
+            setTimeout(tick, 1500);
+        };
+        x.onerror = x.ontimeout = function(){
+            if(Date.now() - t0 > 45000){ awgDiagFinish(btn, null, true); return; }
+            setTimeout(tick, 2000);
+        };
+        x.send();
+    })();
+}
+function awgDiagFinish(btn, txt, timedOut){
+    if(btn){ btn.disabled = false; if(btn._dlbl != null){ btn.value = btn._dlbl; btn._dlbl = null; } }
+    var report = String(txt || '').replace(/\[DIAG_DONE\]/g, '').replace(/\s+$/, '');
+    if(!report){
+        alert(timedOut ? 'Не удалось получить диагностику (таймаут). Попробуйте ещё раз.' : 'Диагностика пуста.');
+        return;
+    }
+    var wrapped = '```\n' + report + '\n```';
+    awgCopyText(wrapped, function(ok){
+        if(ok){
+            alert('Отчёт диагностики скопирован в буфер обмена — можно сразу вставить в сообщение Telegram.' +
+                  (timedOut ? '\n\n⚠ Сбор данных не завершился по таймауту — отчёт может быть неполным.' : ''));
+        } else {
+            alert('Диагностика собрана и показана в журнале ниже, но скопировать в буфер автоматически не получилось. Выделите текст журнала и скопируйте вручную (Ctrl+C).');
+        }
+    });
+}
+function awgCopyFallback(text, done){
+    try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        done(ok);
+    } catch(e){ done(false); }
+}
+
 // Real-time on-page log: poll the web-readable log the backend writes per action.
 function awgRefreshLog(){
     var x = new XMLHttpRequest();
@@ -1237,7 +1323,7 @@ function awgRefreshLog(){
         if(x.status !== 200 || !x.responseText) return;
         var box = document.getElementById('awg_log');
         if(!box) return;
-        var lines = x.responseText.replace(/\s+$/, '').split(/\r?\n/);
+        var lines = x.responseText.replace(/\[DIAG_DONE\]/g, '').replace(/\s+$/, '').split(/\r?\n/);
         if(lines.length > 80) lines = lines.slice(-80);
         var atBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 30;
         box.textContent = lines.join('\n');
@@ -1354,7 +1440,7 @@ function updateStatusUI(s){
         if(s.active_rules > 0) infoParts.push(s.active_rules + ' правил маршрутизации');
         if(s.ipset_count > 0) infoParts.push(s.ipset_count + ' диапазонов IP');
         if(s.geo_domains > 0) infoParts.push(s.geo_domains + ' правил по доменам');
-        rulesEl.innerHTML = infoParts.join(' &middot; ') || 'правил нет';
+        rulesEl.innerHTML = 'Активно: ' + (infoParts.join(' &middot; ') || 'нет правил');
         rulesEl.style.color = '#93E7FF';
     } else {
         rulesEl.innerHTML = '';
@@ -1710,7 +1796,7 @@ function initAutocompleteIp(){
                     <span style="font-size:13px; font-weight:normal;">VPN-клиент</span>
                     <a href="https://storage.googleapis.com/amnezia/amnezia.org" target="_blank" style="margin-left:auto; display:flex; align-items:center; text-decoration:none;" title="Сайт Amnezia"><img src="data:image/png;base64,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" alt="Amnezia" style="height:20px; border-radius:4px; display:block;"></a>
                     <a href="https://t.me/asusxray" target="_blank" style="display:flex; align-items:center; gap:5px; text-decoration:none;" title="Telegram-чат"><svg width="20" height="20" viewBox="0 0 24 24" fill="#29a9eb" xmlns="http://www.w3.org/2000/svg" style="display:block;" aria-hidden="true" focusable="false"><path d="m20.665 3.717-17.73 6.837c-1.21.486-1.203 1.161-.222 1.462l4.552 1.42 10.532-6.645c.498-.303.953-.14.579.192l-8.533 7.701h-.002l.002.001-.314 4.692c.46 0 .663-.211.921-.46l2.211-2.15 4.599 3.397c.848.467 1.457.227 1.668-.785l3.019-14.228c.309-1.239-.473-1.8-1.282-1.434z"/></svg><span style="font-size:12px;">Чат</span></a>
-                    <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" title="GitHub репозиторий" style="font-size:12px; text-decoration:none;"><img src="https://img.shields.io/github/v/release/william-aqn/asuswrt-merlin-amneziawg?logo=github&label=release" alt="GitHub" style="height:18px; display:block;" onerror="this.onerror=null; this.outerHTML='🐙 GitHub';"></a>
+                    <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" title="GitHub репозиторий Merlin AmneziaWG" style="font-size:12px; text-decoration:none;"><img src="https://img.shields.io/github/v/release/william-aqn/asuswrt-merlin-amneziawg?logo=github&label=release" alt="GitHub" style="height:18px; display:block;" onerror="this.onerror=null; this.outerHTML='🐙 GitHub';"></a>
                     <span id="awg_update_btn" style="display:none;"></span>
                 </div>
                 <div style="margin:10px 0 10px 5px;" class="splitLine"></div>
@@ -1768,13 +1854,6 @@ function initAutocompleteIp(){
                 <div style="margin-bottom:8px;">
                     <input type="button" class="button_gen" value="Импорт конфига" onclick="importConfig();">
                     <span style="color:#b6bdc7; margin-left:10px; font-size:12px;">Загрузите .conf-файл из клиента Amnezia VPN</span>
-                </div>
-
-                <div class="awg-applybar-top">
-                    <input type="button" class="button_gen" value="Применить" onclick="saveSettings();" title="Сохранить и применить без перезапуска VPN">
-                    <input type="button" class="button_gen" value="Принудительно применить" onclick="forceApply();" title="Сохранить + перезапуск VPN + полная пересборка маршрутов и firewall">
-                    <span id="awg_ack_top" class="awg-ack"></span>
-                    <span class="awg-src" style="margin-left:auto;">Те же кнопки с пояснением — внизу страницы.</span>
                 </div>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable">
@@ -1909,9 +1988,9 @@ function initAutocompleteIp(){
                             <option value="vpn_all">VPN — весь трафик</option>
                             <option value="vpn_geo">VPN — только Geo</option>
                         </select>
-                        <span style="color:#b6bdc7; font-size:11px; margin-left:8px;">Для устройств, которых нет в списке ниже</span>
-                        <span id="awg_active_rules" style="margin-left:12px; color:#b6bdc7; font-size:11px;"></span>
+                        <div class="awg-hint">Применяется к устройствам, которых нет в списке ниже.</div>
                         <div class="awg-hint">Geo по доменам работает только если устройство использует роутер как DNS (настройка — в блоке Geo ниже).</div>
+                        <div id="awg_active_rules" style="margin-top:6px; font-size:11px; color:#93E7FF;"></div>
                     </td>
                 </tr>
                 <tr>
@@ -1946,22 +2025,22 @@ function initAutocompleteIp(){
 
                 <div class="awg-section">Правила устройств</div>
                 <div class="awg-tablewrap">
-                <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="min-width:480px;">
+                <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="min-width:480px; table-layout:fixed;">
                 <thead><tr>
-                    <th scope="col" width="25%">IP-адрес</th>
-                    <th scope="col" width="25%">Имя устройства</th>
-                    <th scope="col" width="30%">Политика</th>
-                    <th scope="col" width="20%">Действие</th>
+                    <th scope="col" width="20%">IP-адрес</th>
+                    <th scope="col" width="30%">Имя устройства</th>
+                    <th scope="col" width="42%">Политика</th>
+                    <th width="8%"></th>
                 </tr></thead>
                 <tbody id="awg_client_rows">
                 </tbody>
                 </table>
                 </div>
-                <div style="margin-top:6px;">
+                <div style="margin-top:6px; display:flex; align-items:center; flex-wrap:wrap; gap:6px;">
                     <input type="button" class="button_gen" value="+ Добавить устройство" onclick="addClientRow('','','vpn_all');">
-                    <input type="button" class="button_gen" value="+ Из списка DHCP" onclick="fetchDhcpClients();" style="margin-left:6px;">
+                    <input type="button" class="button_gen" value="+ Из списка DHCP" onclick="fetchDhcpClients();">
+                    <span id="awg_client_undo" style="display:none; font-size:12px; margin-left:4px;"></span>
                 </div>
-                <div id="awg_client_undo" class="awg-hint" style="display:none; margin-top:4px;"></div>
 
                 <!-- ==================== GEO ROUTING ==================== -->
                 <div id="geo_section" style="display:none;">
@@ -2087,16 +2166,20 @@ function initAutocompleteIp(){
                 <!-- Apply -->
                 <div style="margin-top:12px; text-align:center;">
                     <input type="button" class="button_gen" value="Применить" onclick="saveSettings();" title="Сохранить и применить без перезапуска VPN">
-                    <input type="button" class="button_gen" value="Принудительно применить" onclick="forceApply();" style="margin-left:8px;" title="Сохранить + перезапуск VPN + полная пересборка маршрутов и firewall">
+                    <input type="button" class="button_gen" value="Сохранить и полностью перезапустить VPN" onclick="forceApply();" style="margin-left:8px;" title="Сохранить + перезапуск VPN (stop → start) + полная пересборка маршрутов и firewall">
                     <span id="awg_ack_bottom" class="awg-ack"></span>
                 </div>
                 <div style="font-size:11px; opacity:0.7; margin:8px auto 0; max-width:640px; line-height:1.55; text-align:left;">
                     <div><b>Применить</b> — сохранить настройки и применить их «на лету»: обновляет устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite <b>без разрыва VPN-соединения</b>. Если VPN остановлен — настройки просто сохранятся и применятся при следующем запуске.</div>
-                    <div style="margin-top:4px;"><b>Принудительно применить</b> — сохранить и <b>полностью перезапустить VPN</b> (stop → start): заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall. Нужен при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».</div>
+                    <div style="margin-top:4px;"><b>Сохранить и полностью перезапустить VPN</b> (stop → start) — заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall, соединение на пару секунд прерывается. Нужно при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».</div>
                 </div>
 
                 <!-- ==================== LOG ==================== -->
-                <div class="awg-section" style="margin-top:15px;">Журнал</div>
+                <div class="awg-section" style="margin-top:15px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <span>Журнал</span>
+                    <input type="button" class="button_gen" value="Получить диагностические данные" onclick="awgRunDiag(this);" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
+                    <input type="button" class="button_gen" value="Копировать" onclick="awgCopyLog(this);" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
+                </div>
                 <div id="awg_log" class="awg-log">Ожидание данных…</div>
                 <div style="text-align:right; font-size:11px; opacity:0.5; margin-top:4px;">
                     <a href="https://github.com/r0otx/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; r0otx</a>

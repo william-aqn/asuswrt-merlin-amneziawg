@@ -206,7 +206,12 @@ awg show
 
 # Update geo lists
 /jffs/addons/amneziawg/amneziawg.sh update_geo
+
+# Diagnostics (version, platform, binaries, network, TUN — for a bug report)
+/jffs/addons/amneziawg/amneziawg.sh diag
 ```
+
+> The same report is available in the web UI via the **"Получить диагностические данные"** button in the "Журнал" (Log) block — it is copied to the clipboard wrapped in a code block, ready to paste into Telegram.
 
 ## How to uninstall
 
