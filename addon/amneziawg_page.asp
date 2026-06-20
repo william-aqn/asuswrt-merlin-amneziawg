@@ -65,6 +65,22 @@
 
 .awg-btn { margin: 0 4px; }
 
+/* Field help text. #666 was near-invisible on the dark ROG theme; use a readable light
+   gray (still secondary vs the white labels). code = the inline format/example sample. */
+.awg-hint {
+    color: #b6bdc7;
+    font-size: 11px;
+    line-height: 1.5;
+    margin-top: 4px;
+}
+.awg-hint code, .awg-hint b { color: #d7dce3; }
+.awg-hint code {
+    font-family: "Courier New", "Lucida Console", monospace;
+    background: rgba(255,255,255,0.07);
+    padding: 1px 5px;
+    border-radius: 3px;
+}
+
 #awg_peers_table { width: 100%; table-layout: fixed; }
 #awg_peers_table thead td {
     font-weight: bold;
@@ -1448,7 +1464,7 @@ function initAutocompleteIp(){
                     <td width="25%">Last Handshake</td>
                 </tr></thead>
                 <tbody id="awg_peers">
-                    <tr><td colspan="4" style="text-align:center; color:#666;">No peers</td></tr>
+                    <tr><td colspan="4" style="text-align:center; color:#b6bdc7;">No peers</td></tr>
                 </tbody>
                 </table>
 
@@ -1478,7 +1494,7 @@ function initAutocompleteIp(){
                 <tr>
                     <th>MTU</th>
                     <td><input type="text" class="input_6_table" id="awg_mtu" maxlength="4" placeholder="1280">
-                        <span style="color:#666; font-size:11px; margin-left:6px;">default 1280 (576–1500)</span></td>
+                        <span style="color:#b6bdc7; font-size:11px; margin-left:6px;">default 1280 (576–1500)</span></td>
                 </tr>
                 <tr>
                     <th>DNS</th>
@@ -1591,36 +1607,36 @@ function initAutocompleteIp(){
                             <option value="vpn_all">VPN — All Traffic</option>
                             <option value="vpn_geo">VPN — Geo Only</option>
                         </select>
-                        <span style="color:#666; font-size:11px; margin-left:8px;">For devices not in the list below</span>
-                        <span id="awg_active_rules" style="margin-left:12px; color:#666; font-size:11px;"></span>
+                        <span style="color:#b6bdc7; font-size:11px; margin-left:8px;">For devices not in the list below</span>
+                        <span id="awg_active_rules" style="margin-left:12px; color:#b6bdc7; font-size:11px;"></span>
                     </td>
                 </tr>
                 <tr>
                     <th>Prevent IPv6 Leaks</th>
                     <td>
                         <label><input type="checkbox" id="awg_block_ipv6_dns"> Block IPv6 DNS resolution (filter-AAAA)</label>
-                        <div style="color:#666; font-size:11px; margin-top:3px;">Critical for Geo routing reliability. Prevents dual-stack domains from bypassing the VPN.</div>
+                        <div class="awg-hint">Critical for Geo routing reliability. Prevents dual-stack domains from bypassing the VPN.</div>
                     </td>
                 </tr>
                 <tr>
                     <th>Kill-switch</th>
                     <td>
                         <label><input type="checkbox" id="awg_killswitch"> Блокировать VPN-трафик при падении туннеля (strict kill-switch)</label>
-                        <div style="color:#666; font-size:11px; margin-top:3px;">По умолчанию выключено. Когда включено: если туннель внезапно падает (краш демона / нехватка памяти), трафик устройств с политикой «VPN» не уходит в обход в WAN открытым текстом, а блокируется до восстановления (watchdog поднимает туннель в течение ~5 мин). Выключено — прежнее поведение (трафик может временно идти мимо VPN). Влияет только на устройства с политикой VPN/Geo; при политике по умолчанию «VPN — All Traffic» затрагивает весь LAN.</div>
+                        <div class="awg-hint">По умолчанию выключено. Когда включено: если туннель внезапно падает (краш демона / нехватка памяти), трафик устройств с политикой «VPN» не уходит в обход в WAN открытым текстом, а блокируется до восстановления (watchdog поднимает туннель в течение ~5 мин). Выключено — прежнее поведение (трафик может временно идти мимо VPN). Влияет только на устройства с политикой VPN/Geo; при политике по умолчанию «VPN — All Traffic» затрагивает весь LAN.</div>
                     </td>
                 </tr>
                 <tr>
                     <th>Адреса проверки туннеля</th>
                     <td>
                         <input type="text" id="awg_watchdog_hosts" maxlength="200" style="width:320px;" placeholder="8.8.8.8 1.1.1.1">
-                        <div style="color:#666; font-size:11px; margin-top:3px;">Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут, чтобы понять, жив ли он. Туннель считается рабочим, если ответил <b>хоть один</b>. Через пробел или запятую (IP или домен; лучше IP — без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны в какое-то время — иначе watchdog зря перезапускает VPN. Какие адреса проверяются, видно в логе (строка «verifying / tunnel not passing traffic (probed: …)»).</div>
+                        <div class="awg-hint">Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут, чтобы понять, жив ли он. Туннель считается рабочим, если ответил <b>хоть один</b>.<br><b>Формат:</b> IP или домен, можно несколько — через пробел или запятую (до 4 адресов).<br><b>Пример:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Лучше указывать IP (без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны в какое-то время — иначе watchdog зря перезапускает VPN. Какие адреса проверяются, видно в логе (строка «verifying / tunnel not passing traffic (probed: …)»).</div>
                     </td>
                 </tr>
                 <tr>
                     <th>Совместимость с zapret</th>
                     <td>
                         <label><input type="checkbox" id="awg_no_dns_intercept"> Не перехватывать DNS (совместимость с zapret/zapret2 и др.)</label>
-                        <div style="color:#666; font-size:11px; margin-top:3px;">Отключает принудительный DNAT всех DNS-запросов на роутер. Включите, если рядом работает zapret/DPI-обход — иначе их перехваты конфликтуют и могут положить сеть. Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам — только для клиентов, использующих роутер как DNS. Если zapret/NFQUEUE обнаружен рядом, перехват отключается автоматически даже без этой галочки.</div>
+                        <div class="awg-hint">Отключает принудительный DNAT всех DNS-запросов на роутер. Включите, если рядом работает zapret/DPI-обход — иначе их перехваты конфликтуют и могут положить сеть. Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам — только для клиентов, использующих роутер как DNS. Если zapret/NFQUEUE обнаружен рядом, перехват отключается автоматически даже без этой галочки.</div>
                     </td>
                 </tr>
                 </table>
@@ -1678,7 +1694,7 @@ function initAutocompleteIp(){
                     <td>
                         <input type="text" class="input_32_table" id="geo_custom_domains" style="width:95%;"
                                maxlength="2000" placeholder="example.com,another.org,service.net">
-                        <div style="color:#666; font-size:11px; margin-top:3px;">Comma-separated. DNS-resolved → routed through VPN</div>
+                        <div class="awg-hint">Comma-separated. DNS-resolved → routed through VPN</div>
                     </td>
                 </tr>
                 <tr>
@@ -1686,7 +1702,7 @@ function initAutocompleteIp(){
                     <td>
                         <input type="text" class="input_32_table" id="geo_custom_ips" style="width:95%;"
                                maxlength="2000" placeholder="8.8.8.8,1.1.1.0/24,203.0.113.0/24">
-                        <div style="color:#666; font-size:11px; margin-top:3px;">Comma-separated IPs or CIDR subnets</div>
+                        <div class="awg-hint">Comma-separated IPs or CIDR subnets</div>
                     </td>
                 </tr>
                 </table>
