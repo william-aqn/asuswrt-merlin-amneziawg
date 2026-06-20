@@ -70,6 +70,10 @@
         "#awgHeaderInd.awg-mv {color:#e0a020;}" +
         "#awgHeaderInd .awg-ico{width:22px;height:22px;display:block;flex:0 0 auto;" +
         "fill:currentColor;}" +
+        // Classic (table) theme: native sprite icons have built-in padding, so the solid
+        // glyph reads a touch larger — trim to 20px; sit it on the right of the cluster.
+        "#awgHeaderInd.awg-classic{margin:0 0 0 6px;}" +
+        "#awgHeaderInd.awg-classic .awg-ico{width:20px;height:20px;}" +
         "#awgHeaderInd.awg-fixed{position:fixed;top:8px;right:12px;z-index:99999;}" +
         "#awgPanel{position:fixed;z-index:100000;display:none;min-width:210px;" +
         "background:#2b3a41;color:#e8e8e8;border:1px solid #4a5a62;border-radius:6px;" +
@@ -132,9 +136,9 @@
     }
 
     function placeIndicator(d) {
-      // Leftmost slot of the status-icon row. We deliberately do NOT anchor to a
-      // specific icon (QoS, wifi, usb…) — any of those can be hidden or absent
-      // depending on the router config, so the first slot is the only reliable target.
+      // Place next to the native status icons without anchoring to a specific one
+      // (QoS, wifi, usb… can each be hidden or absent depending on router config) — we
+      // target an EDGE of the icon row instead.
 
       // 1) ROG / flex theme (GT-AX11000 etc.): a #status_block flex container.
       var block = document.getElementById("status_block");
@@ -143,17 +147,25 @@
       }
 
       // 2) Classic / table theme (RT-AC68U, RT-AX88U etc.): icons are <td> cells in a
-      //    <tr>. Insert a leading <td> right after the title cell so the badge is the
-      //    first icon — a bare <div> can't be a direct <tr> child.
+      //    <tr> that also holds the title cell (Режим/Firmware/SSID) on the left with an
+      //    auto width that eats the leftover space. A LEADING cell would float far from the
+      //    icon cluster (the empty notification cell widens the gap), so we join the cluster
+      //    at its RIGHT edge: insert just before the trailing spacer cell (or append). A bare
+      //    <div> can't be a direct <tr> child, so it goes in its own <td>.
       var row = findIconRow();
       if (row) {
         try {
+          if (d.className.indexOf("awg-classic") === -1) d.className += " awg-classic";
           var td = document.createElement("td");
-          td.style.width = "auto";
           td.style.verticalAlign = "middle";
           td.appendChild(d);
           var cells = row.children;
-          var ref = (cells && cells.length > 1) ? cells[1] : null; // after the leading title cell
+          var ref = null; // default: append at the end of the row
+          if (cells.length) {
+            var last = cells[cells.length - 1];
+            var lw = parseInt(last.getAttribute("width") || last.style.width || "0", 10);
+            if (lw && lw <= 20) ref = last; // tuck in before a narrow trailing spacer (e.g. width=17)
+          }
           row.insertBefore(td, ref);
           return;
         } catch (e) {}
