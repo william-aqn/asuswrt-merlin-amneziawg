@@ -193,10 +193,58 @@ var statusTimer = null;
 var statusFails = 0;
 var awgLoaded = false;
 var awgPoll = null;
+var awgLastPeers = [];      // last peers array from the status poll — read by the live handshake ticker
+var awgTickTimer = null;    // singleton interval for awgTickHandshakes (started once)
 var v2flyList = [];
 var v2flyIpList = ['telegram','google','facebook','twitter','netflix','cloudflare','fastly','cloudfront'];
 function escHtml(s){
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Relative handshake age computed CLIENT-SIDE from the raw epoch the backend now emits
+// (hs_epoch). This is what makes the counter tick live every second without a backend
+// round-trip. Returns null when there is no usable epoch (0/absent) so the caller falls
+// back to the pre-formatted string from older status files. Negative deltas (browser clock
+// behind the router) are clamped to 0 — never show a negative "ago". Wording matches the
+// backend's own strings (amneziawg.sh) so the live value and the fallback look identical.
+function awgAgo(epoch){
+    epoch = parseInt(epoch, 10);
+    if(!epoch || epoch <= 0) return null;
+    var d = Math.floor(Date.now() / 1000) - epoch;
+    if(d < 0) d = 0;
+    if(d < 60) return d + ' с назад';
+    if(d < 3600) return Math.floor(d / 60) + ' мин назад';
+    return Math.floor(d / 3600) + ' ч назад';
+}
+
+// Mirror of the backend human_size() (1 decimal, GiB/MiB/KiB/B) so RX/TX can be formatted
+// from the raw byte counters. Returns null for non-numeric/absent input -> caller falls back
+// to the pre-formatted transfer_rx/tx string. Bytes are 64-bit counters; JS Number is exact
+// to 2^53, well above any realistic traffic total.
+function awgHumanSize(bytes){
+    if(bytes === null || bytes === undefined || bytes === '') return null;
+    var b = Number(bytes);
+    if(!isFinite(b)) return null;
+    if(b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GiB';
+    if(b >= 1048576)    return (b / 1048576).toFixed(1) + ' MiB';
+    if(b >= 1024)       return (b / 1024).toFixed(1) + ' KiB';
+    return b + ' B';
+}
+
+// Live handshake ticker: re-computes ONLY the handshake cell text from the stored epochs,
+// every second, between the 5s status polls. It never rebuilds the peer table (that would
+// fight the poll's render and flicker) — it just updates the textContent of each
+// #awg_hs_<i> cell. Peers with no epoch are left as the rendered fallback string.
+function awgTickHandshakes(){
+    var peers = awgLastPeers;
+    if(!peers || !peers.length) return;
+    for(var i = 0; i < peers.length; i++){
+        var ep = peers[i] && peers[i].hs_epoch;
+        var t = awgAgo(ep);
+        if(t === null) continue;
+        var cell = document.getElementById('awg_hs_' + i);
+        if(cell) cell.textContent = t;
+    }
 }
 function loadV2flyCategories(){
     var xhr = new XMLHttpRequest();
@@ -214,6 +262,8 @@ function initial(){
     loadSettings();
     awgRefreshStatus();
     statusTimer = setInterval(awgRefreshStatus, 5000);
+    // Tick the handshake age live (client-side) between the 5s status polls.
+    if(!awgTickTimer) awgTickTimer = setInterval(awgTickHandshakes, 1000);
     awgRefreshLog();
     setInterval(awgRefreshLog, 2500);
     loadV2flyCategories();
@@ -1472,15 +1522,23 @@ function updateStatusUI(s){
     if(s.public_key) info.innerHTML += 'Открытый ключ: ' + escHtml(s.public_key.substring(0,12)) + '...<br>';
     if(s.listen_port) info.innerHTML += 'Порт: ' + escHtml(s.listen_port) + '<br>';
 
+    // Keep the raw peers for the live handshake ticker (re-read every second).
+    awgLastPeers = (s.peers && s.peers.length) ? s.peers : [];
+
     var html = '';
     if(s.peers && s.peers.length > 0){
         for(var i = 0; i < s.peers.length; i++){
             var p = s.peers[i];
+            // Prefer the raw fields the backend now emits; fall back to the pre-formatted
+            // strings if they're absent (older status file, e.g. right after an upgrade).
+            var rxStr = awgHumanSize(p.rx_bytes); if(rxStr === null) rxStr = p.transfer_rx || '0 B';
+            var txStr = awgHumanSize(p.tx_bytes); if(txStr === null) txStr = p.transfer_tx || '0 B';
+            var hsStr = awgAgo(p.hs_epoch);       if(hsStr === null) hsStr = p.latest_handshake || 'никогда';
             html += '<tr>';
             html += '<td>' + escHtml(p.endpoint || '-') + '</td>';
             html += '<td>' + escHtml(p.allowed_ips || '-') + '</td>';
-            html += '<td>' + escHtml(p.transfer_rx || '0 B') + ' / ' + escHtml(p.transfer_tx || '0 B') + '</td>';
-            html += '<td>' + escHtml(p.latest_handshake || 'никогда') + '</td>';
+            html += '<td>' + escHtml(rxStr) + ' / ' + escHtml(txStr) + '</td>';
+            html += '<td id="awg_hs_' + i + '">' + escHtml(hsStr) + '</td>';
             html += '</tr>';
         }
     }
@@ -2194,7 +2252,7 @@ function initAutocompleteIp(){
                     <th>Имя ipset</th>
                     <td>
                         <input type="text" id="awg_ipset_name" maxlength="31" style="width:95%; max-width:260px;" placeholder="awg_dst" aria-label="Имя ipset">
-                        <div class="awg-hint">Имя ipset-набора, в который грузятся GeoIP/antifilter-подсети и который маршрутизируется через VPN. По умолчанию <code>awg_dst</code>. Меняйте, только если хотите использовать <b>общий</b> набор с другими подключениями/инструментами — тогда при остановке он не удаляется (снимаются только наши правила маршрутизации). Допустимы буквы, цифры и <code>_ . -</code>, до 31 символа; пусто = <code>awg_dst</code>.</div>
+                        <div class="awg-hint">Имя ipset-набора для GeoIP/antifilter-подсетей (маршрутизируются через VPN). По умолчанию <code>awg_dst</code>. Набор, <b>созданный самим аддоном</b>, удаляется при остановке, а при смене имени удаляется и старый — висяков/утечек не остаётся. Если указать набор, который <b>уже создан другим подключением/инструментом</b>, аддон лишь добавляет в него записи и не трогает при остановке (общий набор). Допустимы буквы, цифры и <code>_ . -</code>, до 31 символа; пусто = <code>awg_dst</code>.</div>
                     </td>
                 </tr>
                 </table>

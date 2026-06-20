@@ -28,17 +28,18 @@
 
     var T = {
       title:   "AmneziaWG VPN",
-      on:      "Включён",
-      off:     "Выключен",
-      moving:  "Переключение…",
+      on:      "Подключено",
+      off:     "Остановлено",
+      starting:"Подключение…",
+      stopping:"Остановка…",
       unknown: "Статус неизвестен",
       addr:    "Адрес",
       hs:      "Рукопожатие",
-      turnOn:  "Включить",
-      turnOff: "Выключить",
+      turnOn:  "Запустить",
+      turnOff: "Остановить",
       settings:"Открыть настройки →",
-      tipOn:   "AmneziaWG VPN: включён",
-      tipOff:  "AmneziaWG VPN: выключен",
+      tipOn:   "AmneziaWG VPN: подключено",
+      tipOff:  "AmneziaWG VPN: остановлено",
       tipMv:   "AmneziaWG VPN: переключение…",
       tipUnk:  "AmneziaWG VPN: статус неизвестен"
     };
@@ -230,6 +231,12 @@
       else { d.title = T.tipUnk; }
     }
 
+    // Transient transition label, matching the main UI ("Подключение…" / "Остановка…").
+    function mvText() {
+      var up = transitioning ? expectRunning : !!(lastData && lastData.starting === true);
+      return up ? T.starting : T.stopping;
+    }
+
     function renderPanel() {
       var p = $("awgPanel");
       if (!p) return;
@@ -237,7 +244,7 @@
       p.className = p.className.replace(/\bawg-(on|off|mv)\b/g, "").replace(/\s+/g, " ").replace(/^\s|\s$/g, "");
       var stText = $("awgStText"), rows = $("awgRows"), btn = $("awgActBtn");
 
-      if (s === "mv") { p.className += " awg-mv"; stText.textContent = T.moving; }
+      if (s === "mv") { p.className += " awg-mv"; stText.textContent = mvText(); }
       else if (s === "on") { p.className += " awg-on"; stText.textContent = T.on; }
       else if (s === "off") { p.className += " awg-off"; stText.textContent = T.off; }
       else { stText.textContent = T.unknown; }
@@ -248,7 +255,11 @@
         if (lastData.interface_addr) {
           rows.innerHTML += '<div class="awg-row">' + T.addr + ': <b>' + esc(lastData.interface_addr) + '</b></div>';
         }
-        var hs = (lastData.peers && lastData.peers[0] && lastData.peers[0].latest_handshake) || "";
+        // Compute the handshake age live from the raw epoch the backend emits; fall back to
+        // the pre-formatted string for older status files. The panel re-renders on each 10s
+        // poll while open, so this recomputes without any extra timer.
+        var pe = lastData.peers && lastData.peers[0];
+        var hs = (pe && awgComputeAgo(pe.hs_epoch)) || (pe && pe.latest_handshake) || "";
         if (hs) {
           rows.innerHTML += '<div class="awg-row">' + T.hs + ': <b>' + esc(hs) + '</b></div>';
         }
@@ -258,7 +269,7 @@
       if (s === "mv") {
         btn.disabled = true;
         btn.className = "awg-act on";
-        btn.textContent = T.moving;
+        btn.textContent = mvText();
       } else if (s === "on") {
         btn.disabled = false;
         btn.className = "awg-act off";
@@ -273,6 +284,19 @@
 
     function esc(s) {
       return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    // Handshake age from a raw UNIX epoch (seconds). Returns null for 0/absent so the caller
+    // falls back to the pre-formatted string. Clamps clock skew (client behind router) to 0.
+    // Wording matches the addon page / backend so page, widget and fallback all agree.
+    function awgComputeAgo(epoch) {
+      epoch = parseInt(epoch, 10);
+      if (!epoch || epoch <= 0) return null;
+      var d = Math.floor(new Date().getTime() / 1000) - epoch;
+      if (d < 0) d = 0;
+      if (d < 60) return d + " с назад";
+      if (d < 3600) return Math.floor(d / 60) + " мин назад";
+      return Math.floor(d / 3600) + " ч назад";
     }
 
     function onActionClick(e) {

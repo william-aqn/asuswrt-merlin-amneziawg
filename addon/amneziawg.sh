@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.82"
+AWG_VERSION="1.1.83"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -22,6 +22,7 @@ AWG_UPLOAD_STATUS="/www/user/awg_upload.htm"
 STARTING_FLAG="/tmp/.awg_starting"
 STOPPING_FLAG="/tmp/.awg_stopping"
 GEO_BUSY_FLAG="/tmp/.awg_geo_busy"
+OWNED_IPSET_FLAG="/tmp/.awg_ipset_owned"   # name of the geo ipset WE created (own) — for safe teardown/rename cleanup
 SETTINGS="/jffs/addons/custom_settings.txt"
 CLIENTS_FILE="$AWG_DIR/clients.list"
 GEO_DIR="$AWG_DIR/geo"
@@ -668,11 +669,12 @@ cleanup_firewall(){
     # Remove the global :53 DNS-interception rules (DNAT + DoH/DoT REJECTs)
     cleanup_dns_interception
 
-    # Destroy the ipset only if it's the one we own (default name). A custom name means the user
-    # shares this set with other connections/tools — leave it intact, just drop our rules above.
-    if [ "$IPSET_NAME" = "awg_dst" ]; then
+    # Destroy the geo ipset only if WE created it (own it). A pre-existing/shared set — created
+    # by another connection/tool — is left intact; only our rules above are removed.
+    if [ "$(cat "$OWNED_IPSET_FLAG" 2>/dev/null)" = "$IPSET_NAME" ]; then
         ipset flush "$IPSET_NAME" 2>/dev/null
         ipset destroy "$IPSET_NAME" 2>/dev/null
+        rm -f "$OWNED_IPSET_FLAG"
     fi
 
     # Remove dnsmasq config
@@ -787,7 +789,20 @@ setup_firewall(){
         maxelem=98304
         log_msg "Low RAM (${memkb}KB total): ipset capped at $maxelem (was $IPSET_MAXELEM) to avoid OOM"
     fi
+    # If we previously created a set under a DIFFERENT name (the name was just changed), that
+    # old set is now orphaned in the kernel — destroy it so we don't leak ipsets.
+    local prev_owned; prev_owned=$(cat "$OWNED_IPSET_FLAG" 2>/dev/null)
+    if [ -n "$prev_owned" ] && [ "$prev_owned" != "$IPSET_NAME" ]; then
+        ipset flush "$prev_owned" 2>/dev/null
+        ipset destroy "$prev_owned" 2>/dev/null
+        log_msg "Removed orphaned geo ipset '$prev_owned' (name changed to '$IPSET_NAME')"
+        rm -f "$OWNED_IPSET_FLAG"
+    fi
     ipset_err=$(ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem "$maxelem" timeout 86400 2>&1)
+    local create_rc=$?
+    # Record ownership only if WE created it (rc 0). A set that already existed was made by
+    # another tool/connection — it's shared, so we must never destroy it later.
+    [ "$create_rc" -eq 0 ] && echo "$IPSET_NAME" > "$OWNED_IPSET_FLAG"
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
         log_msg "ERROR: ipset $IPSET_NAME creation failed, geo routing disabled${ipset_err:+: $ipset_err}"
         has_geo=false
@@ -1069,6 +1084,13 @@ setup_firewall(){
         cru a awg_geo_update "0 4 * * * '$ADDON_DIR/amneziawg.sh' update_geo"
     fi
     cru a awg_watchdog "*/5 * * * * '$ADDON_DIR/amneziawg.sh' watchdog"
+    # Background status refresh (every minute) so the UI peer table — handshake age and the
+    # cumulative RX/TX counters — stays current WITHOUT a user action. The web page only re-reads
+    # the static awg_status.htm; nothing else regenerated it between actions, so it used to freeze.
+    # 'status' is read-only (awg show + file write), takes NO lock and triggers NO notify_rc, so
+    # it's safe to run on a timer. Mirrors awg_watchdog's lifecycle exactly (cru is idempotent on
+    # re-add, so firewall-restart/Apply won't duplicate it).
+    cru a awg_status "*/1 * * * * '$ADDON_DIR/amneziawg.sh' status"
 
     # Re-assert the IPv6 leak block here (idempotent) so it survives a bare Apply
     # (awgsaveconf -> setup_firewall), which previously tore it down without re-adding it.
@@ -1638,6 +1660,9 @@ do_stop(){
     # down. Auto-rollbacks (health-check, deadman) call do_stop withOUT "user", so the
     # watchdog survives and can still recover the tunnel on its own.
     [ "$user_stop" = "user" ] && cru d awg_watchdog 2>/dev/null
+    # Drop the background status-refresh cron in lockstep with the watchdog (same 'user' guard),
+    # so a deliberate stop/uninstall leaves no orphaned cron; auto-rollbacks keep both.
+    [ "$user_stop" = "user" ] && cru d awg_status 2>/dev/null
 
     ip route flush table $RT_TABLE 2>/dev/null
     local endpoint
@@ -1698,7 +1723,13 @@ update_status(){
                 fi
                 local rx_h=$(human_size "${rx:-0}")
                 local tx_h=$(human_size "${tx:-0}")
-                local item="{\"endpoint\":\"${endpoint}\",\"allowed_ips\":\"${aips}\",\"transfer_rx\":\"${rx_h}\",\"transfer_tx\":\"${tx_h}\",\"latest_handshake\":\"${hs_text}\"}"
+                # Emit RAW machine values (hs_epoch / rx_bytes / tx_bytes) alongside the
+                # pre-formatted strings. The UI computes "N ago" + human sizes from the raw
+                # values so the handshake counter ticks LIVE client-side (no backend refresh),
+                # and falls back to the formatted strings if a stale/old status file lacks
+                # them (upgrade window). Raw fields are unquoted integers — valid JSON; awg's
+                # dump always emits clean integers here, so no quoting/sanitising is needed.
+                local item="{\"endpoint\":\"${endpoint}\",\"allowed_ips\":\"${aips}\",\"transfer_rx\":\"${rx_h}\",\"transfer_tx\":\"${tx_h}\",\"latest_handshake\":\"${hs_text}\",\"hs_epoch\":${handshake:-0},\"rx_bytes\":${rx:-0},\"tx_bytes\":${tx:-0}}"
                 [ -n "$p_items" ] && p_items="${p_items},${item}" || p_items="$item"
             done <<EOF
 $dump
@@ -1743,11 +1774,17 @@ EOF
     local coexist_warn=false
     [ -n "$dpi_tool" ] && [ "$default_policy" = "vpn_all" ] && coexist_warn=true
 
-    # Write atomically (temp + rename) so the UI never reads a half-written file.
-    cat > "${STATUS_FILE}.tmp" << STATUSEOF
+    # Write atomically (temp + rename) so the UI never reads a half-written file. The temp is
+    # PID-unique ($$) — the 1-min awg_status cron can now run update_status concurrently with a
+    # user action, and a shared ".tmp" would let them clobber each other mid-write. Sweep any
+    # numeric-suffixed leftovers first (a crash/kill between cat and mv would otherwise strand
+    # them in /www/user forever); the glob matches only "<status>.<digits>", never the live
+    # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
+    rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
+    cat > "${STATUS_FILE}.$$" << STATUSEOF
 {"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"log":"${log_text}"}
 STATUSEOF
-    mv "${STATUS_FILE}.tmp" "$STATUS_FILE" 2>/dev/null
+    mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
 
 # --- Install/Mount/Uninstall ---
