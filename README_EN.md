@@ -86,13 +86,18 @@ opkg install /tmp/amneziawg_1.0.0-1_aarch64-3.10.ipk
 
 ### Manual installation
 
+The project is fully **userspace**: the `amneziawg-go` daemon + the `awg` tool, with no custom kernel module (only the stock `tun` is needed). For a clean install the simplest path is to build the `.ipk` (`./build-ipk.sh`) and install it via `opkg` (see "From .ipk package") — the package lays out the binaries in `/opt/amneziawg`, the addon in `/jffs/addons/amneziawg`, creates the `S99amneziawg` init script and registers the page.
+
+To quickly update **only the addon** (backend script and web page) without rebuilding the binaries, copy the files straight into `/jffs/addons/amneziawg/` and restart:
+
 ```shell
-scp output/amneziawg-go output/awg admin@<router-ip>:/tmp/
-scp addon/amneziawg.sh addon/amneziawg_page.asp admin@<router-ip>:/tmp/
-scp install.sh admin@<router-ip>:/tmp/
+scp addon/amneziawg.sh addon/amneziawg_page.asp addon/amneziawg_widget.js admin@<router-ip>:/jffs/addons/amneziawg/
 ssh admin@<router-ip>
-sh /tmp/install.sh
+/jffs/addons/amneziawg/amneziawg.sh install_page   # re-register the page in the router menu
+/jffs/addons/amneziawg/amneziawg.sh restart         # restart the tunnel with the new code
 ```
+
+> `install.sh` in the repo root is a legacy installer for the old kernel-module variant (`amneziawg.ko`); it is not used in the current userspace build.
 
 > GUI SCP clients: for Windows — [WinSCP](https://winscp.net/eng/download.php), for macOS — [MacSCP](https://www.macscp.co/).
 
@@ -235,7 +240,8 @@ Internet <-- awg0 (tunnel) <-- iptables mangle AWG chain <-- br0 (LAN devices)
 | **amneziawg-go** | Userspace WireGuard daemon with AmneziaWG extensions |
 | **awg** | CLI tool for tunnel management (works with kernel and userspace) |
 | **amneziawg.sh** | Backend: lifecycle, firewall, routing, geo lists, DNS interception |
-| **amneziawg_page.asp** | Web UI addon page for Merlin |
+| **amneziawg_page.asp** | Web UI addon page (**VPN > AmneziaWG**) |
+| **amneziawg_widget.js** | Global header widget: ● AWG status indicator on every firmware page + a mini-panel to toggle the tunnel (served as `/www/user/awg_widget.js`, loaded via `menuTree.js`) |
 
 ## FAQ
 
@@ -255,11 +261,18 @@ A: Restart the tunnel with a pause: `/jffs/addons/amneziawg/amneziawg.sh stop; s
 
 A: Add CIDR ranges in Custom IPs field, e.g. `149.154.160.0/20,91.108.4.0/22` for Telegram.
 
+**Q: Can it run alongside zapret2 or Xray (XRAYUI)?**
+
+A: Yes, with caveats. The addon auto-detects a co-resident DPI-bypass/proxy tool (zapret2/bol-van, Xray/XRAYUI, v2ray, sing-box, or NFQUEUE/TPROXY rules) and in that case **does not enable DNS interception** (the :53 DNAT), to avoid colliding with them -- otherwise the network can lose internet access. You can also disable interception manually via the "Не перехватывать DNS" checkbox (the "Совместимость с zapret2/xray" block).
+
+Important: this only resolves the DNS-layer conflict. With the default **"VPN -- All Traffic"** policy, routing still pulls the neighbor proxy's traffic into the tunnel, so for coexistence choose the **"Direct"** or **"VPN -- Geo Only"** policy, not "all". Geo routing by IP keeps working.
+
 ## Credits
 
 - [AmneziaWG](https://github.com/amnezia-vpn) -- protocol and implementations
 - [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip) -- GeoIP service CIDR lists
 - [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) -- domain lists
+- [antifilter.download](https://antifilter.download/) -- RKN block lists (IPs/subnets and domains)
 - [Asuswrt-Merlin](https://www.asuswrt-merlin.net/) -- router firmware
 - [DanielLavrushin/asuswrt-merlin-xrayui](https://github.com/DanielLavrushin/asuswrt-merlin-xrayui) -- routing architecture reference
 

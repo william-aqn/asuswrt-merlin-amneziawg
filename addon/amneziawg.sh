@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.78"
+AWG_VERSION="1.1.79"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -13,6 +13,7 @@ AWG_BIN="$AWG_DIR/awg"
 IFACE="awg0"
 STATUS_FILE="/www/user/awg_status.htm"
 UI_LOG="/www/user/awg_log.htm"
+DIAG_FILE="/www/user/awg_diag.htm"
 # Manual .ipk upload (web UI): base64 text is appended here chunk-by-chunk (awgupload
 # event), then decoded + installed (awgmanualinstall). Progress/result the UI polls:
 AWG_UPLOAD_B64="/tmp/amneziawg_manual.ipk.b64"
@@ -1835,7 +1836,7 @@ do_uninstall(){
 
     local page=$(ls /www/user/ 2>/dev/null | while read f; do grep -l "AmneziaWG" "/www/user/$f" 2>/dev/null; done | head -1)
     [ -n "$page" ] && rm -f "$page"
-    rm -f "$STATUS_FILE" /www/user/awg_widget.js /www/user/v2fly_categories.htm /www/user/awg_changelog.htm /www/user/awg_update.htm /www/user/awg_log.htm
+    rm -f "$STATUS_FILE" /www/user/awg_widget.js /www/user/v2fly_categories.htm /www/user/awg_changelog.htm /www/user/awg_update.htm /www/user/awg_log.htm /www/user/awg_diag.htm
 
     rm -rf "$ADDON_DIR"
 
@@ -2370,7 +2371,7 @@ do_firewall_restart(){
 do_service_event(){
     local event="$2"
     case "$event" in
-        awgstart|awgstop|awgrestart|awgforceapply|awgsaveconf|awgupdategeo|awgdoupdate|awgdiag) ui_log_reset ;;
+        awgstart|awgstop|awgrestart|awgforceapply|awgsaveconf|awgupdategeo|awgdoupdate) ui_log_reset ;;
     esac
     case "$event" in
         # Manual upload: append one base64 chunk. Kept out of the ui_log_reset list above
@@ -2453,11 +2454,11 @@ do_service_event(){
             do_update
             ;;
         awgdiag)
-            # Diagnostic dump into the on-page log (UI then copies it, wrapped for a TG post).
-            # Log was already cleared by the ui_log_reset list above; append a machine marker
-            # so the UI knows the (possibly multi-second) dump has finished.
-            do_diag >> "$UI_LOG" 2>&1
-            echo "[DIAG_DONE]" >> "$UI_LOG"
+            # Diagnostic dump into a SEPARATE file — does NOT touch the on-page log. The UI
+            # shows it in a modal and can copy it together with the log. The [DIAG_DONE] marker
+            # tells the UI the (possibly multi-second) dump has finished.
+            do_diag > "$DIAG_FILE" 2>&1
+            echo "[DIAG_DONE]" >> "$DIAG_FILE"
             ;;
     esac
 }

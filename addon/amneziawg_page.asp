@@ -46,6 +46,7 @@
 
 .awg-section {
     margin: 14px 0 6px 0;
+    padding-left: 5px;   /* small left inset so headers don't hug the panel edge (aligns with the dividers) */
     font-size: 14px;
     font-weight: bold;
     text-transform: uppercase;
@@ -112,6 +113,7 @@
     font-size: 11px;
     letter-spacing: 0.5px;
     text-align: center;
+    padding: 6px 8px;   /* override firmware's asymmetric padding-left so centered text is truly centered */
 }
 #awg_peers_table tbody td {
     padding: 6px 8px;
@@ -123,6 +125,19 @@
 
 #awg_client_table { width: 100%; margin-top: 6px; }
 #awg_client_table td { padding: 5px 8px; }
+/* These headers are <th> (for a11y); the firmware's .FormTable_table thead th paints them
+   black (#000) — unreadable on the dark header. Override to a light, peers-table-like style. */
+#awg_client_table thead th {
+    color: #e8edf2;
+    font-weight: bold;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    text-align: center;
+    padding: 6px 8px;
+}
+/* Action column: narrow, with tight padding so the small × button isn't lost in a big cell. */
+#awg_client_table td:last-child, #awg_client_table th:last-child { padding-left: 2px; padding-right: 2px; }
 .awg-remove-btn {
     background: transparent; border: 1px solid #a00; color: #c00;
     padding: 3px 10px; border-radius: 3px; cursor: pointer; font-size: 14px;
@@ -1085,7 +1100,10 @@ function fetchDhcpClients(){
                     if(!cl.hasOwnProperty(key)) continue;
                     var c = cl[key];
                     if(c && typeof c === 'object' && c.ip){
-                        lines.push({ip: c.ip, mac: c.mac || key || '', name: c.nickName || c.name || key});
+                        var _mac = c.mac || key || '';
+                        var _nm = c.nickName || c.name || '';
+                        if(_nm === _mac || _nm === key) _nm = '';   // no real name -> don't just repeat the MAC
+                        lines.push({ip: c.ip, mac: _mac, name: _nm});
                     }
                 }
                 if(lines.length > 0){
@@ -1119,16 +1137,16 @@ function showClientPicker(clients){
     awgDhcpClients = clients;
     var rows = '<div style="display:flex; align-items:center; gap:10px; padding:4px 4px; border-bottom:1px solid #555; font-size:11px; text-transform:uppercase; color:#b6bdc7; letter-spacing:0.5px;">' +
                '<span style="width:13px; flex:0 0 auto;"></span>' +
-               '<span style="min-width:115px; flex:0 0 auto;">IP-адрес</span>' +
-               '<span style="min-width:140px; flex:0 0 auto;">MAC</span>' +
-               '<span>Имя</span>' +
+               '<span style="min-width:115px; flex:0 0 auto; text-align:center;">IP-адрес</span>' +
+               '<span style="min-width:140px; flex:0 0 auto; text-align:center;">MAC</span>' +
+               '<span style="flex:1; text-align:center;">Имя</span>' +
                '</div>';
     for(var i = 0; i < clients.length; i++){
         rows += '<label style="display:flex; align-items:center; gap:10px; padding:6px 4px; border-bottom:1px solid #3a4548;">' +
                 '<input type="checkbox" class="awg-dhcp-cb" value="' + i + '">' +
-                '<span style="font-family:monospace; min-width:115px; flex:0 0 auto;">' + escHtml(clients[i].ip) + '</span>' +
-                '<span style="font-family:monospace; min-width:140px; flex:0 0 auto; color:#9aa3ad;">' + escHtml(clients[i].mac) + '</span>' +
-                '<span style="color:#b6bdc7; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escHtml(clients[i].name) + '</span>' +
+                '<span style="font-family:monospace; min-width:115px; flex:0 0 auto; text-align:center;">' + escHtml(clients[i].ip) + '</span>' +
+                '<span style="font-family:monospace; min-width:140px; flex:0 0 auto; color:#9aa3ad; text-align:center;">' + escHtml(clients[i].mac) + '</span>' +
+                '<span style="flex:1; text-align:center; color:#b6bdc7; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (clients[i].name ? escHtml(clients[i].name) : '<span style="opacity:0.45;">—</span>') + '</span>' +
                 '</label>';
     }
     var ov = document.createElement('div');
@@ -1242,32 +1260,23 @@ function awgCopyText(text, done){
         awgCopyFallback(text, done);
     }
 }
-// "Копировать": copy the on-page log as shown.
-function awgCopyLog(btn){
-    var box = document.getElementById('awg_log');
-    var text = box ? (box.textContent || box.innerText || '') : '';
-    awgCopyText(text, function(ok){
-        if(!btn) return;
-        if(btn._lbl == null) btn._lbl = btn.value;
-        btn.value = ok ? 'Скопировано ✓' : 'Не удалось';
-        setTimeout(function(){ btn.value = btn._lbl; btn._lbl = null; }, 1500);
-    });
-}
-// "Получить диагностические данные": fire the backend diag dump into the log, wait for the
-// [DIAG_DONE] marker, then copy the FULL report (raw log, not the 80-line display) wrapped in
-// a Telegram code block, ready to paste.
+// Diagnostics: "Получить диагностические данные" triggers the backend diag dump (to a SEPARATE
+// file — it does NOT touch the on-page log), waits for [DIAG_DONE], and shows the result in a
+// modal. The modal's "Скопировать диагностические данные" copies the diagnostics PLUS the
+// current log, wrapped for Telegram — the copy happens inside the click, so it's reliable.
+var awgDiagText = '';
 function awgRunDiag(btn){
     if(btn){ if(btn._dlbl == null) btn._dlbl = btn.value; btn.value = 'Сбор данных…'; btn.disabled = true; }
-    var box = document.getElementById('awg_log');
-    if(box) box.textContent = 'Сбор диагностики… Подождите.';
-    // Carry current settings (no-op save) and fire the diag event — same safe pattern as geo.
+    awgDiagText = '';
+    awgOpenDiag('Сбор диагностических данных… Подождите.');
+    // Carry current settings (no-op save) and fire the diag event (does NOT reset the log).
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = 'start_awgdiag';
     awgSubmitForm();
     var t0 = Date.now();
     (function tick(){
         var x = new XMLHttpRequest();
-        x.open('GET', '/user/awg_log.htm?_=' + Date.now(), true);
+        x.open('GET', '/user/awg_diag.htm?_=' + Date.now(), true);
         x.timeout = 4000;
         x.onload = function(){
             var txt = x.responseText || '';
@@ -1285,18 +1294,50 @@ function awgRunDiag(btn){
 function awgDiagFinish(btn, txt, timedOut){
     if(btn){ btn.disabled = false; if(btn._dlbl != null){ btn.value = btn._dlbl; btn._dlbl = null; } }
     var report = String(txt || '').replace(/\[DIAG_DONE\]/g, '').replace(/\s+$/, '');
-    if(!report){
-        alert(timedOut ? 'Не удалось получить диагностику (таймаут). Попробуйте ещё раз.' : 'Диагностика пуста.');
-        return;
+    awgDiagText = report;
+    var body = document.getElementById('awg_diag_body');
+    if(body){
+        body.textContent = report || (timedOut ? 'Не удалось получить диагностику (таймаут). Попробуйте ещё раз.' : 'Диагностика пуста.');
+        body.scrollTop = 0;
     }
-    var wrapped = '```\n' + report + '\n```';
-    awgCopyText(wrapped, function(ok){
-        if(ok){
-            alert('Отчёт диагностики скопирован в буфер обмена — можно сразу вставить в сообщение Telegram.' +
-                  (timedOut ? '\n\n⚠ Сбор данных не завершился по таймауту — отчёт может быть неполным.' : ''));
-        } else {
-            alert('Диагностика собрана и показана в журнале ниже, но скопировать в буфер автоматически не получилось. Выделите текст журнала и скопируйте вручную (Ctrl+C).');
+    var note = document.getElementById('awg_diag_note');
+    if(note) note.textContent = (timedOut && report) ? '⚠ Сбор не завершился по таймауту — данные могут быть неполными.' : '';
+}
+// Diagnostics modal open/close (+ Esc).
+var awgDiagPrevFocus = null;
+function awgOpenDiag(placeholder){
+    var m = document.getElementById('awg_diag_modal');
+    if(!m) return;
+    var body = document.getElementById('awg_diag_body');
+    if(body) body.textContent = placeholder || '';
+    var note = document.getElementById('awg_diag_note');
+    if(note) note.textContent = '';
+    m.style.display = 'block';
+    awgDiagPrevFocus = document.activeElement;
+    document.addEventListener('keydown', awgDiagKeydown);
+}
+function awgCloseDiag(){
+    var m = document.getElementById('awg_diag_modal');
+    if(m) m.style.display = 'none';
+    document.removeEventListener('keydown', awgDiagKeydown);
+    if(awgDiagPrevFocus){ try { awgDiagPrevFocus.focus(); } catch(e){} awgDiagPrevFocus = null; }
+}
+function awgDiagKeydown(e){ if(e.key === 'Escape' || e.keyCode === 27) awgCloseDiag(); }
+// "Скопировать диагностические данные": diagnostics + current log, wrapped for a Telegram post.
+function awgCopyDiagReport(btn){
+    if(!awgDiagText){ alert('Данные ещё не собраны — подождите завершения сбора.'); return; }
+    var lbox = document.getElementById('awg_log');
+    var log = lbox ? String(lbox.textContent || lbox.innerText || '').replace(/\s+$/, '') : '';
+    var combined = awgDiagText + (log ? ('\n\n===== ЖУРНАЛ =====\n' + log) : '');
+    awgCopyText('```\n' + combined + '\n```', function(ok){
+        if(btn){
+            if(btn._lbl == null) btn._lbl = btn.value;
+            btn.value = ok ? 'Скопировано ✓' : 'Не удалось';
+            setTimeout(function(){ if(btn._lbl != null){ btn.value = btn._lbl; btn._lbl = null; } }, 1500);
         }
+        alert(ok
+            ? 'Диагностика и журнал скопированы в буфер обмена — можно сразу вставить в сообщение Telegram.'
+            : 'Не удалось скопировать. Выделите текст в окне и скопируйте вручную (Ctrl+C).');
     });
 }
 function awgCopyFallback(text, done){
@@ -1847,7 +1888,7 @@ function initAutocompleteIp(){
                 </table>
                 </div>
 
-                <div style="margin:15px 0 10px 0;" class="splitLine"></div>
+                <div style="margin:15px 0 10px 5px;" class="splitLine"></div>
 
                 <!-- ==================== CONFIG ==================== -->
                 <div class="awg-section">Конфигурация</div>
@@ -2028,9 +2069,9 @@ function initAutocompleteIp(){
                 <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="min-width:480px; table-layout:fixed;">
                 <thead><tr>
                     <th scope="col" width="20%">IP-адрес</th>
-                    <th scope="col" width="30%">Имя устройства</th>
+                    <th scope="col" width="33%">Имя устройства</th>
                     <th scope="col" width="42%">Политика</th>
-                    <th width="8%"></th>
+                    <th width="5%"></th>
                 </tr></thead>
                 <tbody id="awg_client_rows">
                 </tbody>
@@ -2178,7 +2219,6 @@ function initAutocompleteIp(){
                 <div class="awg-section" style="margin-top:15px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
                     <span>Журнал</span>
                     <input type="button" class="button_gen" value="Получить диагностические данные" onclick="awgRunDiag(this);" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
-                    <input type="button" class="button_gen" value="Копировать" onclick="awgCopyLog(this);" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
                 <div id="awg_log" class="awg-log">Ожидание данных…</div>
                 <div style="text-align:right; font-size:11px; opacity:0.5; margin-top:4px;">
@@ -2227,6 +2267,23 @@ function initAutocompleteIp(){
             <span id="awg_modal_status" style="font-size:12px; opacity:0.75; margin-right:auto;"></span>
             <input type="button" class="button_gen" value="Проверить обновления" onclick="checkForUpdate();">
             <input type="button" class="button_gen" value="Закрыть" onclick="closeUpdateModal();" style="margin-left:8px;">
+        </div>
+    </div>
+</div>
+
+<!-- Diagnostics modal: shows the backend `diag` dump; copy = diag + log, wrapped for Telegram -->
+<div id="awg_diag_modal" role="dialog" aria-modal="true" aria-labelledby="awg_diag_title" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); z-index:10002;">
+    <div style="background:#2b3338; color:#e0e0e0; width:92%; max-width:760px; margin:4% auto; border:1px solid #444; border-radius:8px; box-shadow:0 6px 40px rgba(0,0,0,0.6); display:flex; flex-direction:column; max-height:86vh;">
+        <div style="padding:14px 18px; border-bottom:1px solid #444; display:flex; align-items:center;">
+            <span id="awg_diag_title" style="font-size:16px; font-weight:bold;">Диагностические данные</span>
+            <button type="button" aria-label="Закрыть" onclick="awgCloseDiag();" title="Закрыть" style="margin-left:auto; background:transparent; border:none; color:inherit; font-size:22px; line-height:1; cursor:pointer; opacity:0.6; padding:0;">&times;</button>
+        </div>
+        <div id="awg_diag_body" style="padding:14px 18px; overflow:auto; font-family:'Courier New','Lucida Console',monospace; font-size:12px; line-height:1.45; white-space:pre-wrap; word-wrap:break-word;"></div>
+        <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
+            <input type="button" class="button_gen" value="Скопировать диагностические данные" onclick="awgCopyDiagReport(this);">
+            <span id="awg_diag_note" style="font-size:11px; color:#f0ad4e;"></span>
+            <span style="font-size:11px; opacity:0.7;">Копируется вместе с журналом, обёрнуто для вставки в Telegram.</span>
+            <input type="button" class="button_gen" value="Закрыть" onclick="awgCloseDiag();" style="margin-left:auto;">
         </div>
     </div>
 </div>

@@ -93,13 +93,18 @@ opkg install /tmp/amneziawg_1.0.0-1_aarch64-3.10.ipk
 
 ### Ручная установка
 
+Проект полностью **userspace**: демон `amneziawg-go` + утилита `awg`, без кастомного модуля ядра (нужен только штатный `tun`). Для чистой установки проще всего собрать `.ipk` (`./build-ipk.sh`) и поставить его через `opkg` (см. раздел «Из .ipk пакета») — пакет сам разложит бинарники в `/opt/amneziawg`, аддон в `/jffs/addons/amneziawg`, создаст init-скрипт `S99amneziawg` и зарегистрирует страницу.
+
+Для быстрого обновления **только аддона** (бэкенд-скрипт и веб-страница) без пересборки бинарников — скопируйте файлы прямо в `/jffs/addons/amneziawg/` и перезапустите:
+
 ```shell
-scp output/amneziawg-go output/awg admin@<ip-роутера>:/tmp/
-scp addon/amneziawg.sh addon/amneziawg_page.asp admin@<ip-роутера>:/tmp/
-scp install.sh admin@<ip-роутера>:/tmp/
+scp addon/amneziawg.sh addon/amneziawg_page.asp addon/amneziawg_widget.js admin@<ip-роутера>:/jffs/addons/amneziawg/
 ssh admin@<ip-роутера>
-sh /tmp/install.sh
+/jffs/addons/amneziawg/amneziawg.sh install_page   # перерегистрировать страницу в меню роутера
+/jffs/addons/amneziawg/amneziawg.sh restart         # перезапустить туннель с новым кодом
 ```
+
+> `install.sh` в корне репозитория — устаревший инсталлятор для старого варианта с модулем ядра (`amneziawg.ko`); в текущей userspace-сборке он не используется.
 
 > SCP-клиенты с графическим интерфейсом: для Windows — [WinSCP](https://winscp.net/eng/download.php), для macOS — [MacSCP](https://www.macscp.co/).
 
@@ -257,7 +262,8 @@ opkg remove amneziawg
 | **amneziawg-go** | Userspace WireGuard-демон с расширениями AmneziaWG |
 | **awg** | CLI-утилита для управления туннелем |
 | **amneziawg.sh** | Backend: жизненный цикл, firewall, маршрутизация, гео-списки, перехват DNS |
-| **amneziawg_page.asp** | Веб-интерфейс (аддон для Merlin) |
+| **amneziawg_page.asp** | Веб-интерфейс (страница аддона **VPN > AmneziaWG**) |
+| **amneziawg_widget.js** | Глобальный виджет в шапке роутера: индикатор статуса ● AWG на всех страницах прошивки + мини-панель включения/выключения туннеля (отдаётся как `/www/user/awg_widget.js`, подгружается через `menuTree.js`) |
 
 ## FAQ
 
@@ -281,6 +287,12 @@ opkg remove amneziawg
 
 О: Да, есть отдельный .ipk для ARM32 (`armv7-2.6`).
 
+**В: Можно ли использовать вместе с zapret2 или Xray (XRAYUI)?**
+
+О: Да, но с оговорками. Аддон автоматически определяет рядом работающие DPI-обходы/прокси (zapret2/bol-van, Xray/XRAYUI, v2ray, sing-box, а также правила NFQUEUE/TPROXY) и в этом случае **не включает перехват DNS** (DNAT на :53), чтобы не конфликтовать с ними -- иначе сеть может остаться без интернета. При необходимости перехват можно отключить и вручную -- галочкой «Не перехватывать DNS» (блок «Совместимость с zapret2/xray»).
+
+Важно: это снимает только конфликт по DNS. При политике по умолчанию **«VPN -- весь трафик»** маршрутизация всё равно заберёт трафик у соседнего прокси, поэтому для совместимости выбирайте политику **«Напрямую»** или **«VPN -- только Geo»**, а не «весь трафик». Geo-маршрутизация по IP при этом продолжает работать.
+
 ## Автор
 
 **r0otx** -- [github.com/r0otx](https://github.com/r0otx)
@@ -290,6 +302,7 @@ opkg remove amneziawg
 - [AmneziaWG](https://github.com/amnezia-vpn) -- протокол и реализации
 - [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip) -- GeoIP CIDR-списки сервисов
 - [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) -- доменные списки
+- [antifilter.download](https://antifilter.download/) -- РКН-списки (IP/подсети и домены)
 - [Asuswrt-Merlin](https://www.asuswrt-merlin.net/) -- прошивка роутера
 - [DanielLavrushin/asuswrt-merlin-xrayui](https://github.com/DanielLavrushin/asuswrt-merlin-xrayui) -- референс архитектуры маршрутизации
 
