@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.72"
+AWG_VERSION="1.1.73"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1857,7 +1857,11 @@ watchdog_hosts(){
     local raw out="" h n=0
     raw=$(get_setting awg_watchdog_hosts | tr ',' ' ')
     for h in $raw; do
-        case "$h" in *[!0-9A-Za-z.-]*|"") continue ;; esac
+        # Must START with an alnum (every IP/hostname does). This also blocks a token that
+        # begins with '-' from being read by ping as an OPTION (e.g. "-f" = flood) instead of
+        # a host. Then require only safe host chars in the rest.
+        case "$h" in ""|[!0-9A-Za-z]*) continue ;; esac
+        case "$h" in *[!0-9A-Za-z.-]*) continue ;; esac
         out="$out $h"; n=$((n + 1))
         [ $n -ge 4 ] && break
     done
