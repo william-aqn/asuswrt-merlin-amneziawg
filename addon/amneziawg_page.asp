@@ -107,7 +107,10 @@
     -webkit-text-security: none; }
 
 #awg_peers_table { width: 100%; table-layout: fixed; }
-#awg_peers_table thead td {
+/* Shared header style for both data tables. Headers are <td> (not <th>) so they pick up the
+   firmware's gradient header background AND their width="%" attrs aren't overridden by the
+   firmware's `.FormTable_table thead th { width:98px }` rule. */
+#awg_peers_table thead td, #awg_client_table thead td {
     font-weight: bold;
     text-transform: uppercase;
     font-size: 11px;
@@ -125,19 +128,8 @@
 
 #awg_client_table { width: 100%; margin-top: 6px; }
 #awg_client_table td { padding: 5px 8px; }
-/* These headers are <th> (for a11y); the firmware's .FormTable_table thead th paints them
-   black (#000) — unreadable on the dark header. Override to a light, peers-table-like style. */
-#awg_client_table thead th {
-    color: #e8edf2;
-    font-weight: bold;
-    text-transform: uppercase;
-    font-size: 11px;
-    letter-spacing: 0.5px;
-    text-align: center;
-    padding: 6px 8px;
-}
-/* Action column: narrow, with tight padding so the small × button isn't lost in a big cell. */
-#awg_client_table td:last-child, #awg_client_table th:last-child { padding-left: 2px; padding-right: 2px; }
+/* Action column: tight padding so the small × button isn't lost in its (narrow) cell. */
+#awg_client_table td:last-child { padding-left: 2px; padding-right: 2px; }
 .awg-remove-btn {
     background: transparent; border: 1px solid #a00; color: #c00;
     padding: 3px 10px; border-radius: 3px; cursor: pointer; font-size: 14px;
@@ -335,6 +327,9 @@ function doUpdate(version){
     var badge = document.getElementById('awg_badge');
     if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; Обновление…'; }
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
+    // The modal just closed — scroll to the log so the user can watch the update progress.
+    var _lb = document.getElementById('awg_log');
+    if(_lb){ try { _lb.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(e){ try { _lb.scrollIntoView(); } catch(e2){} } }
 
     // Carry the current "download via VPN" choice even without a prior Apply.
     syncViaVpnToggles();
@@ -1865,7 +1860,7 @@ function initAutocompleteIp(){
                 <div id="awg_firstrun" style="display:none; margin:8px 0 2px 0; padding:10px 14px; background:#1b2a33; border:1px solid #2e88c7; border-radius:5px; font-size:12px; line-height:1.55;">
                     <b>Похоже, конфигурация ещё не задана.</b><br>
                     Начните с импорта <code>.conf</code>-файла из приложения Amnezia VPN, затем проверьте поля и нажмите «Применить».
-                    <div style="margin-top:6px;"><input type="button" class="button_gen" value="Импорт конфига" onclick="importConfig();"></div>
+                    <div style="margin-top:6px;"><input type="button" class="button_gen" value="Импорт конфигурации" onclick="importConfig();"></div>
                 </div>
 
                 <!-- Coexistence warning: shown by updateStatusUI() when a co-resident proxy/DPI
@@ -1891,10 +1886,9 @@ function initAutocompleteIp(){
                 <div style="margin:15px 0 10px 5px;" class="splitLine"></div>
 
                 <!-- ==================== CONFIG ==================== -->
-                <div class="awg-section">Конфигурация</div>
-                <div style="margin-bottom:8px;">
-                    <input type="button" class="button_gen" value="Импорт конфига" onclick="importConfig();">
-                    <span style="color:#b6bdc7; margin-left:10px; font-size:12px;">Загрузите .conf-файл из клиента Amnezia VPN</span>
+                <div class="awg-section" style="display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <span>Конфигурация</span>
+                    <input type="button" class="button_gen" value="Импорт .conf-файла из клиента Amnezia VPN" onclick="importConfig();" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable">
@@ -2068,10 +2062,10 @@ function initAutocompleteIp(){
                 <div class="awg-tablewrap">
                 <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="min-width:480px; table-layout:fixed;">
                 <thead><tr>
-                    <th scope="col" width="20%">IP-адрес</th>
-                    <th scope="col" width="33%">Имя устройства</th>
-                    <th scope="col" width="42%">Политика</th>
-                    <th width="5%"></th>
+                    <td width="20%">IP-адрес</td>
+                    <td width="35%">Имя устройства</td>
+                    <td width="41%">Политика</td>
+                    <td width="4%"></td>
                 </tr></thead>
                 <tbody id="awg_client_rows">
                 </tbody>
@@ -2218,7 +2212,7 @@ function initAutocompleteIp(){
                 <!-- ==================== LOG ==================== -->
                 <div class="awg-section" style="margin-top:15px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
                     <span>Журнал</span>
-                    <input type="button" class="button_gen" value="Получить диагностические данные" onclick="awgRunDiag(this);" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
+                    <input type="button" class="button_gen" value="Получить диагностические данные" onclick="awgRunDiag(this);" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
                 <div id="awg_log" class="awg-log">Ожидание данных…</div>
                 <div style="text-align:right; font-size:11px; opacity:0.5; margin-top:4px;">

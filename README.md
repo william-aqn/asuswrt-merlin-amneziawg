@@ -293,9 +293,10 @@ opkg remove amneziawg
 
 Важно: это снимает только конфликт по DNS. При политике по умолчанию **«VPN -- весь трафик»** маршрутизация всё равно заберёт трафик у соседнего прокси, поэтому для совместимости выбирайте политику **«Напрямую»** или **«VPN -- только Geo»**, а не «весь трафик». Geo-маршрутизация по IP при этом продолжает работать.
 
-## Автор
+## Авторы
 
-**r0otx** -- [github.com/r0otx](https://github.com/r0otx)
+- **r0otx** -- [github.com/r0otx](https://github.com/r0otx)
+- **william-aqn** -- [github.com/william-aqn](https://github.com/william-aqn)
 
 ## Благодарности
 

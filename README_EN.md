@@ -276,9 +276,10 @@ Important: this only resolves the DNS-layer conflict. With the default **"VPN --
 - [Asuswrt-Merlin](https://www.asuswrt-merlin.net/) -- router firmware
 - [DanielLavrushin/asuswrt-merlin-xrayui](https://github.com/DanielLavrushin/asuswrt-merlin-xrayui) -- routing architecture reference
 
-## Author
+## Authors
 
-**r0otx** -- [github.com/r0otx](https://github.com/r0otx)
+- **r0otx** -- [github.com/r0otx](https://github.com/r0otx)
+- **william-aqn** -- [github.com/william-aqn](https://github.com/william-aqn)
 
 ## Disclaimer
 
