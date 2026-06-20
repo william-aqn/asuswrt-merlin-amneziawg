@@ -62,7 +62,7 @@
       st.id = "awgWidgetStyle";
       st.textContent =
         "#awgHeaderInd{display:inline-flex;align-items:center;cursor:pointer;" +
-        "color:#9aa3a8;margin:0 8px 0 0;vertical-align:middle;line-height:0;" +
+        "color:#9aa3a8;margin:0 4px 0 0;vertical-align:middle;line-height:0;" +
         "user-select:none;-webkit-user-select:none;}" +
         "#awgHeaderInd.awg-on {color:#3fbf3f;}" +
         "#awgHeaderInd.awg-off{color:#e04545;}" +

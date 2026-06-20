@@ -134,8 +134,10 @@
 #awg_client_table input, #awg_client_table select { box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; }
 #awg_client_table .awg-remove-btn { max-width: 100%; box-sizing: border-box; }
 .awg-remove-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; padding: 0;
     background: transparent; border: 1px solid #a00; color: #c00;
-    padding: 3px 10px; border-radius: 3px; cursor: pointer; font-size: 14px;
+    border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;
 }
 .awg-remove-btn:hover { background: #a00; color: #fff; }
 .awg-add-btn, .awg-import-btn {
