@@ -332,6 +332,7 @@ en: {
     VERDICT_DIRECT: "Direct",
     VERDICT_PENDING: "resolving…",
     ANALYZE_NOTE: "Diagnostic. Shows the device's DNS requests (tagged DNS — what it's trying to reach) and its actual connections, each labeled Direct or VPN/Geo. Starting briefly restarts DNS to capture queries; only devices that use the router as DNS are visible. Verdict reflects the device's applied policy and the current geo lists.",
+    MSG_REMOVE_DEVICE_CONFIRM: "Remove device «{0}» from the rules?",
     MSG_DEVICE_REMOVED: "Device removed.",
     BTN_UNDO: "Undo",
     // ---- geo download ----
@@ -608,6 +609,7 @@ ru: {
     VERDICT_DIRECT: "Напрямую",
     VERDICT_PENDING: "резолв…",
     ANALYZE_NOTE: "Диагностика. Показывает DNS-запросы устройства (метка DNS — что оно пытается вызвать) и его реальные соединения, у каждого — вердикт «напрямую» или «VPN/Geo». При старте кратко перезапускается DNS для захвата запросов; видны только устройства, использующие роутер как DNS. Вердикт отражает применённую политику устройства и текущие гео-списки.",
+    MSG_REMOVE_DEVICE_CONFIRM: "Удалить устройство «{0}» из правил?",
     MSG_DEVICE_REMOVED: "Устройство удалено.",
     BTN_UNDO: "Отменить",
     // ---- geo download ----
@@ -1645,10 +1647,15 @@ var awgLastRemoved = null;
 function awgRemoveClientRow(btn){
     var tr = btn.closest('tr');
     if(!tr) return;
+    var ip = (tr.querySelector('.client_ip') || {}).value || '';
+    var name = (tr.querySelector('.client_name') || {}).value || '';
+    // Confirm before dropping a configured device (the undo is one-level only). Skip the
+    // prompt for a still-empty row, e.g. one just added by mistake — nothing to lose there.
+    if((ip || name) && !confirm(T('MSG_REMOVE_DEVICE_CONFIRM', name || ip))) return;
     var rows = Array.prototype.slice.call(document.querySelectorAll('#awg_client_rows tr'));
     awgLastRemoved = {
-        ip: (tr.querySelector('.client_ip') || {}).value || '',
-        name: (tr.querySelector('.client_name') || {}).value || '',
+        ip: ip,
+        name: name,
         policy: (tr.querySelector('.client_policy') || {}).value || 'vpn_all',
         idx: rows.indexOf(tr)
     };
@@ -3017,9 +3024,9 @@ function initAutocompleteIp(){
                 <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="table-layout:fixed;">
                 <thead><tr>
                     <td width="18%" data-i18n="TH_IP_ADDRESS">IP address</td>
-                    <td width="33%" data-i18n="TH_DEVICE_NAME">Device name</td>
+                    <td width="35%" data-i18n="TH_DEVICE_NAME">Device name</td>
                     <td width="37%" data-i18n="TH_POLICY">Policy</td>
-                    <td width="12%" data-i18n="TH_ACTIONS">Actions</td>
+                    <td width="10%" data-i18n="TH_ACTIONS">Actions</td>
                 </tr></thead>
                 <tbody id="awg_client_rows">
                 </tbody>
