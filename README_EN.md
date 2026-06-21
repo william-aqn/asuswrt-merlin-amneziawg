@@ -267,6 +267,10 @@ A: Yes, with caveats. The addon auto-detects a co-resident DPI-bypass/proxy tool
 
 Important: this only resolves the DNS-layer conflict. With the default **"VPN -- All Traffic"** policy, routing still pulls the neighbor proxy's traffic into the tunnel, so for coexistence choose the **"Direct"** or **"VPN -- Geo Only"** policy, not "all". Geo routing by IP keeps working.
 
+**Q: `ipset` prints `Warning: Kernel support protocol versions 6-6 while userspace supports protocol versions 6-7`?**
+
+A: It's a harmless warning, not an error. The `ipset` userspace tool (both the firmware's `/usr/sbin/ipset` and Entware's `/opt/sbin/ipset`) is built from newer sources and supports protocol versions 6 and 7, while the ipset module in the router's old kernel (4.1.51) implements only version 6. The ranges overlap at version 6, so the tool automatically falls back to it and works fine. Nothing to do here; geo routing via ipset (`awg_dst` and the geo ipsets) works fully on version 6.
+
 ## Credits
 
 - [AmneziaWG](https://github.com/amnezia-vpn) -- protocol and implementations
