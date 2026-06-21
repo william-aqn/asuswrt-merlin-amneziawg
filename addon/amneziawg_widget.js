@@ -264,6 +264,10 @@
       var s = curState();
       p.className = p.className.replace(/\bawg-(on|off|mv)\b/g, "").replace(/\s+/g, " ").replace(/^\s|\s$/g, "");
       var stText = $("awgStText"), rows = $("awgRows"), btn = $("awgActBtn");
+      // The settings-link text is set once in buildPanel(); refresh it here too so a live
+      // language switch (poll() reassigns T) updates it — otherwise it keeps the build-time
+      // language (e.g. stays "Открыть настройки →" after switching the firmware UI to English).
+      var lnk = $("awgSettingsLink"); if (lnk) lnk.textContent = T.settings;
 
       if (s === "mv") { p.className += " awg-mv"; stText.textContent = mvText(); }
       else if (s === "on") { p.className += " awg-on"; stText.textContent = T.on; }
