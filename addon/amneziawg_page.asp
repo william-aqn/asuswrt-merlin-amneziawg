@@ -85,28 +85,28 @@
     border-radius: 3px;
 }
 
-/* Mask secret fields (WG private key / PSK) WITHOUT type=password, so the browser never
-   offers to "save password" when the page form is submitted (Start/Stop/Restart). Disabling
-   the fields at submit (1.1.74) didn't help — Chromium captures the value as you type, not
-   only at submit. -webkit-text-security masks in Chromium/Edge/Safari (the router-UI
-   browsers); Firefox lacks it and would show the value as plain text. */
+/* Embedded disc font used to mask the WG key fields (see .awg-dotted below). Every glyph in
+   this font renders as a filled disc, so it masks the value in ALL browsers — including
+   Firefox, which ignores -webkit-text-security. We rely on the font ALONE (no
+   -webkit-text-security) because WebKit treats any text-security field as a password and
+   would keep offering to save it. The font is inlined below so it can never fail to load. */
 @font-face {
     font-family: 'text-security-disc';
     src: url(data:font/woff2;base64,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) format('woff2');
 }
-/* Visually mask the WG key fields as discs in ALL browsers: the disc font covers Firefox
-   (which ignores -webkit-text-security); -webkit-text-security is kept for Chromium/Edge/
-   Safari. The masking is purely visual (type=text, not password). Stopping the browser's
-   "Save password?" prompt is handled separately by keeping every id/class/name/aria-label
-   on these inputs free of credential words (key/secret/private/psk) — class name is the
-   neutral "awg-dotted" for the same reason. Placeholder uses a normal font so hints read. */
+/* Visually mask the WG key fields as discs using ONLY the embedded disc font (every glyph
+   renders as a disc), in all browsers. We deliberately do NOT use -webkit-text-security:
+   WebKit treats any field with text-security != none as a password-equivalent field and
+   keeps offering "Save password?" no matter how neutral the id/class/name/aria-label are.
+   A custom font is invisible to that heuristic, so the field masks identically while Safari
+   no longer classifies it as a credential. type=text (not password) for the same reason.
+   Placeholder uses a normal font so the hint stays readable. */
 .awg-dotted {
     font-family: 'text-security-disc', "Courier New", "Lucida Console", monospace;
-    -webkit-text-security: disc;
 }
 .awg-dotted::placeholder {
     font-family: "Courier New", "Lucida Console", monospace;
-    -webkit-text-security: none; }
+}
 
 #awg_peers_table { width: 100%; table-layout: fixed; }
 /* Shared header style for both data tables. Headers are <td> (not <th>) so they pick up the
@@ -155,6 +155,9 @@
 .awg-verdict.vpn  { background:#1a6e2e; color:#fff; }
 .awg-verdict.geo  { background:#1a6e2e; color:#fff; }
 .awg-verdict.direct { background:#444b52; color:#cfd6dd; }
+.awg-verdict.pending { background:#5a4a1a; color:#f0d28a; }
+/* Marks a row as a DNS resolve request (intent) vs an actual connection. */
+.awg-dns-tag { display:inline-block; padding:0 5px; border-radius:3px; font-size:10px; font-weight:bold; background:#2d4a63; color:#9ec9ee; vertical-align:middle; }
 /* Live analysis table layout. */
 #awg_analyze_table { width:100%; border-collapse:collapse; font-size:12px; }
 #awg_analyze_table th { text-align:left; padding:5px 8px; border-bottom:1px solid #444; color:#b6bdc7; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; position:sticky; top:0; background:#2b3338; }
@@ -328,7 +331,8 @@ en: {
     VERDICT_VPN: "VPN",
     VERDICT_GEO: "VPN (Geo)",
     VERDICT_DIRECT: "Direct",
-    ANALYZE_NOTE: "Diagnostic. Starting briefly restarts DNS to capture domain names; only devices that use the router as DNS get named. The route reflects the device's applied policy and the current geo lists.",
+    VERDICT_PENDING: "resolving…",
+    ANALYZE_NOTE: "Diagnostic. Shows the device's DNS requests (tagged DNS — what it's trying to reach) and its actual connections, each labeled Direct or VPN/Geo. Starting briefly restarts DNS to capture queries; only devices that use the router as DNS are visible. Verdict reflects the device's applied policy and the current geo lists.",
     MSG_DEVICE_REMOVED: "Device removed.",
     BTN_UNDO: "Undo",
     // ---- geo download ----
@@ -603,7 +607,8 @@ ru: {
     VERDICT_VPN: "VPN",
     VERDICT_GEO: "VPN (Geo)",
     VERDICT_DIRECT: "Напрямую",
-    ANALYZE_NOTE: "Диагностика. При старте кратко перезапускается DNS для захвата доменных имён; имена видны только для устройств, использующих роутер как DNS. Маршрут отражает применённую политику устройства и текущие гео-списки.",
+    VERDICT_PENDING: "резолв…",
+    ANALYZE_NOTE: "Диагностика. Показывает DNS-запросы устройства (метка DNS — что оно пытается вызвать) и его реальные соединения, у каждого — вердикт «напрямую» или «VPN/Geo». При старте кратко перезапускается DNS для захвата запросов; видны только устройства, использующие роутер как DNS. Вердикт отражает применённую политику устройства и текущие гео-списки.",
     MSG_DEVICE_REMOVED: "Устройство удалено.",
     BTN_UNDO: "Отменить",
     // ---- geo download ----
@@ -2052,9 +2057,10 @@ function awgPolicyLabel(p){
     return '—';
 }
 function awgVerdictInfo(v){
-    if(v === 'vpn') return { cls:'vpn',    label:T('VERDICT_VPN') };
-    if(v === 'geo') return { cls:'geo',    label:T('VERDICT_GEO') };
-    return            { cls:'direct', label:T('VERDICT_DIRECT') };
+    if(v === 'vpn')     return { cls:'vpn',     label:T('VERDICT_VPN') };
+    if(v === 'geo')     return { cls:'geo',     label:T('VERDICT_GEO') };
+    if(v === 'pending') return { cls:'pending', label:T('VERDICT_PENDING') };
+    return                { cls:'direct',  label:T('VERDICT_DIRECT') };
 }
 function awgRowOf(el){
     if(el.closest) return el.closest('tr');
@@ -2231,12 +2237,17 @@ function awgAnalyzeRender(data){
     for(var i = entries.length - 1; i >= 0; i--){   // newest first
         var e = entries[i] || {};
         var vi = awgVerdictInfo(e.verdict);
-        var dest = escHtml(String(e.ip || '')) +
-                   (e.port ? (':' + escHtml(String(e.port))) : '') +
-                   (e.proto ? (' ' + escHtml(String(e.proto))) : '');
+        var isDns = (e.proto === 'dns');
+        // DNS rows = a resolve request (the intent); connection rows = an actual flow.
+        var req = (isDns ? '<span class="awg-dns-tag">DNS</span> ' : '') + escHtml(String(e.name || ''));
+        var dest = isDns
+            ? (e.ip ? escHtml(String(e.ip)) : '—')
+            : (escHtml(String(e.ip || '')) +
+               (e.port ? (':' + escHtml(String(e.port))) : '') +
+               (e.proto ? (' ' + escHtml(String(e.proto))) : ''));
         html += '<tr>' +
             '<td class="awg-an-mono">' + escHtml(String(e.t || '')) + '</td>' +
-            '<td>' + escHtml(String(e.name || '')) + '</td>' +
+            '<td>' + req + '</td>' +
             '<td class="awg-an-mono">' + dest + '</td>' +
             '<td><span class="awg-verdict ' + vi.cls + '">' + escHtml(vi.label) + '</span></td>' +
             '</tr>';
@@ -2837,7 +2848,7 @@ function initAutocompleteIp(){
                 <thead><tr><td colspan="2">Interface</td></tr></thead>
                 <tr>
                     <th width="35%" scope="row">Private Key</th>
-                    <td><input type="text" class="input_32_table awg-dotted" id="awg_iface_p1" maxlength="64" autocomplete="off"></td>
+                    <td><input type="text" class="input_32_table awg-dotted" id="awg_iface_p1" maxlength="64" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off"></td>
                 </tr>
                 <tr>
                     <th>Address</th>
@@ -2866,7 +2877,7 @@ function initAutocompleteIp(){
                 </tr>
                 <tr>
                     <th scope="row">Preshared Key</th>
-                    <td><input type="text" class="input_32_table awg-dotted" id="awg_peer_p2" maxlength="64" autocomplete="off" placeholder="(optional)"></td>
+                    <td><input type="text" class="input_32_table awg-dotted" id="awg_peer_p2" maxlength="64" autocomplete="off" placeholder="(optional)" spellcheck="false" autocapitalize="off" autocorrect="off"></td>
                 </tr>
                 <tr>
                     <th>Endpoint</th>

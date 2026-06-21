@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.90"
+AWG_VERSION="1.1.91"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1950,6 +1950,33 @@ analyze_flows(){
         }'
 }
 
+# Emit "domain<TAB>ip1,ip2,…" for each domain the DEVICE asked to resolve (the request intent,
+# captured before/at resolution from the dnsmasq query log). Domains are taken from query[*]
+# lines whose "from" is the device (any record type, so AAAA/HTTPS-only domains still show), and
+# the resolved IPv4s are correlated by the dnsmasq query id (so a CNAME chain's final A records
+# attach to the original domain). The IP list is empty until the name resolves. log-queries=extra
+# prints "<ts> dnsmasq[pid]: <id> <client>/<port> query[T] <domain> from <client>" and
+# "… <id> … reply|cached <name> is <ipv4>".
+analyze_dns_queries(){
+    local ip="$1"
+    [ -r "$ANALYZE_DNS_LOG" ] || return 0
+    awk -v ip="$ip" '
+        {
+            id="";
+            for(i=1;i<=NF;i++){ if($i ~ /^dnsmasq\[/){ id=$(i+1); break } }
+            if(id==""){ next }
+            q=""; req="";
+            for(i=1;i<=NF;i++){ if($i ~ /^query\[/) q=$(i+1); if($i=="from") req=$(i+1); }
+            if(q!="" && req==ip){ d[id]=q; if(!(q in seen)){ seen[q]=1; ord[++n]=q } }
+            for(i=1;i<NF;i++){
+                if(($i=="reply"||$i=="cached") && $(i+2)=="is" && $(i+3) ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && (id in d))
+                    ips[d[id]] = ips[d[id]] "," $(i+3);
+            }
+        }
+        END{ for(k=1;k<=n;k++){ q=ord[k]; s=ips[q]; sub(/^,/,"",s); print q"\t"s } }
+    ' "$ANALYZE_DNS_LOG"
+}
+
 # Background capture worker. Every ~2s while the flag exists (and under the safety cap): refresh
 # the name map, snapshot the device's NEW conntrack flows, name + verdict each, append to the
 # ring buffer, publish. Self-tears-down on timeout (the no-stop path).
@@ -1969,6 +1996,29 @@ analyze_loop(){
                 { tail -c 131072 "$ANALYZE_DNS_LOG" > "${ANALYZE_DNS_LOG}.t" 2>/dev/null && mv "${ANALYZE_DNS_LOG}.t" "$ANALYZE_DNS_LOG"; }
         fi
         analyze_build_map
+        # --- DNS-request rows: domains the device is TRYING to reach (the intent), captured at
+        # query time. Verdict from the resolved IPv4(s): vpn_geo -> geo if any is in the set, else
+        # direct; vpn_all -> vpn; direct -> direct. For vpn_geo we DEFER a domain (don't mark it
+        # seen) until it has resolved, so its verdict is real rather than a transient "unknown". ---
+        analyze_dns_queries "$ip" | while IFS="$(printf '\t')" read -r dom ipscsv; do
+            dom=$(printf '%s' "$dom" | tr -cd 'A-Za-z0-9._-')
+            [ -z "$dom" ] && continue
+            dkey="dns:$dom"
+            grep -qxF "$dkey" "$ANALYZE_SEEN" 2>/dev/null && continue
+            firstip=$(printf '%s' "$ipscsv" | cut -d, -f1)
+            case "$policy" in
+                vpn_all) verdict="vpn" ;;
+                vpn_geo)
+                    [ -z "$ipscsv" ] && continue   # not resolved yet — retry next poll
+                    verdict="direct"
+                    for one in $(printf '%s' "$ipscsv" | tr ',' ' '); do
+                        if ipset test "$IPSET_NAME" "$one" >/dev/null 2>&1; then verdict="geo"; break; fi
+                    done ;;
+                *) verdict="direct" ;;
+            esac
+            echo "$dkey" >> "$ANALYZE_SEEN"
+            echo "{\"t\":\"$(date '+%H:%M:%S')\",\"name\":\"$dom\",\"ip\":\"$firstip\",\"proto\":\"dns\",\"port\":\"\",\"verdict\":\"$verdict\"}" >> "$ANALYZE_ENTRIES"
+        done
         analyze_flows "$ip" | while read -r proto dst dport; do
             # Skip LAN-local / router / loopback / multicast / broadcast destinations.
             case "$dst" in "$router_ip"|127.*|224.*|225.*|226.*|227.*|228.*|229.*|23[0-9].*|255.*|0.*) continue ;; esac
