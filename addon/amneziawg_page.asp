@@ -2847,7 +2847,7 @@ function initAutocompleteIp(){
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable">
                 <thead><tr><td colspan="2">Interface</td></tr></thead>
                 <tr>
-                    <th width="35%" scope="row">Private Key</th>
+                    <th width="35%">Private Key</th>
                     <td><input type="text" class="input_32_table awg-dotted" id="awg_iface_p1" maxlength="64" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off"></td>
                 </tr>
                 <tr>
@@ -2872,11 +2872,11 @@ function initAutocompleteIp(){
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
                 <thead><tr><td colspan="2">Peer</td></tr></thead>
                 <tr>
-                    <th width="35%" scope="row">Public Key</th>
+                    <th width="35%">Public Key</th>
                     <td><input type="text" class="input_32_table" id="awg_peer_p1" maxlength="64"></td>
                 </tr>
                 <tr>
-                    <th scope="row">Preshared Key</th>
+                    <th>Preshared Key</th>
                     <td><input type="text" class="input_32_table awg-dotted" id="awg_peer_p2" maxlength="64" autocomplete="off" placeholder="(optional)" spellcheck="false" autocapitalize="off" autocorrect="off"></td>
                 </tr>
                 <tr>
