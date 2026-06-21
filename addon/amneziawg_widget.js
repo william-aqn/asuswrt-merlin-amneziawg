@@ -26,23 +26,32 @@
     var transitioning = false;  // идёт инициированное нами переключение
     var expectRunning = false;  // ожидаемое running после переключения
 
-    var T = {
-      title:   "AmneziaWG VPN",
-      on:      "Подключено",
-      off:     "Остановлено",
-      starting:"Подключение…",
-      stopping:"Остановка…",
-      unknown: "Статус неизвестен",
-      addr:    "Адрес",
-      hs:      "Рукопожатие",
-      turnOn:  "Запустить",
-      turnOff: "Остановить",
-      settings:"Открыть настройки →",
-      tipOn:   "AmneziaWG VPN: подключено",
-      tipOff:  "AmneziaWG VPN: остановлено",
-      tipMv:   "AmneziaWG VPN: переключение…",
-      tipUnk:  "AmneziaWG VPN: статус неизвестен"
+    var T_ALL = {
+      en: { title:"AmneziaWG VPN", on:"Connected", off:"Stopped", starting:"Connecting…", stopping:"Stopping…",
+            unknown:"Status unknown", addr:"Address", hs:"Handshake", turnOn:"Start", turnOff:"Stop",
+            settings:"Open settings →", tipOn:"AmneziaWG VPN: connected", tipOff:"AmneziaWG VPN: stopped",
+            tipMv:"AmneziaWG VPN: switching…", tipUnk:"AmneziaWG VPN: status unknown",
+            agoSec:" s ago", agoMin:" min ago", agoHr:" h ago" },
+      ru: { title:"AmneziaWG VPN", on:"Подключено", off:"Остановлено", starting:"Подключение…", stopping:"Остановка…",
+            unknown:"Статус неизвестен", addr:"Адрес", hs:"Рукопожатие", turnOn:"Запустить", turnOff:"Остановить",
+            settings:"Открыть настройки →", tipOn:"AmneziaWG VPN: подключено", tipOff:"AmneziaWG VPN: остановлено",
+            tipMv:"AmneziaWG VPN: переключение…", tipUnk:"AmneziaWG VPN: статус неизвестен",
+            agoSec:" с назад", agoMin:" мин назад", agoHr:" ч назад" }
     };
+    // Язык виджета: основной сигнал — window.__awgLang (внедряется бэкендом при монтировании,
+    // формат вроде "EN"/"RU"/"DE"). RU → ru, всё прочее → en. Запасной вариант — preferred_lang
+    // из nvram через httpApi, если глобал отсутствует. Всё в try/catch — по умолчанию 'en'.
+    function awgPickLang() {
+      try {
+        if (window.__awgLang) return /^ru$/i.test(window.__awgLang) ? 'ru' : 'en';
+        if (typeof httpApi !== 'undefined' && httpApi.nvramGet) {
+          var pl = httpApi.nvramGet(["preferred_lang"]).preferred_lang;
+          if (pl) return /^ru$/i.test(pl) ? 'ru' : 'en';
+        }
+      } catch (e) {}
+      return 'en';
+    }
+    var T = T_ALL[awgPickLang()];
 
     // Amnezia "A" logo as a single-path monochrome vector, taken from the Android app's
     // ic_icon/ic_tile drawable (the glyph drawn in the notification shade / quick-settings).
@@ -306,9 +315,9 @@
       if (!epoch || epoch <= 0) return null;
       var d = Math.floor(new Date().getTime() / 1000) - epoch;
       if (d < 0) d = 0;
-      if (d < 60) return d + " с назад";
-      if (d < 3600) return Math.floor(d / 60) + " мин назад";
-      return Math.floor(d / 3600) + " ч назад";
+      if (d < 60) return d + T.agoSec;
+      if (d < 3600) return Math.floor(d / 60) + T.agoMin;
+      return Math.floor(d / 3600) + T.agoHr;
     }
 
     function onActionClick(e) {
@@ -368,6 +377,11 @@
           if (transitioning && lastRunning === expectRunning) {
             transitioning = false;
             restartTimer(POLL_MS);
+          }
+          // Самокоррекция языка после переключения языка прошивки — без перезагрузки страницы.
+          if (s.lang) {
+            var newLang = /^ru$/i.test(s.lang) ? 'ru' : 'en';
+            if (T !== T_ALL[newLang]) T = T_ALL[newLang];
           }
           renderIndicator();
           if (isOpen()) renderPanel();

@@ -201,6 +201,550 @@ function escHtml(s){
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// ---- i18n: follow the firmware UI language (preferred_lang). RU -> Russian, else English. ----
+var AWG_LANG = (function(){
+    try { return (httpApi.nvramGet(["preferred_lang"]).preferred_lang === 'RU') ? 'ru' : 'en'; }
+    catch(e){ return 'en'; }
+})();
+var AWG_I18N = {
+en: {
+    // ---- status / badge ----
+    STAT_LOADING: "Loading…",
+    STAT_LOADING_BADGE: "&#9679; Loading…",
+    STAT_CONNECTED: "Connected",
+    STAT_STOPPED: "Stopped",
+    STAT_CONNECTING: "Connecting…",
+    STAT_STOPPING: "Stopping…",
+    STAT_ROUTER_NO_RESPONSE: "Router not responding…",
+    STAT_UPDATING: "Updating…",
+    // ---- time-ago ----
+    AGO_SEC: "{0} s ago",
+    AGO_MIN: "{0} min ago",
+    AGO_HOUR: "{0} h ago",
+    HS_NEVER: "never",
+    // ---- version button / modal status ----
+    BTN_UPDATE_TO: "Update v{0} to v{1}",
+    BTN_CURRENT_VERSION: "Current version — v{0}",
+    BTN_VERSION_UPDATES: "Version / updates",
+    MSG_CHECKING_UPDATES: "Checking for updates…",
+    MSG_CHECK_FAILED: "⚠ Could not check for updates (GitHub unavailable)",
+    MSG_UPDATE_AVAILABLE: "Update available: v{0}",
+    MSG_NO_UPDATES: "No updates",
+    MSG_NO_UPDATES_INSTALLED: " — v{0} installed",
+    // ---- update modal ----
+    MODAL_UPDATE_TO: "Update to v{0}",
+    MODAL_CHANGELOG: "Changelog",
+    MODAL_CHANGELOG_VER: " — v{0}",
+    MODAL_LOADING_CHANGELOG: "Loading changelog…",
+    MODAL_CHANGELOG_FAILED: "Could not load the changelog.",
+    MSG_CLOSE_DURING_UPLOAD: "An upload/install is in progress. Close the window and stop tracking it?",
+    // ---- install actions ----
+    MSG_PICK_IPK: "Choose an .ipk file to install.",
+    MSG_NOT_IPK_CONFIRM: "The file doesn't look like an .ipk. Install anyway?",
+    MSG_ENTER_VERSION: "Enter a version as X.Y.Z, e.g. 1.1.49",
+    MSG_VERSION_FORMAT: "Version as X.Y.Z, e.g. 1.1.49",
+    MSG_VERSION_INSTALLED_REINSTALL: "Version v{0} is already installed. Reinstall?",
+    MSG_LATEST_VERSION: "You already have the latest version{0}.",
+    MSG_LATEST_VERSION_VER: " (v{0})",
+    BTN_INSTALLING: "Installing…",
+    BTN_INSTALL: "Install",
+    MSG_INSTALL_FAILED: "Installation failed: {0}",
+    // ---- upload (manual .ipk) ----
+    UP_READING_FILE: "Reading file…",
+    UP_READ_FAILED: "could not read the file.",
+    UP_FILE_EMPTY: "the file is empty.",
+    UP_SETTINGS_TOO_BIG: "settings are too large to upload a file via the UI.",
+    UP_PROGRESS: "Uploading {0}/{1}…",
+    UP_TRANSFER_FAILED: "transfer failed ",
+    UP_PART: "(part {0}/{1}).",
+    UP_NO_ROUTER_RESPONSE: "no response from the router (part {0}/{1}).",
+    UP_VERIFYING: "Verifying and installing the package…",
+    UP_DONE_RELOADING: "Done! Reloading the page…",
+    UP_INSTALL_FAILED: "installation failed.",
+    // ---- upload error codes (from backend slugs) ----
+    ERR_GENERIC: "Installation failed",
+    ERR_NO_DATA: "No upload data",
+    ERR_DECODE_FAILED: "Decoding error",
+    ERR_SIZE_MISMATCH: "Size mismatch — upload corrupted",
+    ERR_CORRUPT: "File corrupted or not .ipk",
+    ERR_NOT_IPK: "Not an opkg package (.ipk)",
+    ERR_OPKG_FAILED: "opkg install failed",
+    // ---- apply / restart ----
+    MSG_FORCE_RESTART_CONFIRM: "The VPN will be fully restarted (stop → start) — the connection will drop briefly (devices on a VPN policy lose access for a few seconds). Routes and the firewall will also be rebuilt. Continue?",
+    BTN_APPLYING: "Applying…",
+    ACK_SAVED: "Saved ✓",
+    ACK_SEND_FAILED: "Could not send — try again",
+    // ---- first-run / validation ----
+    TITLE_IMPORT_FIRST: "Import a configuration (.conf) first",
+    MSG_INIT_NON_ASCII: "Fields I1–I5 contain invalid (non-ASCII) characters.",
+    MSG_REQUIRED_FIELDS: "Required fields: Private Key, Peer Public Key and Endpoint.",
+    MSG_BAD_KEY_FORMAT: "Invalid key format. Keys must be 44 characters long (base64).",
+    MSG_ENDPOINT_NEEDS_PORT: "Endpoint must include a port (e.g. server:51820).",
+    // ---- routing policy options (shared static + JS) ----
+    OPT_VPN_ALL: "VPN: all traffic",
+    OPT_VPN_GEO: "VPN: Geo only",
+    OPT_DIRECT: "Direct",
+    // ---- client rows ----
+    ARIA_DEVICE_IP: "Device IP address",
+    ARIA_DEVICE_NAME: "Device name",
+    ARIA_DEVICE_POLICY: "Device routing policy",
+    ARIA_REMOVE_DEVICE: "Remove device",
+    TITLE_REMOVE: "Remove",
+    MSG_DEVICE_REMOVED: "Device removed.",
+    BTN_UNDO: "Undo",
+    // ---- geo download ----
+    MSG_DOWNLOAD_LISTS_CONFIRM: "Download all GeoIP and domain lists?\nThis may take 1–2 minutes.",
+    MSG_REDOWNLOAD_LISTS_CONFIRM: "Force re-download all GeoIP and domain lists?\nThis may take 1–2 minutes.",
+    MSG_WIPE_BEFORE_UPDATE: "\n\n«Wipe before update» is enabled: all downloaded geo lists will be removed before downloading. If the download fails, the lists will stay missing.",
+    MSG_GEO_LOADING_WAIT: "Downloading geo lists… Please wait.",
+    BTN_GEO_LOADING: "Loading…",
+    BTN_GEO_UPDATE_NOW: "Update now",
+    BTN_GEO_DOWNLOAD: "Download lists",
+    // ---- DHCP picker ----
+    MSG_DHCP_FAILED: "Could not get the DHCP client list.\nEnter the IPs of the devices to add (comma-separated):",
+    DHCP_COL_IP: "IP address",
+    DHCP_COL_NAME: "Name",
+    ARIA_DHCP_PICK: "Pick devices from DHCP",
+    DHCP_TITLE: "Devices from DHCP",
+    ARIA_CLOSE: "Close",
+    DHCP_POLICY_LABEL: "Policy:",
+    ARIA_DHCP_POLICY: "Policy for the selected devices",
+    DHCP_ADD_SELECTED: "Add selected",
+    // ---- diagnostics ----
+    DIAG_COLLECTING: "Collecting data…",
+    DIAG_COLLECTING_WAIT: "Collecting diagnostic data… Please wait.",
+    DIAG_TIMEOUT: "Could not get diagnostics (timeout). Try again.",
+    DIAG_EMPTY: "Diagnostics are empty.",
+    DIAG_TIMEOUT_NOTE: "⚠ Collection did not finish before the timeout — the data may be incomplete.",
+    DIAG_NOT_READY: "Data hasn't been collected yet — wait for collection to finish.",
+    DIAG_LOG_HEADER: "===== LOG =====",
+    DIAG_COPIED: "Copied ✓",
+    DIAG_COPY_FAILED: "Failed",
+    DIAG_COPIED_ALERT: "Diagnostics and the log were copied to the clipboard — you can paste them straight into a Telegram message.",
+    DIAG_COPY_FAILED_ALERT: "Could not copy. Select the text in the window and copy it manually (Ctrl+C).",
+    // ---- status info lines ----
+    INFO_ADDRESS: "Address: ",
+    INFO_PUBLIC_KEY: "Public key: ",
+    INFO_PORT: "Port: ",
+    // ---- active rules summary ----
+    RULES_ROUTING: "{0} routing rules",
+    RULES_IPRANGES: "{0} IP ranges",
+    RULES_DOMAINS: "{0} domain rules",
+    ACTIVE_PREFIX: "Active: ",
+    NO_RULES: "no rules",
+    // ---- coexist warning (innerHTML) ----
+    COEX_STEP_POLICY: "<li>Change the <b>Default policy</b> from <b>«VPN — all traffic»</b> to <b>«Direct»</b> or <b>«VPN — Geo only»</b> — otherwise routing will take all traffic away from {0}.</li>",
+    COEX_STEP_DNS: "<li>Tick <b>«Don't intercept DNS»</b> (the «zapret2/xray compatibility» block) — so intercepting :53 doesn't conflict with {0}.</li>",
+    COEX_HEADER: "⚠ Detected <b>{0}</b> on the router. So AmneziaWG doesn't conflict with it and leave the network without internet:",
+    COEX_FOOTER: "<span style=\"opacity:0.85;\">After the changes, click <b>«Apply»</b>. GeoIP routing by IP keeps working in the meantime.</span>",
+    // ---- import config ----
+    MSG_IMPORT_REPLACE_CONFIRM: "Import will replace the current interface and peer settings. Continue?",
+    MSG_IMPORT_UNRECOGNIZED: "Could not recognize the configuration: no [Interface]/[Peer] fields found (PrivateKey, PublicKey, Endpoint). Make sure it's a .conf from the Amnezia / WireGuard app.",
+    MSG_IMPORT_OK: "Config imported. Check the fields and click «Apply».",
+    // ==================== STATIC HTML ====================
+    LBL_VPN_CLIENT: "VPN client",
+    TITLE_AMNEZIA_SITE: "Amnezia website",
+    TITLE_TG_CHAT: "Telegram chat",
+    LBL_CHAT: "Chat",
+    TITLE_GH_REPO: "Merlin AmneziaWG GitHub repository",
+    TH_STATUS: "Status",
+    BTN_START: "Start",
+    BTN_STOP: "Stop",
+    BTN_RESTART: "Restart",
+    TH_INTERFACE: "Interface",
+    FIRSTRUN_HTML: "<b>It looks like no configuration is set yet.</b><br>\n                    Start by importing a <code>.conf</code> file from the Amnezia VPN app, then check the fields and click «Apply».",
+    BTN_IMPORT_CONFIG: "Import configuration",
+    SEC_CONNECTED_PEERS: "Connected peers",
+    TH_SERVER_ADDR: "Server address",
+    TH_ALLOWED_IPS: "Allowed IPs",
+    TH_TRAFFIC: "Traffic (rx/tx)",
+    TH_LAST_HANDSHAKE: "Last handshake",
+    LBL_NO_PEERS: "No peers",
+    SEC_CONFIG: "Configuration",
+    BTN_IMPORT_CONF_FILE: "Import a .conf file from the Amnezia VPN client",
+    ARIA_PRIVATE_KEY: "Private Key (secret)",
+    ARIA_PRESHARED_KEY: "Preshared Key (secret)",
+    OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— obfuscation parameters (usually filled in by importing a config) ▾</span>",
+    TBL_ROUTING_POLICY: "Routing policy",
+    TH_DEFAULT_POLICY: "Default policy",
+    ARIA_DEFAULT_POLICY: "Default policy",
+    OPT_DIRECT_NO_VPN: "Direct (no VPN)",
+    OPT_VPN_ALL_TRAFFIC: "VPN — all traffic",
+    OPT_VPN_GEO_ONLY: "VPN — Geo only",
+    HINT_DEFAULT_POLICY: "Applied to devices that are not in the list below.",
+    HINT_GEO_DNS_DEVICE: "Geo by domains only works if the device uses the router as its DNS (configured in the Geo block below).",
+    TH_IPV6_LEAK: "IPv6 leak protection",
+    LBL_BLOCK_IPV6_DNS: "Block resolving IPv6 addresses in DNS (filter-AAAA)",
+    HINT_IPV6_DNS: "Critical for reliable Geo routing. Stops dual-stack (IPv4+IPv6) domains from bypassing the VPN over IPv6.",
+    TH_KILLSWITCH: "Kill-switch",
+    LBL_KILLSWITCH: "Block VPN traffic when the tunnel goes down (strict kill-switch)",
+    HINT_KILLSWITCH_HTML: "<summary>Blocks traffic of VPN devices if the tunnel goes down (instead of leaking around it to the WAN). Off by default. <u>Details</u></summary>When enabled: if the tunnel suddenly goes down (daemon crash / out of memory), traffic from devices with a «VPN» policy doesn't leak around it to the WAN in cleartext but is blocked until recovery (the watchdog brings the tunnel back within ~5 min). Off — the previous behavior (traffic may temporarily go around the VPN). Affects only devices with a VPN/Geo policy; with the default policy set to «VPN — all traffic» it affects the whole LAN.",
+    TH_TUNNEL_CHECK_ADDR: "Tunnel check addresses",
+    ARIA_TUNNEL_CHECK_ADDR: "Tunnel check addresses",
+    HINT_WATCHDOG_HTML: "<summary>Addresses the watchdog pings <b>through the tunnel</b> every 5 minutes (if at least one replies, the tunnel is alive). <u>Format and examples</u></summary><b>Format:</b> IP or domain, several allowed — separated by a space or comma (up to 4 addresses).<br><b>Example:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Prefer IPs (no dependency on DNS). Empty = default <b>8.8.8.8</b> and <b>1.1.1.1</b>. Change it if those addresses are blocked/unreachable for you — otherwise the watchdog restarts the VPN needlessly. Which addresses are checked is shown in the log below.",
+    TH_ZAPRET_COMPAT: "zapret2/xray compatibility",
+    LBL_NO_DNS_INTERCEPT: "Don't intercept DNS (compatibility with zapret2 / Xray etc.)",
+    HINT_NO_DNS_HTML: "<summary>Disables DNS interception (port :53). Enable it if <b>zapret2</b> or <b>Xray/XRAYUI</b> (v2ray, sing-box) is running alongside — otherwise a DNS conflict can leave the network without internet. <u>Details</u></summary>Geo by IP (GeoIP/antifilter) keeps working; geo by domains — only for clients using the router as DNS. If zapret2 / Xray / v2ray / sing-box or NFQUEUE/TPROXY rules are detected nearby, DNS interception is disabled automatically even without this checkbox. Important: the checkbox only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».",
+    SEC_DEVICE_RULES: "Device rules",
+    TH_IP_ADDRESS: "IP address",
+    TH_DEVICE_NAME: "Device name",
+    TH_POLICY: "Policy",
+    BTN_ADD_DEVICE: "+ Add device",
+    BTN_FROM_DHCP: "+ From DHCP list",
+    GEO_DNS_IMPORTANT_HTML: "<b>Important:</b> For VPN Geo to work, devices must use the router as their DNS server.<br>\n                    iPhone: Settings &gt; Wi-Fi &gt; (i) &gt; DNS &gt; Manual &gt; only ",
+    GEO_DNS_MACOS_HTML: " as DNS in your network settings. Disable DNS-over-HTTPS in the browser.",
+    GEO_DNS_MACOS_PREFIX: "macOS/Windows: set ",
+    BANNER_LISTS_NOT_LOADED: "⚠ Lists aren't downloaded yet — without them Geo routing doesn't work.",
+    BTN_DOWNLOAD_LISTS: "Download lists",
+    TBL_GEOIP: "GeoIP — route by service IPs",
+    TH_GEOIP_LISTS: "GeoIP service lists",
+    HINT_GEOIP: "Comma-separated. Available: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + country codes (us, ru, cn, …).",
+    HINT_GEOIP_WARN: "⚠ There are NO IP lists for youtube, discord, microsoft, github, openai etc. — use GeoSite below.",
+    TBL_GEOSITE: "GeoSite — route by services / domains",
+    TH_GEOSITE_LISTS: "GeoSite service lists",
+    HINT_GEOSITE: "Comma-separated. 1500+ lists: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …",
+    TH_CUSTOM_DOMAINS: "Custom domains",
+    HINT_CUSTOM_DOMAINS: "Comma-separated. Resolved via DNS → routed into the VPN.",
+    TH_CUSTOM_IPS: "Custom IPs / subnets",
+    HINT_CUSTOM_IPS: "Comma-separated: individual IPs or CIDR subnets.",
+    TBL_ANTIFILTER: "Geo Antifilter — RKN lists (antifilter.download)",
+    TH_ANTIFILTER_IP: "Antifilter IP lists",
+    AF_ALLYOUNEED: " allyouneed — all the needed subnets (~15K) ",
+    AF_RECOMMENDED: "recommended",
+    AF_COMMUNITY: " community — community subnets (~900)",
+    AF_IPSUM: " ipsum — IPs compressed to /24 (~15K)",
+    AF_SUBNET: " subnet — large subnets (~78)",
+    AF_IP: " ip — individual IPs (~48K)",
+    AF_IPRESOLVE: " ipresolve — IPs from DNS resolution (~154K) ",
+    AF_IPRESOLVE_WARN: "⚠ very large",
+    HINT_ANTIFILTER_IP: "Added to the GeoIP lists and routed through the VPN. allyouneed = ipsum + subnet; ip/ipresolve overlap heavily with allyouneed — allyouneed is usually enough.",
+    TH_ANTIFILTER_DOMAINS: "Antifilter domains",
+    AF_COMMUNITY_DOMAINS: " community domains (~485) → dnsmasq",
+    HINT_ANTIFILTER_DOMAINS: "The full domains.lst (1.4M domains / 27 MB) isn't supported — too large for dnsmasq on the router.",
+    TBL_GEO_UPDATE: "Geo update settings",
+    TH_AUTOUPDATE: "Auto-update lists",
+    LBL_DAILY_4AM: "Daily at 4:00",
+    TH_WIPE_BEFORE: "Wipe before update",
+    LBL_WIPE_BEFORE: "Delete all geo files before a full update / program update",
+    HINT_WIPE_BEFORE: "Off (default): existing geo lists are kept, including during a program update (no re-download). On: wipe before re-downloading (a clean set, but if a download fails some list will stay missing).",
+    TH_IPSET_NAME: "ipset name",
+    ARIA_IPSET_NAME: "ipset name",
+    HINT_IPSET_HTML: "The name of the ipset set for GeoIP/antifilter subnets (routed through the VPN). Default <code>awg_dst</code>. A set <b>created by the addon itself</b> is removed on stop, and when the name changes the old one is removed too — no leftovers/leaks. If you specify a set that's <b>already created by another connection/tool</b>, the addon only adds entries to it and doesn't touch it on stop (a shared set). Letters, digits and <code>_ . -</code> are allowed, up to 31 characters; empty = <code>awg_dst</code>.",
+    TBL_DOWNLOAD_VIA_VPN: "Download via VPN (bypass blocking)",
+    TH_GEO_VIA_VPN: "Geo lists via VPN",
+    LBL_GEO_VIA_VPN: "Download geo lists through the active AWG tunnel",
+    HINT_GEO_VIA_VPN: "While the tunnel is up, downloading GeoIP / GeoSite / antifilter goes through the VPN (bypassing GitHub / jsDelivr blocking). If the VPN is off — the download goes directly, as before.",
+    TH_UPDATE_VIA_VPN: "Program update via VPN",
+    LBL_UPDATE_VIA_VPN: "Download the program update through the active AWG tunnel",
+    HINT_UPDATE_VIA_VPN: "Version check and <code>.ipk</code> download go through the VPN while the tunnel is active — you can install updates straight from GitHub bypassing regional blocking (and verify SHA256 via the GitHub API). DNS resolution stays system-wide; the bypass works for IP/TCP blocking. If the VPN is off — directly, as before.",
+    BTN_APPLY: "Apply",
+    TITLE_APPLY: "Save and apply without restarting the VPN",
+    BTN_SAVE_RESTART: "Save and fully restart the VPN",
+    TITLE_SAVE_RESTART: "Save + restart the VPN (stop → start) + full rebuild of routes and firewall",
+    APPLY_DESC1_HTML: "<b>Apply</b> — save the settings and apply them «on the fly»: updates devices, routing policies, the firewall and the GeoIP/GeoSite lists <b>without dropping the VPN connection</b>. If the VPN is stopped — the settings are just saved and applied at the next start.",
+    APPLY_DESC2_HTML: "<b>Save and fully restart the VPN</b> (stop → start) — the config is re-applied (awg setconf), the interface, routes and firewall are rebuilt, the connection drops for a couple of seconds. Needed when changing keys, the server (Endpoint), MTU or obfuscation parameters (Jc, S1, H1…H4), or if the connection is «stuck».",
+    SEC_LOG: "Log",
+    BTN_GET_DIAG: "Get diagnostic data",
+    LOG_WAITING: "Waiting for data…",
+    MODAL_UPDATE_TITLE: "Update",
+    INSTALL_LABEL: "Install:",
+    ARIA_INSTALL_MODE: "Install method",
+    OPT_INSTALL_AUTO: "Automatic (latest)",
+    OPT_INSTALL_VERSION: "Choose version",
+    OPT_INSTALL_FILE: "Manually from file",
+    PH_VERSION: "e.g. 1.1.49",
+    ARIA_VERSION_TO_INSTALL: "Version to install",
+    ARIA_IPK_FILE: ".ipk file to install",
+    BTN_CHECK_UPDATES: "Check for updates",
+    BTN_CLOSE: "Close",
+    MODAL_DIAG_TITLE: "Diagnostic data",
+    BTN_COPY_DIAG: "Copy diagnostic data",
+    DIAG_COPY_NOTE: "Copied together with the log, wrapped for pasting into Telegram."
+},
+ru: {
+    // ---- status / badge ----
+    STAT_LOADING: "Загрузка…",
+    STAT_LOADING_BADGE: "&#9679; Загрузка…",
+    STAT_CONNECTED: "Подключено",
+    STAT_STOPPED: "Остановлено",
+    STAT_CONNECTING: "Подключение…",
+    STAT_STOPPING: "Остановка…",
+    STAT_ROUTER_NO_RESPONSE: "Роутер не отвечает…",
+    STAT_UPDATING: "Обновление…",
+    // ---- time-ago ----
+    AGO_SEC: "{0} с назад",
+    AGO_MIN: "{0} мин назад",
+    AGO_HOUR: "{0} ч назад",
+    HS_NEVER: "никогда",
+    // ---- version button / modal status ----
+    BTN_UPDATE_TO: "Обновить v{0} до v{1}",
+    BTN_CURRENT_VERSION: "Текущая версия — v{0}",
+    BTN_VERSION_UPDATES: "Версия / обновления",
+    MSG_CHECKING_UPDATES: "Проверка обновлений…",
+    MSG_CHECK_FAILED: "⚠ Не удалось проверить обновления (GitHub недоступен)",
+    MSG_UPDATE_AVAILABLE: "Доступно обновление: v{0}",
+    MSG_NO_UPDATES: "Обновлений нет",
+    MSG_NO_UPDATES_INSTALLED: " — установлена v{0}",
+    // ---- update modal ----
+    MODAL_UPDATE_TO: "Обновление до v{0}",
+    MODAL_CHANGELOG: "История изменений",
+    MODAL_CHANGELOG_VER: " — v{0}",
+    MODAL_LOADING_CHANGELOG: "Загрузка списка изменений…",
+    MODAL_CHANGELOG_FAILED: "Не удалось загрузить список изменений.",
+    MSG_CLOSE_DURING_UPLOAD: "Идёт загрузка/установка. Закрыть окно и прекратить отслеживание?",
+    // ---- install actions ----
+    MSG_PICK_IPK: "Выберите .ipk файл для установки.",
+    MSG_NOT_IPK_CONFIRM: "Файл не похож на .ipk. Всё равно установить?",
+    MSG_ENTER_VERSION: "Введите версию в формате X.Y.Z, например 1.1.49",
+    MSG_VERSION_FORMAT: "Версия в формате X.Y.Z, например 1.1.49",
+    MSG_VERSION_INSTALLED_REINSTALL: "Версия v{0} уже установлена. Переустановить?",
+    MSG_LATEST_VERSION: "У вас последняя версия{0}.",
+    MSG_LATEST_VERSION_VER: " (v{0})",
+    BTN_INSTALLING: "Установка…",
+    BTN_INSTALL: "Установить",
+    MSG_INSTALL_FAILED: "Не удалось установить: {0}",
+    // ---- upload (manual .ipk) ----
+    UP_READING_FILE: "Чтение файла…",
+    UP_READ_FAILED: "не удалось прочитать файл.",
+    UP_FILE_EMPTY: "файл пуст.",
+    UP_SETTINGS_TOO_BIG: "настройки слишком велики для загрузки файла через UI.",
+    UP_PROGRESS: "Загрузка {0}/{1}…",
+    UP_TRANSFER_FAILED: "сбой передачи ",
+    UP_PART: "(часть {0}/{1}).",
+    UP_NO_ROUTER_RESPONSE: "нет ответа роутера (часть {0}/{1}).",
+    UP_VERIFYING: "Проверка и установка пакета…",
+    UP_DONE_RELOADING: "Готово! Перезагрузка страницы…",
+    UP_INSTALL_FAILED: "установка не удалась.",
+    // ---- upload error codes (from backend slugs) ----
+    ERR_GENERIC: "Установка не удалась",
+    ERR_NO_DATA: "Нет данных загрузки",
+    ERR_DECODE_FAILED: "Ошибка декодирования",
+    ERR_SIZE_MISMATCH: "Размер не совпал — загрузка повреждена",
+    ERR_CORRUPT: "Файл повреждён или не .ipk",
+    ERR_NOT_IPK: "Это не пакет opkg (.ipk)",
+    ERR_OPKG_FAILED: "opkg install не удался",
+    // ---- apply / restart ----
+    MSG_FORCE_RESTART_CONFIRM: "VPN будет полностью перезапущен (stop → start) — соединение временно прервётся (устройства с политикой VPN потеряют доступ на несколько секунд). Заодно пересоберутся маршруты и firewall. Продолжить?",
+    BTN_APPLYING: "Применение…",
+    ACK_SAVED: "Сохранено ✓",
+    ACK_SEND_FAILED: "Не удалось отправить — повторите",
+    // ---- first-run / validation ----
+    TITLE_IMPORT_FIRST: "Сначала импортируйте конфигурацию (.conf)",
+    MSG_INIT_NON_ASCII: "Поля I1–I5 содержат недопустимые (не-ASCII) символы.",
+    MSG_REQUIRED_FIELDS: "Обязательные поля: Private Key, Peer Public Key и Endpoint.",
+    MSG_BAD_KEY_FORMAT: "Неверный формат ключа. Ключи должны быть длиной 44 символа (base64).",
+    MSG_ENDPOINT_NEEDS_PORT: "Endpoint должен содержать порт (например, server:51820).",
+    // ---- routing policy options (shared static + JS) ----
+    OPT_VPN_ALL: "VPN: весь трафик",
+    OPT_VPN_GEO: "VPN: только Geo",
+    OPT_DIRECT: "Напрямую",
+    // ---- client rows ----
+    ARIA_DEVICE_IP: "IP-адрес устройства",
+    ARIA_DEVICE_NAME: "Имя устройства",
+    ARIA_DEVICE_POLICY: "Политика маршрутизации устройства",
+    ARIA_REMOVE_DEVICE: "Удалить устройство",
+    TITLE_REMOVE: "Удалить",
+    MSG_DEVICE_REMOVED: "Устройство удалено.",
+    BTN_UNDO: "Отменить",
+    // ---- geo download ----
+    MSG_DOWNLOAD_LISTS_CONFIRM: "Скачать все списки GeoIP и доменов?\nЭто может занять 1–2 минуты.",
+    MSG_REDOWNLOAD_LISTS_CONFIRM: "Принудительно перекачать все списки GeoIP и доменов?\nЭто может занять 1–2 минуты.",
+    MSG_WIPE_BEFORE_UPDATE: "\n\nВключена «Очистка перед обновлением»: все скачанные geo-списки будут удалены перед загрузкой. При сбое загрузки списки останутся отсутствующими.",
+    MSG_GEO_LOADING_WAIT: "Загрузка geo-списков… Подождите.",
+    BTN_GEO_LOADING: "Загрузка…",
+    BTN_GEO_UPDATE_NOW: "Обновить сейчас",
+    BTN_GEO_DOWNLOAD: "Скачать списки",
+    // ---- DHCP picker ----
+    MSG_DHCP_FAILED: "Не удалось получить список клиентов DHCP.\nВведите IP устройств для добавления (через запятую):",
+    DHCP_COL_IP: "IP-адрес",
+    DHCP_COL_NAME: "Имя",
+    ARIA_DHCP_PICK: "Выбор устройств из DHCP",
+    DHCP_TITLE: "Устройства из DHCP",
+    ARIA_CLOSE: "Закрыть",
+    DHCP_POLICY_LABEL: "Политика:",
+    ARIA_DHCP_POLICY: "Политика для выбранных устройств",
+    DHCP_ADD_SELECTED: "Добавить выбранные",
+    // ---- diagnostics ----
+    DIAG_COLLECTING: "Сбор данных…",
+    DIAG_COLLECTING_WAIT: "Сбор диагностических данных… Подождите.",
+    DIAG_TIMEOUT: "Не удалось получить диагностику (таймаут). Попробуйте ещё раз.",
+    DIAG_EMPTY: "Диагностика пуста.",
+    DIAG_TIMEOUT_NOTE: "⚠ Сбор не завершился по таймауту — данные могут быть неполными.",
+    DIAG_NOT_READY: "Данные ещё не собраны — подождите завершения сбора.",
+    DIAG_LOG_HEADER: "===== ЖУРНАЛ =====",
+    DIAG_COPIED: "Скопировано ✓",
+    DIAG_COPY_FAILED: "Не удалось",
+    DIAG_COPIED_ALERT: "Диагностика и журнал скопированы в буфер обмена — можно сразу вставить в сообщение Telegram.",
+    DIAG_COPY_FAILED_ALERT: "Не удалось скопировать. Выделите текст в окне и скопируйте вручную (Ctrl+C).",
+    // ---- status info lines ----
+    INFO_ADDRESS: "Адрес: ",
+    INFO_PUBLIC_KEY: "Открытый ключ: ",
+    INFO_PORT: "Порт: ",
+    // ---- active rules summary ----
+    RULES_ROUTING: "{0} правил маршрутизации",
+    RULES_IPRANGES: "{0} диапазонов IP",
+    RULES_DOMAINS: "{0} правил по доменам",
+    ACTIVE_PREFIX: "Активно: ",
+    NO_RULES: "нет правил",
+    // ---- coexist warning (innerHTML) ----
+    COEX_STEP_POLICY: "<li>Смените <b>Политику по умолчанию</b> с <b>«VPN — весь трафик»</b> на <b>«Напрямую»</b> или <b>«VPN — только Geo»</b> — иначе маршрутизация заберёт у {0} весь трафик.</li>",
+    COEX_STEP_DNS: "<li>Включите галочку <b>«Не перехватывать DNS»</b> (блок «Совместимость с zapret2/xray») — чтобы перехват :53 не конфликтовал с {0}.</li>",
+    COEX_HEADER: "⚠ Обнаружен <b>{0}</b> на роутере. Чтобы AmneziaWG не конфликтовал с ним и не оставил сеть без интернета:",
+    COEX_FOOTER: "<span style=\"opacity:0.85;\">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>",
+    // ---- import config ----
+    MSG_IMPORT_REPLACE_CONFIRM: "Импорт заменит текущие настройки интерфейса и пира. Продолжить?",
+    MSG_IMPORT_UNRECOGNIZED: "Не удалось распознать конфигурацию: не найдены поля [Interface]/[Peer] (PrivateKey, PublicKey, Endpoint). Проверьте, что это .conf из приложения Amnezia / WireGuard.",
+    MSG_IMPORT_OK: "Конфиг импортирован. Проверьте поля и нажмите «Применить».",
+    // ==================== STATIC HTML ====================
+    LBL_VPN_CLIENT: "VPN-клиент",
+    TITLE_AMNEZIA_SITE: "Сайт Amnezia",
+    TITLE_TG_CHAT: "Telegram-чат",
+    LBL_CHAT: "Чат",
+    TITLE_GH_REPO: "GitHub репозиторий Merlin AmneziaWG",
+    TH_STATUS: "Статус",
+    BTN_START: "Запустить",
+    BTN_STOP: "Остановить",
+    BTN_RESTART: "Перезапустить",
+    TH_INTERFACE: "Интерфейс",
+    FIRSTRUN_HTML: "<b>Похоже, конфигурация ещё не задана.</b><br>\n                    Начните с импорта <code>.conf</code>-файла из приложения Amnezia VPN, затем проверьте поля и нажмите «Применить».",
+    BTN_IMPORT_CONFIG: "Импорт конфигурации",
+    SEC_CONNECTED_PEERS: "Подключённые пиры",
+    TH_SERVER_ADDR: "Адрес сервера",
+    TH_ALLOWED_IPS: "Разрешённые IP",
+    TH_TRAFFIC: "Трафик (приём/передача)",
+    TH_LAST_HANDSHAKE: "Последнее рукопожатие",
+    LBL_NO_PEERS: "Нет пиров",
+    SEC_CONFIG: "Конфигурация",
+    BTN_IMPORT_CONF_FILE: "Импорт .conf-файла из клиента Amnezia VPN",
+    ARIA_PRIVATE_KEY: "Private Key (секрет)",
+    ARIA_PRESHARED_KEY: "Preshared Key (секрет)",
+    OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— параметры обфускации (обычно заполняются импортом конфига) ▾</span>",
+    TBL_ROUTING_POLICY: "Политика маршрутизации",
+    TH_DEFAULT_POLICY: "Политика по умолчанию",
+    ARIA_DEFAULT_POLICY: "Политика по умолчанию",
+    OPT_DIRECT_NO_VPN: "Напрямую (без VPN)",
+    OPT_VPN_ALL_TRAFFIC: "VPN — весь трафик",
+    OPT_VPN_GEO_ONLY: "VPN — только Geo",
+    HINT_DEFAULT_POLICY: "Применяется к устройствам, которых нет в списке ниже.",
+    HINT_GEO_DNS_DEVICE: "Geo по доменам работает только если устройство использует роутер как DNS (настройка — в блоке Geo ниже).",
+    TH_IPV6_LEAK: "Защита от утечек IPv6",
+    LBL_BLOCK_IPV6_DNS: "Блокировать разрешение IPv6-адресов в DNS (filter-AAAA)",
+    HINT_IPV6_DNS: "Критично для надёжной Geo-маршрутизации. Не даёт доменам с dual-stack (IPv4+IPv6) обходить VPN через IPv6.",
+    TH_KILLSWITCH: "Kill-switch",
+    LBL_KILLSWITCH: "Блокировать VPN-трафик при падении туннеля (strict kill-switch)",
+    HINT_KILLSWITCH_HTML: "<summary>Блокирует трафик VPN-устройств, если туннель упал (вместо утечки в обход в WAN). По умолчанию выключено. <u>Подробнее</u></summary>Когда включено: если туннель внезапно падает (краш демона / нехватка памяти), трафик устройств с политикой «VPN» не уходит в обход в WAN открытым текстом, а блокируется до восстановления (watchdog поднимает туннель в течение ~5 мин). Выключено — прежнее поведение (трафик может временно идти мимо VPN). Влияет только на устройства с политикой VPN/Geo; при политике по умолчанию «VPN — весь трафик» затрагивает весь LAN.",
+    TH_TUNNEL_CHECK_ADDR: "Адреса проверки туннеля",
+    ARIA_TUNNEL_CHECK_ADDR: "Адреса проверки туннеля",
+    HINT_WATCHDOG_HTML: "<summary>Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут (ответил хоть один — туннель живой). <u>Формат и примеры</u></summary><b>Формат:</b> IP или домен, можно несколько — через пробел или запятую (до 4 адресов).<br><b>Пример:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Лучше указывать IP (без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны — иначе watchdog зря перезапускает VPN. Какие адреса проверяются — видно в журнале ниже.",
+    TH_ZAPRET_COMPAT: "Совместимость с zapret2/xray",
+    LBL_NO_DNS_INTERCEPT: "Не перехватывать DNS (совместимость с zapret2 / Xray и др.)",
+    HINT_NO_DNS_HTML: "<summary>Отключает перехват DNS (порт :53). Включите, если рядом работает <b>zapret2</b> или <b>Xray/XRAYUI</b> (v2ray, sing-box) — иначе конфликт DNS может оставить сеть без интернета. <u>Подробнее</u></summary>Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам — только для клиентов, использующих роутер как DNS. Если рядом обнаружен zapret2 / Xray / v2ray / sing-box или правила NFQUEUE/TPROXY, перехват DNS отключается автоматически даже без этой галочки. Важно: галочка решает только конфликт по DNS — при политике «VPN — весь трафик» маршрутизация всё равно заберёт трафик прокси, поэтому для совместимости выбирайте «Напрямую» или «VPN — только Geo».",
+    SEC_DEVICE_RULES: "Правила устройств",
+    TH_IP_ADDRESS: "IP-адрес",
+    TH_DEVICE_NAME: "Имя устройства",
+    TH_POLICY: "Политика",
+    BTN_ADD_DEVICE: "+ Добавить устройство",
+    BTN_FROM_DHCP: "+ Из списка DHCP",
+    GEO_DNS_IMPORTANT_HTML: "<b>Важно:</b> Для работы VPN Geo устройства должны использовать роутер как DNS-сервер.<br>\n                    iPhone: Настройки &gt; Wi-Fi &gt; (i) &gt; DNS &gt; Вручную &gt; только ",
+    GEO_DNS_MACOS_HTML: " как DNS в настройках сети. Отключите DNS-over-HTTPS в браузере.",
+    GEO_DNS_MACOS_PREFIX: "macOS/Windows: укажите ",
+    BANNER_LISTS_NOT_LOADED: "⚠ Списки ещё не загружены — без них Geo-маршрутизация не работает.",
+    BTN_DOWNLOAD_LISTS: "Скачать списки",
+    TBL_GEOIP: "GeoIP — маршрут по IP сервисов",
+    TH_GEOIP_LISTS: "Списки сервисов GeoIP",
+    HINT_GEOIP: "Через запятую. Доступно: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + коды стран (us, ru, cn, …).",
+    HINT_GEOIP_WARN: "⚠ Для youtube, discord, microsoft, github, openai и т.п. IP-списков НЕТ — используйте GeoSite ниже.",
+    TBL_GEOSITE: "GeoSite — маршрут по сервисам / доменам",
+    TH_GEOSITE_LISTS: "Списки сервисов GeoSite",
+    HINT_GEOSITE: "Через запятую. 1500+ списков: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …",
+    TH_CUSTOM_DOMAINS: "Свои домены",
+    HINT_CUSTOM_DOMAINS: "Через запятую. Резолвятся через DNS → маршрутизируются в VPN.",
+    TH_CUSTOM_IPS: "Свои IP / подсети",
+    HINT_CUSTOM_IPS: "Через запятую: отдельные IP или подсети CIDR.",
+    TBL_ANTIFILTER: "Geo Antifilter — РКН-списки (antifilter.download)",
+    TH_ANTIFILTER_IP: "Antifilter IP-списки",
+    AF_ALLYOUNEED: " allyouneed — все нужные подсети (~15K) ",
+    AF_RECOMMENDED: "рекомендуется",
+    AF_COMMUNITY: " community — подсети сообщества (~900)",
+    AF_IPSUM: " ipsum — IP, сжатые до /24 (~15K)",
+    AF_SUBNET: " subnet — крупные подсети (~78)",
+    AF_IP: " ip — отдельные IP (~48K)",
+    AF_IPRESOLVE: " ipresolve — IP из DNS-резолва (~154K) ",
+    AF_IPRESOLVE_WARN: "⚠ очень большой",
+    HINT_ANTIFILTER_IP: "Добавляются к спискам GeoIP и маршрутизируются через VPN. allyouneed = ipsum + subnet; ip/ipresolve сильно пересекаются с allyouneed — обычно достаточно allyouneed.",
+    TH_ANTIFILTER_DOMAINS: "Antifilter домены",
+    AF_COMMUNITY_DOMAINS: " community домены (~485) → dnsmasq",
+    HINT_ANTIFILTER_DOMAINS: "Полный domains.lst (1.4M доменов / 27 МБ) не поддерживается — слишком большой для dnsmasq на роутере.",
+    TBL_GEO_UPDATE: "Настройки обновления Geo",
+    TH_AUTOUPDATE: "Автообновление списков",
+    LBL_DAILY_4AM: "Ежедневно в 4:00",
+    TH_WIPE_BEFORE: "Очистка перед обновлением",
+    LBL_WIPE_BEFORE: "Удалять все geo-файлы перед полным обновлением / обновлением программы",
+    HINT_WIPE_BEFORE: "Выключено (по умолчанию): существующие geo-списки сохраняются, в том числе при обновлении программы (без повторной загрузки). Включено: очистка перед перекачкой (чистый набор, но при сбое загрузки какой-то список останется отсутствующим).",
+    TH_IPSET_NAME: "Имя ipset",
+    ARIA_IPSET_NAME: "Имя ipset",
+    HINT_IPSET_HTML: "Имя ipset-набора для GeoIP/antifilter-подсетей (маршрутизируются через VPN). По умолчанию <code>awg_dst</code>. Набор, <b>созданный самим аддоном</b>, удаляется при остановке, а при смене имени удаляется и старый — висяков/утечек не остаётся. Если указать набор, который <b>уже создан другим подключением/инструментом</b>, аддон лишь добавляет в него записи и не трогает при остановке (общий набор). Допустимы буквы, цифры и <code>_ . -</code>, до 31 символа; пусто = <code>awg_dst</code>.",
+    TBL_DOWNLOAD_VIA_VPN: "Загрузка через VPN (обход блокировок)",
+    TH_GEO_VIA_VPN: "Geo-списки через VPN",
+    LBL_GEO_VIA_VPN: "Загружать geo-списки через активный AWG-туннель",
+    HINT_GEO_VIA_VPN: "Пока туннель поднят, загрузка GeoIP / GeoSite / antifilter идёт через VPN (обход блокировок GitHub / jsDelivr). Если VPN выключен — загрузка идёт напрямую, как раньше.",
+    TH_UPDATE_VIA_VPN: "Обновление программы через VPN",
+    LBL_UPDATE_VIA_VPN: "Загружать обновление программы через активный AWG-туннель",
+    HINT_UPDATE_VIA_VPN: "Проверка версии и загрузка <code>.ipk</code> идут через VPN, пока туннель активен — можно ставить обновления прямо с GitHub в обход региональных блокировок (и проверять SHA256 по GitHub API). DNS-резолвинг остаётся системным; обход работает для блокировок по IP/TCP. Если VPN выключен — напрямую, как раньше.",
+    BTN_APPLY: "Применить",
+    TITLE_APPLY: "Сохранить и применить без перезапуска VPN",
+    BTN_SAVE_RESTART: "Сохранить и полностью перезапустить VPN",
+    TITLE_SAVE_RESTART: "Сохранить + перезапуск VPN (stop → start) + полная пересборка маршрутов и firewall",
+    APPLY_DESC1_HTML: "<b>Применить</b> — сохранить настройки и применить их «на лету»: обновляет устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite <b>без разрыва VPN-соединения</b>. Если VPN остановлен — настройки просто сохранятся и применятся при следующем запуске.",
+    APPLY_DESC2_HTML: "<b>Сохранить и полностью перезапустить VPN</b> (stop → start) — заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall, соединение на пару секунд прерывается. Нужно при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».",
+    SEC_LOG: "Журнал",
+    BTN_GET_DIAG: "Получить диагностические данные",
+    LOG_WAITING: "Ожидание данных…",
+    MODAL_UPDATE_TITLE: "Обновление",
+    INSTALL_LABEL: "Установить:",
+    ARIA_INSTALL_MODE: "Способ установки",
+    OPT_INSTALL_AUTO: "Автоматически (последняя)",
+    OPT_INSTALL_VERSION: "Выбрать версию",
+    OPT_INSTALL_FILE: "Вручную через файл",
+    PH_VERSION: "напр. 1.1.49",
+    ARIA_VERSION_TO_INSTALL: "Версия для установки",
+    ARIA_IPK_FILE: "Файл .ipk для установки",
+    BTN_CHECK_UPDATES: "Проверить обновления",
+    BTN_CLOSE: "Закрыть",
+    MODAL_DIAG_TITLE: "Диагностические данные",
+    BTN_COPY_DIAG: "Скопировать диагностические данные",
+    DIAG_COPY_NOTE: "Копируется вместе с журналом, обёрнуто для вставки в Telegram."
+}
+};
+// T(key, ...args): current-lang -> en -> key. {0},{1}.. are positional args.
+function T(key){
+    var d = AWG_I18N[AWG_LANG] || AWG_I18N.en;
+    var s = (d[key] != null) ? d[key] : (AWG_I18N.en[key] != null ? AWG_I18N.en[key] : key);
+    for (var i = 1; i < arguments.length; i++){ s = s.replace('{'+(i-1)+'}', arguments[i]); }
+    return s;
+}
+// Localize static DOM tagged with data-i18n* attributes. Called first in initial().
+function applyI18n(){
+    var i, el, nodes;
+    nodes = document.querySelectorAll('[data-i18n]');
+    for(i=0;i<nodes.length;i++){ el=nodes[i]; el.textContent = T(el.getAttribute('data-i18n')); }
+    nodes = document.querySelectorAll('[data-i18n-html]');
+    for(i=0;i<nodes.length;i++){ el=nodes[i]; el.innerHTML = T(el.getAttribute('data-i18n-html')); }
+    nodes = document.querySelectorAll('[data-i18n-ph]');
+    for(i=0;i<nodes.length;i++){ el=nodes[i]; el.setAttribute('placeholder', T(el.getAttribute('data-i18n-ph'))); }
+    nodes = document.querySelectorAll('[data-i18n-title]');
+    for(i=0;i<nodes.length;i++){ el=nodes[i]; el.setAttribute('title', T(el.getAttribute('data-i18n-title'))); }
+    nodes = document.querySelectorAll('[data-i18n-aria]');
+    for(i=0;i<nodes.length;i++){ el=nodes[i]; el.setAttribute('aria-label', T(el.getAttribute('data-i18n-aria'))); }
+    nodes = document.querySelectorAll('[data-i18n-val]');
+    for(i=0;i<nodes.length;i++){ el=nodes[i]; el.value = T(el.getAttribute('data-i18n-val')); }
+}
+// Localize backend upload-error codes (see amneziawg.sh). Falls back to a generic message.
+function awgErrText(code){
+    var k = 'ERR_' + String(code||'').toUpperCase();
+    return (AWG_I18N[AWG_LANG] && AWG_I18N[AWG_LANG][k]) || (AWG_I18N.en[k]) || T('ERR_GENERIC');
+}
+
 // Relative handshake age computed CLIENT-SIDE from the raw epoch the backend now emits
 // (hs_epoch). This is what makes the counter tick live every second without a backend
 // round-trip. Returns null when there is no usable epoch (0/absent) so the caller falls
@@ -212,9 +756,9 @@ function awgAgo(epoch){
     if(!epoch || epoch <= 0) return null;
     var d = Math.floor(Date.now() / 1000) - epoch;
     if(d < 0) d = 0;
-    if(d < 60) return d + ' с назад';
-    if(d < 3600) return Math.floor(d / 60) + ' мин назад';
-    return Math.floor(d / 3600) + ' ч назад';
+    if(d < 60) return T('AGO_SEC', d);
+    if(d < 3600) return T('AGO_MIN', Math.floor(d / 60));
+    return T('AGO_HOUR', Math.floor(d / 3600));
 }
 
 // Mirror of the backend human_size() (1 decimal, GiB/MiB/KiB/B) so RX/TX can be formatted
@@ -258,6 +802,7 @@ function loadV2flyCategories(){
 }
 
 function initial(){
+    applyI18n();
     show_menu();
     loadSettings();
     awgRefreshStatus();
@@ -341,27 +886,27 @@ function recomputeUpdate(){
     refreshModalState();
 }
 
-// Single header button: "Обновить до vX" when an update is available, else
-// "Текущая версия — vX". Both open the modal (check / changelog / update happen there).
+// Single header button: "update available" label when one exists, else the current-version
+// label. Both open the modal (check / changelog / update happen there).
 function renderVersionButton(){
     var ub = document.getElementById('awg_update_btn');
     if(!ub) return;
     ub.style.display = 'inline';
-    var label = (awgUpdateAvailable && awgLatestVersion) ? ('Обновить v' + awgCurrentVersion + ' до v' + awgLatestVersion)
-              : (awgCurrentVersion ? ('Текущая версия — v' + awgCurrentVersion) : 'Версия / обновления');
+    var label = (awgUpdateAvailable && awgLatestVersion) ? T('BTN_UPDATE_TO', awgCurrentVersion, awgLatestVersion)
+              : (awgCurrentVersion ? T('BTN_CURRENT_VERSION', awgCurrentVersion) : T('BTN_VERSION_UPDATES'));
     ub.innerHTML = '<input type="button" class="button_gen" value="' + escHtml(label) + '" onclick="openUpdateModal();" style="font-size:11px; padding:2px 10px;">';
 }
 
-// Update the modal's status line + "Обновить" button (only while the modal is open).
+// Update the modal's status line + install button (only while the modal is open).
 function refreshModalState(){
     var m = document.getElementById('awg_update_modal');
     if(!m || m.style.display === 'none') return;
     var st = document.getElementById('awg_modal_status');
     if(st){
-        if(awgChecking) st.textContent = 'Проверка обновлений…';
-        else if(awgCheckFailed) st.textContent = '⚠ Не удалось проверить обновления (GitHub недоступен)';
-        else if(awgUpdateAvailable && awgLatestVersion) st.textContent = 'Доступно обновление: v' + awgLatestVersion;
-        else st.textContent = 'Обновлений нет' + (awgCurrentVersion ? ' — установлена v' + awgCurrentVersion : '');
+        if(awgChecking) st.textContent = T('MSG_CHECKING_UPDATES');
+        else if(awgCheckFailed) st.textContent = T('MSG_CHECK_FAILED');
+        else if(awgUpdateAvailable && awgLatestVersion) st.textContent = T('MSG_UPDATE_AVAILABLE', awgLatestVersion);
+        else st.textContent = T('MSG_NO_UPDATES') + (awgCurrentVersion ? T('MSG_NO_UPDATES_INSTALLED', awgCurrentVersion) : '');
     }
 }
 
@@ -382,7 +927,7 @@ function syncViaVpnToggles(){
 
 function doUpdate(version){
     var badge = document.getElementById('awg_badge');
-    if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; Обновление…'; }
+    if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; ' + escHtml(T('STAT_UPDATING')); }
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
     // The modal just closed — scroll to the log so the user can watch the update progress.
     var _lb = document.getElementById('awg_log');
@@ -439,9 +984,9 @@ function openUpdateModal(){
     // Show the changelog of the version you'd update to, or the installed one if up to date
     var ref = (awgUpdateAvailable && awgLatestVersion) ? awgLatestVersion : (awgCurrentVersion || awgLatestVersion || '');
     if(title) title.textContent = (awgUpdateAvailable && awgLatestVersion)
-        ? ('Обновление до v' + awgLatestVersion)
-        : ('История изменений' + (awgCurrentVersion ? ' — v' + awgCurrentVersion : ''));
-    if(body) body.innerHTML = '<div style="opacity:0.7;">Загрузка списка изменений…</div>';
+        ? T('MODAL_UPDATE_TO', awgLatestVersion)
+        : (T('MODAL_CHANGELOG') + (awgCurrentVersion ? T('MODAL_CHANGELOG_VER', awgCurrentVersion) : ''));
+    if(body) body.innerHTML = '<div style="opacity:0.7;">' + escHtml(T('MODAL_LOADING_CHANGELOG')) + '</div>';
     m.style.display = 'block';
     awgModalPrevFocus = document.activeElement;
     document.addEventListener('keydown', awgModalKeydown);
@@ -450,16 +995,16 @@ function openUpdateModal(){
     awgManualUI(false);    // hide any leftover upload progress
     awgManualEnd(false);   // re-enable the install button
     awgModeUI();           // show the input matching the current mode
-    refreshModalState();   // status line + "Обновить" button visibility
+    refreshModalState();   // status line + install button visibility
     loadChangelog(ref, function(text, ok){
         if(!body) return;
         if(ok && text){ body.innerHTML = mdToHtml(text); body.scrollTop = 0; }
-        else { body.innerHTML = '<div style="opacity:0.7;">Не удалось загрузить список изменений.</div>'; }
+        else { body.innerHTML = '<div style="opacity:0.7;">' + escHtml(T('MODAL_CHANGELOG_FAILED')) + '</div>'; }
     });
 }
 
 function closeUpdateModal(){
-    if(awgUploading && !confirm('Идёт загрузка/установка. Закрыть окно и прекратить отслеживание?')) return;
+    if(awgUploading && !confirm(T('MSG_CLOSE_DURING_UPLOAD'))) return;
     awgRun++;             // invalidate any in-flight upload/poll loops
     awgManualEnd(false);  // reset the install button + awgUploading flag
     document.removeEventListener('keydown', awgModalKeydown);
@@ -481,7 +1026,7 @@ function awgModeUI(){
     var fin = document.getElementById('awg_ipk_file');
     if(vin) vin.style.display = (mode === 'version') ? '' : 'none';
     if(fin) fin.style.display = (mode === 'file') ? '' : 'none';
-    // When the user picks "Выбрать версию", focus the version field right away.
+    // When the user picks the "choose version" mode, focus the version field right away.
     if(mode === 'version' && vin){ try { vin.focus(); vin.select(); } catch(e){} }
 }
 
@@ -496,8 +1041,8 @@ function installUpdate(){
     if(mode === 'file'){
         var fsel = document.getElementById('awg_ipk_file');
         var f = (fsel && fsel.files && fsel.files[0]) || null;
-        if(!f){ alert('Выберите .ipk файл для установки.'); return; }
-        if(!/\.ipk$/i.test(f.name) && !confirm('Файл не похож на .ipk. Всё равно установить?')) return;
+        if(!f){ alert(T('MSG_PICK_IPK')); return; }
+        if(!/\.ipk$/i.test(f.name) && !confirm(T('MSG_NOT_IPK_CONFIRM'))) return;
         awgManualStart(f);
         return;
     }
@@ -505,9 +1050,9 @@ function installUpdate(){
     if(mode === 'version'){
         var inp = document.getElementById('awg_version_input');
         var v = ((inp && inp.value) || '').trim().replace(/^v/i, '');
-        if(!v){ alert('Введите версию в формате X.Y.Z, например 1.1.49'); return; }
-        if(!/^\d+\.\d+\.\d+$/.test(v)){ alert('Версия в формате X.Y.Z, например 1.1.49'); return; }
-        if(awgCurrentVersion && v === awgCurrentVersion && !confirm('Версия v' + v + ' уже установлена. Переустановить?')) return;
+        if(!v){ alert(T('MSG_ENTER_VERSION')); return; }
+        if(!/^\d+\.\d+\.\d+$/.test(v)){ alert(T('MSG_VERSION_FORMAT')); return; }
+        if(awgCurrentVersion && v === awgCurrentVersion && !confirm(T('MSG_VERSION_INSTALLED_REINSTALL', v))) return;
         closeUpdateModal();
         doUpdate(v);
         return;
@@ -515,7 +1060,7 @@ function installUpdate(){
 
     // auto -> latest. If we're already on the newest, say so instead of a no-op update.
     if(!awgUpdateAvailable){
-        alert('У вас последняя версия' + (awgCurrentVersion ? ' (v' + awgCurrentVersion + ')' : '') + '.');
+        alert(T('MSG_LATEST_VERSION', awgCurrentVersion ? T('MSG_LATEST_VERSION_VER', awgCurrentVersion) : ''));
         return;
     }
     closeUpdateModal();
@@ -551,13 +1096,13 @@ function awgSetProgress(frac, msg){
 function awgManualEnd(uploading){
     awgUploading = uploading;
     var btn = document.getElementById('awg_install_btn');
-    if(btn){ btn.disabled = uploading; btn.value = uploading ? 'Установка…' : 'Установить'; }
+    if(btn){ btn.disabled = uploading; btn.value = uploading ? T('BTN_INSTALLING') : T('BTN_INSTALL'); }
 }
 function awgManualFail(msg){
     awgManualEnd(false);
     awgSetProgress(0, '');
     awgManualUI(false);
-    alert('Не удалось установить: ' + msg);
+    alert(T('MSG_INSTALL_FAILED', msg));
 }
 
 // Encode a Uint8Array to base64 without blowing the call stack on large files.
@@ -636,14 +1181,14 @@ function awgManualStart(file){
     var myRun = ++awgRun;   // claim a new generation; supersedes any prior upload's loops
     awgManualEnd(true);
     awgManualUI(true);
-    awgSetProgress(0, 'Чтение файла…');
+    awgSetProgress(0, T('UP_READING_FILE'));
 
     var reader = new FileReader();
-    reader.onerror = function(){ awgManualFail('не удалось прочитать файл.'); };
+    reader.onerror = function(){ awgManualFail(T('UP_READ_FAILED')); };
     reader.onload = function(){
         var bytes = new Uint8Array(reader.result);
         var total = bytes.length;
-        if(total === 0){ awgManualFail('файл пуст.'); return; }
+        if(total === 0){ awgManualFail(T('UP_FILE_EMPTY')); return; }
         var b64 = awgBytesToB64(bytes);
 
         // Size each chunk so the whole POST (current settings + chunk, URL-encoded) stays
@@ -653,7 +1198,7 @@ function awgManualStart(file){
         // -256: the "amng_custom=" prefix, the other form fields, and the chunk key names
         // (awg_ipk_chunk/seq/token/first) that ride along in the same POST body.
         var budget = 52000 - baseLen - 256;
-        if(budget < 2000){ awgManualFail('настройки слишком велики для загрузки файла через UI.'); return; }
+        if(budget < 2000){ awgManualFail(T('UP_SETTINGS_TOO_BIG')); return; }
         var chunkChars = Math.floor(budget / 1.06);
         var total_chunks = Math.ceil(b64.length / chunkChars);
         var token = 'u' + Date.now() + Math.floor(Math.random() * 1e9).toString(36);
@@ -668,28 +1213,28 @@ function awgManualStart(file){
         }
         function attemptChunk(i, extra, attempt){
             if(awgStale(myRun)) return;
-            awgSetProgress(i / total_chunks, 'Загрузка ' + (i + 1) + '/' + total_chunks + '…');
+            awgSetProgress(i / total_chunks, T('UP_PROGRESS', i + 1, total_chunks));
             awgPostSettings('start_awgupload', extra, 1, function(){
                 awgPollAck(token, i, 15000, myRun, function(ack){
                     if(ack && ack.status === 'ok'){ sendChunk(i + 1); return; }
                     if(ack && (ack.status === 'gap' || ack.status === 'err')){
-                        awgManualFail((ack.msg ? ack.msg + ' ' : 'сбой передачи ') + '(часть ' + (i + 1) + '/' + total_chunks + ').');
+                        awgManualFail((ack.code ? awgErrText(ack.code) + ' ' : (ack.msg ? ack.msg + ' ' : T('UP_TRANSFER_FAILED'))) + T('UP_PART', i + 1, total_chunks));
                         return;
                     }
                     if(attempt < 4){ attemptChunk(i, extra, attempt + 1); return; }   // timeout -> retry
-                    awgManualFail('нет ответа роутера (часть ' + (i + 1) + '/' + total_chunks + ').');
+                    awgManualFail(T('UP_NO_ROUTER_RESPONSE', i + 1, total_chunks));
                 });
             });
         }
         function triggerInstall(){
             if(awgStale(myRun)) return;
-            awgSetProgress(1, 'Проверка и установка пакета…');
+            awgSetProgress(1, T('UP_VERIFYING'));
             awgPostSettings('start_awgmanualinstall', { awg_ipk_len: String(total), awg_ipk_token: token }, 30, function(){
                 awgPollManualInstall(token, myRun);
             });
         }
 
-        awgSetProgress(0, 'Загрузка 1/' + total_chunks + '…');
+        awgSetProgress(0, T('UP_PROGRESS', 1, total_chunks));
         sendChunk(0);
     };
     reader.readAsArrayBuffer(file);
@@ -710,11 +1255,11 @@ function awgPollManualInstall(token, runId){
             var j = null;
             try { j = JSON.parse(x.responseText); } catch(e){}
             if(j && j.tok === token && j.status === 'installed'){
-                awgSetProgress(1, 'Готово! Перезагрузка страницы…');
+                awgSetProgress(1, T('UP_DONE_RELOADING'));
                 setTimeout(awgReload, 1500);
                 return;
             }
-            if(j && j.tok === token && j.status === 'install_err'){ awgManualFail(j.msg || 'установка не удалась.'); return; }
+            if(j && j.tok === token && j.status === 'install_err'){ awgManualFail(j.code ? awgErrText(j.code) : T('UP_INSTALL_FAILED')); return; }
             if(Date.now() - t0 > 180000){ awgManualEnd(false); awgReload(); return; }
             setTimeout(tick, 2000);
         };
@@ -817,7 +1362,7 @@ function loadSettings(){
 function saveSettings(){ applyConfig('start_awgsaveconf'); }
 
 function forceApply(){
-    if(!confirm('VPN будет полностью перезапущен (stop → start) — соединение временно прервётся (устройства с политикой VPN потеряют доступ на несколько секунд). Заодно пересоберутся маршруты и firewall. Продолжить?')) return;
+    if(!confirm(T('MSG_FORCE_RESTART_CONFIRM'))) return;
     applyConfig('start_awgforceapply');
 }
 
@@ -831,7 +1376,7 @@ function awgSetApplyBusy(busy){
     var b = awgApplyBtns();
     for(var i = 0; i < b.length; i++){
         b[i].disabled = busy;
-        if(busy){ b[i]._lbl = b[i].value; b[i].value = 'Применение…'; }
+        if(busy){ b[i]._lbl = b[i].value; b[i].value = T('BTN_APPLYING'); }
         else if(b[i]._lbl){ b[i].value = b[i]._lbl; }
     }
 }
@@ -867,7 +1412,7 @@ function updateFirstRun(){
     var fr = document.getElementById('awg_firstrun');
     if(fr) fr.style.display = empty ? '' : 'none';
     var sb = document.getElementById('btn_start');
-    if(sb){ sb.disabled = empty; sb.title = empty ? 'Сначала импортируйте конфигурацию (.conf)' : ''; }
+    if(sb){ sb.disabled = empty; sb.title = empty ? T('TITLE_IMPORT_FIRST') : ''; }
 }
 
 function applyConfig(actionScript){
@@ -903,7 +1448,7 @@ function applyConfig(actionScript){
     try {
         custom_settings.awg_initdata = initData ? btoa(initData) : '';
     } catch(e){
-        alert('Поля I1–I5 содержат недопустимые (не-ASCII) символы.');
+        alert(T('MSG_INIT_NON_ASCII'));
         return;
     }
 
@@ -936,16 +1481,16 @@ function applyConfig(actionScript){
     var ep = document.getElementById('awg_peer_endpoint').value;
     if(!pk || !pubk || !ep){
         awgFlagField(!pk ? 'awg_privatekey' : (!pubk ? 'awg_peer_pubkey' : 'awg_peer_endpoint'),
-                     'Обязательные поля: Private Key, Peer Public Key и Endpoint.');
+                     T('MSG_REQUIRED_FIELDS'));
         return;
     }
     if(pk.length !== 44 || pubk.length !== 44){
         awgFlagField(pk.length !== 44 ? 'awg_privatekey' : 'awg_peer_pubkey',
-                     'Неверный формат ключа. Ключи должны быть длиной 44 символа (base64).');
+                     T('MSG_BAD_KEY_FORMAT'));
         return;
     }
     if(!/:\d{1,5}$/.test(ep)){
-        awgFlagField('awg_peer_endpoint', 'Endpoint должен содержать порт (например, server:51820).');
+        awgFlagField('awg_peer_endpoint', T('MSG_ENDPOINT_NEEDS_PORT'));
         return;
     }
 
@@ -955,10 +1500,10 @@ function applyConfig(actionScript){
     awgSetApplyBusy(true);
     awgPostSettings(actionScript, null, null, function(ok){
         awgSetApplyBusy(false);
-        awgShowAck(ok ? 'Сохранено ✓' : 'Не удалось отправить — повторите', ok);
+        awgShowAck(ok ? T('ACK_SAVED') : T('ACK_SEND_FAILED'), ok);
     });
     // No full-page reload: status + log refresh live via polling. Reloading after a
-    // form POST makes the browser prompt to resubmit the form ("Повторить отправку").
+    // form POST makes the browser prompt to resubmit the form ("resubmit form").
 }
 
 // === Routing: per-device with individual policies ===
@@ -984,21 +1529,21 @@ function addClientRow(ip, name, policy){
     var tr = document.createElement('tr');
     policy = policy || 'vpn_all';
     tr.innerHTML =
-        '<td><input type="text" class="client_ip input_25_table" style="width:100%;" value="' + escHtml(ip) + '" placeholder="192.168.1.100" aria-label="IP-адрес устройства"></td>' +
-        '<td><input type="text" class="client_name input_25_table" style="width:100%;" value="' + escHtml(name) + '" placeholder="iPhone, PS5, TV..." aria-label="Имя устройства"></td>' +
-        '<td><select class="client_policy input_option" onchange="updateGeoVisibility();" style="width:100%;" aria-label="Политика маршрутизации устройства">' +
-            '<option value="vpn_all"' + (policy==='vpn_all'?' selected':'') + '>VPN: весь трафик</option>' +
-            '<option value="vpn_geo"' + (policy==='vpn_geo'?' selected':'') + '>VPN: только Geo</option>' +
-            '<option value="direct"' + (policy==='direct'?' selected':'') + '>Напрямую</option>' +
+        '<td><input type="text" class="client_ip input_25_table" style="width:100%;" value="' + escHtml(ip) + '" placeholder="192.168.1.100" aria-label="' + escHtml(T('ARIA_DEVICE_IP')) + '"></td>' +
+        '<td><input type="text" class="client_name input_25_table" style="width:100%;" value="' + escHtml(name) + '" placeholder="iPhone, PS5, TV..." aria-label="' + escHtml(T('ARIA_DEVICE_NAME')) + '"></td>' +
+        '<td><select class="client_policy input_option" onchange="updateGeoVisibility();" style="width:100%;" aria-label="' + escHtml(T('ARIA_DEVICE_POLICY')) + '">' +
+            '<option value="vpn_all"' + (policy==='vpn_all'?' selected':'') + '>' + escHtml(T('OPT_VPN_ALL')) + '</option>' +
+            '<option value="vpn_geo"' + (policy==='vpn_geo'?' selected':'') + '>' + escHtml(T('OPT_VPN_GEO')) + '</option>' +
+            '<option value="direct"' + (policy==='direct'?' selected':'') + '>' + escHtml(T('OPT_DIRECT')) + '</option>' +
         '</select></td>' +
-        '<td style="text-align:center;"><button type="button" class="awg-remove-btn" aria-label="Удалить устройство" title="Удалить" onclick="awgRemoveClientRow(this);">&times;</button></td>';
+        '<td style="text-align:center;"><button type="button" class="awg-remove-btn" aria-label="' + escHtml(T('ARIA_REMOVE_DEVICE')) + '" title="' + escHtml(T('TITLE_REMOVE')) + '" onclick="awgRemoveClientRow(this);">&times;</button></td>';
     tbody.appendChild(tr);
     updateGeoVisibility();
 }
 
 // Remove a device row with one-level undo: a mis-tap on the × (which sits right next to the
 // policy select) is easy, and the deletion only becomes permanent on Apply. Stash the row
-// and offer "Отменить" near the Add buttons.
+// and offer an "Undo" link near the Add buttons.
 var awgLastRemoved = null;
 function awgRemoveClientRow(btn){
     var tr = btn.closest('tr');
@@ -1018,7 +1563,7 @@ function awgRenderUndo(){
     var bar = document.getElementById('awg_client_undo');
     if(!bar) return;
     if(awgLastRemoved){
-        bar.innerHTML = 'Устройство удалено. <a href="javascript:void(0)" onclick="awgUndoRemove();" style="color:#5db0ff;">Отменить</a>';
+        bar.innerHTML = escHtml(T('MSG_DEVICE_REMOVED')) + ' <a href="javascript:void(0)" onclick="awgUndoRemove();" style="color:#5db0ff;">' + escHtml(T('BTN_UNDO')) + '</a>';
         bar.style.display = '';
     } else { bar.style.display = 'none'; bar.innerHTML = ''; }
 }
@@ -1110,17 +1655,17 @@ function loadGeoSettings(){
 function updateGeoLists(){
     if(awgGeoBusy) return;
     var btn = document.getElementById('btn_geo_update');
-    var isDownload = btn && btn.value === 'Скачать списки';
+    var isDownload = btn && btn.value === T('BTN_GEO_DOWNLOAD');
     var msg = isDownload
-        ? 'Скачать все списки GeoIP и доменов?\nЭто может занять 1–2 минуты.'
-        : 'Принудительно перекачать все списки GeoIP и доменов?\nЭто может занять 1–2 минуты.';
+        ? T('MSG_DOWNLOAD_LISTS_CONFIRM')
+        : T('MSG_REDOWNLOAD_LISTS_CONFIRM');
     var wipe = document.getElementById('awg_geo_wipe_update');
     if(wipe && wipe.checked){
-        msg += '\n\nВключена «Очистка перед обновлением»: все скачанные geo-списки будут удалены перед загрузкой. При сбое загрузки списки останутся отсутствующими.';
+        msg += T('MSG_WIPE_BEFORE_UPDATE');
     }
     if(!confirm(msg)) return;
     var log = document.getElementById('awg_log');
-    if(log) log.textContent = 'Загрузка geo-списков… Подождите.';
+    if(log) log.textContent = T('MSG_GEO_LOADING_WAIT');
     awgSetGeoBusy(true);
     // Carry the current "download via VPN" choice even without a prior Apply.
     syncViaVpnToggles();
@@ -1130,7 +1675,7 @@ function updateGeoLists(){
     // No reload: geo progress and result show live in the log + status via polling.
 }
 
-// Geo update takes 1-2 min. Disable the button + show "Загрузка…" so it isn't re-triggered;
+// Geo update takes 1-2 min. Disable the button + show a loading label so it isn't re-triggered;
 // updateStatusUI clears it when the backend reports geo_busy=false, with a safety timeout
 // so we always recover even if that flag never arrives.
 var awgGeoBusy = false;
@@ -1140,7 +1685,7 @@ function awgSetGeoBusy(busy){
     awgGeoBusy = busy;
     if(busy) awgGeoBusySeen = false;
     var btn = document.getElementById('btn_geo_update');
-    if(btn){ btn.disabled = busy; if(busy) btn.value = 'Загрузка…'; }
+    if(btn){ btn.disabled = busy; if(busy) btn.value = T('BTN_GEO_LOADING'); }
     if(awgGeoBusyTimer){ clearTimeout(awgGeoBusyTimer); awgGeoBusyTimer = null; }
     if(busy) awgGeoBusyTimer = setTimeout(function(){ awgSetGeoBusy(false); }, 180000);
 }
@@ -1183,7 +1728,7 @@ function fetchDhcpClients(){
 function fetchDhcpLeases(){
     // Fallback when the get_clientlist hook is unavailable: ask for IPs directly.
     // (Parsing the firmware's client pages is version-specific and unreliable.)
-    var input = prompt('Не удалось получить список клиентов DHCP.\nВведите IP устройств для добавления (через запятую):');
+    var input = prompt(T('MSG_DHCP_FAILED'));
     if(input) addManualIPs(input);
 }
 
@@ -1195,9 +1740,9 @@ function showClientPicker(clients){
     awgDhcpClients = clients;
     var rows = '<div style="display:flex; align-items:center; gap:10px; padding:4px 4px; border-bottom:1px solid #555; font-size:11px; text-transform:uppercase; color:#b6bdc7; letter-spacing:0.5px;">' +
                '<span style="width:13px; flex:0 0 auto;"></span>' +
-               '<span style="min-width:115px; flex:0 0 auto; text-align:center;">IP-адрес</span>' +
+               '<span style="min-width:115px; flex:0 0 auto; text-align:center;">' + escHtml(T('DHCP_COL_IP')) + '</span>' +
                '<span style="min-width:140px; flex:0 0 auto; text-align:center;">MAC</span>' +
-               '<span style="flex:1; text-align:center;">Имя</span>' +
+               '<span style="flex:1; text-align:center;">' + escHtml(T('DHCP_COL_NAME')) + '</span>' +
                '</div>';
     for(var i = 0; i < clients.length; i++){
         rows += '<label class="awg-dhcp-row" style="display:flex; align-items:center; gap:10px; padding:6px 4px; border-bottom:1px solid #3a4548;">' +
@@ -1211,23 +1756,23 @@ function showClientPicker(clients){
     ov.id = 'awg_dhcp_modal';
     ov.setAttribute('role', 'dialog');
     ov.setAttribute('aria-modal', 'true');
-    ov.setAttribute('aria-label', 'Выбор устройств из DHCP');
+    ov.setAttribute('aria-label', T('ARIA_DHCP_PICK'));
     ov.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); z-index:10001;';
     ov.innerHTML =
         '<div style="background:#2b3338; color:#e0e0e0; width:90%; max-width:520px; margin:6% auto; border:1px solid #444; border-radius:8px; display:flex; flex-direction:column; max-height:80vh;">' +
             '<div style="padding:12px 16px; border-bottom:1px solid #444; display:flex; align-items:center;">' +
-                '<span style="font-weight:bold;">Устройства из DHCP</span>' +
-                '<button type="button" aria-label="Закрыть" onclick="awgCloseDhcp();" style="margin-left:auto; background:transparent; border:none; color:inherit; font-size:22px; cursor:pointer;">&times;</button>' +
+                '<span style="font-weight:bold;">' + escHtml(T('DHCP_TITLE')) + '</span>' +
+                '<button type="button" aria-label="' + escHtml(T('ARIA_CLOSE')) + '" onclick="awgCloseDhcp();" style="margin-left:auto; background:transparent; border:none; color:inherit; font-size:22px; cursor:pointer;">&times;</button>' +
             '</div>' +
             '<div style="padding:8px 16px; overflow:auto; font-size:12px;">' + rows + '</div>' +
             '<div style="padding:10px 16px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">' +
-                '<span style="font-size:12px;">Политика:</span>' +
-                '<select id="awg_dhcp_policy" class="awg-modal-input" aria-label="Политика для выбранных устройств">' +
-                    '<option value="vpn_all">VPN: весь трафик</option>' +
-                    '<option value="vpn_geo">VPN: только Geo</option>' +
-                    '<option value="direct">Напрямую</option>' +
+                '<span style="font-size:12px;">' + escHtml(T('DHCP_POLICY_LABEL')) + '</span>' +
+                '<select id="awg_dhcp_policy" class="awg-modal-input" aria-label="' + escHtml(T('ARIA_DHCP_POLICY')) + '">' +
+                    '<option value="vpn_all">' + escHtml(T('OPT_VPN_ALL')) + '</option>' +
+                    '<option value="vpn_geo">' + escHtml(T('OPT_VPN_GEO')) + '</option>' +
+                    '<option value="direct">' + escHtml(T('OPT_DIRECT')) + '</option>' +
                 '</select>' +
-                '<input type="button" class="button_gen" value="Добавить выбранные" onclick="awgAddDhcpSelected();" style="margin-left:auto;">' +
+                '<input type="button" class="button_gen" value="' + escHtml(T('DHCP_ADD_SELECTED')) + '" onclick="awgAddDhcpSelected();" style="margin-left:auto;">' +
             '</div>' +
         '</div>';
     document.body.appendChild(ov);
@@ -1278,7 +1823,7 @@ function awgAction(action){
 
     // Show transitional status
     badge.className = 'awg-status connecting';
-    badge.innerHTML = isStop ? '&#9679; Остановка…' : '&#9679; Подключение…';
+    badge.innerHTML = isStop ? ('&#9679; ' + escHtml(T('STAT_STOPPING'))) : ('&#9679; ' + escHtml(T('STAT_CONNECTING')));
 
     // Poll until status is fully ready
     var attempts = 0;
@@ -1324,15 +1869,15 @@ function awgCopyText(text, done){
         awgCopyFallback(text, done);
     }
 }
-// Diagnostics: "Получить диагностические данные" triggers the backend diag dump (to a SEPARATE
+// Diagnostics: the "Get diagnostic data" button triggers the backend diag dump (to a SEPARATE
 // file — it does NOT touch the on-page log), waits for [DIAG_DONE], and shows the result in a
-// modal. The modal's "Скопировать диагностические данные" copies the diagnostics PLUS the
+// modal. The modal's "Copy diagnostic data" copies the diagnostics PLUS the
 // current log, wrapped for Telegram — the copy happens inside the click, so it's reliable.
 var awgDiagText = '';
 function awgRunDiag(btn){
-    if(btn){ if(btn._dlbl == null) btn._dlbl = btn.value; btn.value = 'Сбор данных…'; btn.disabled = true; }
+    if(btn){ if(btn._dlbl == null) btn._dlbl = btn.value; btn.value = T('DIAG_COLLECTING'); btn.disabled = true; }
     awgDiagText = '';
-    awgOpenDiag('Сбор диагностических данных… Подождите.');
+    awgOpenDiag(T('DIAG_COLLECTING_WAIT'));
     // Carry current settings (no-op save) and fire the diag event (does NOT reset the log).
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = 'start_awgdiag';
@@ -1361,11 +1906,11 @@ function awgDiagFinish(btn, txt, timedOut){
     awgDiagText = report;
     var body = document.getElementById('awg_diag_body');
     if(body){
-        body.textContent = report || (timedOut ? 'Не удалось получить диагностику (таймаут). Попробуйте ещё раз.' : 'Диагностика пуста.');
+        body.textContent = report || (timedOut ? T('DIAG_TIMEOUT') : T('DIAG_EMPTY'));
         body.scrollTop = 0;
     }
     var note = document.getElementById('awg_diag_note');
-    if(note) note.textContent = (timedOut && report) ? '⚠ Сбор не завершился по таймауту — данные могут быть неполными.' : '';
+    if(note) note.textContent = (timedOut && report) ? T('DIAG_TIMEOUT_NOTE') : '';
 }
 // Diagnostics modal open/close (+ Esc).
 var awgDiagPrevFocus = null;
@@ -1387,21 +1932,21 @@ function awgCloseDiag(){
     if(awgDiagPrevFocus){ try { awgDiagPrevFocus.focus(); } catch(e){} awgDiagPrevFocus = null; }
 }
 function awgDiagKeydown(e){ if(e.key === 'Escape' || e.keyCode === 27) awgCloseDiag(); }
-// "Скопировать диагностические данные": diagnostics + current log, wrapped for a Telegram post.
+// "Copy diagnostic data": diagnostics + current log, wrapped for a Telegram post.
 function awgCopyDiagReport(btn){
-    if(!awgDiagText){ alert('Данные ещё не собраны — подождите завершения сбора.'); return; }
+    if(!awgDiagText){ alert(T('DIAG_NOT_READY')); return; }
     var lbox = document.getElementById('awg_log');
     var log = lbox ? String(lbox.textContent || lbox.innerText || '').replace(/\s+$/, '') : '';
-    var combined = awgDiagText + (log ? ('\n\n===== ЖУРНАЛ =====\n' + log) : '');
+    var combined = awgDiagText + (log ? ('\n\n' + T('DIAG_LOG_HEADER') + '\n' + log) : '');
     awgCopyText('```\n' + combined + '\n```', function(ok){
         if(btn){
             if(btn._lbl == null) btn._lbl = btn.value;
-            btn.value = ok ? 'Скопировано ✓' : 'Не удалось';
+            btn.value = ok ? T('DIAG_COPIED') : T('DIAG_COPY_FAILED');
             setTimeout(function(){ if(btn._lbl != null){ btn.value = btn._lbl; btn._lbl = null; } }, 1500);
         }
         alert(ok
-            ? 'Диагностика и журнал скопированы в буфер обмена — можно сразу вставить в сообщение Telegram.'
-            : 'Не удалось скопировать. Выделите текст в окне и скопируйте вручную (Ctrl+C).');
+            ? T('DIAG_COPIED_ALERT')
+            : T('DIAG_COPY_FAILED_ALERT'));
     });
 }
 function awgCopyFallback(text, done){
@@ -1471,7 +2016,7 @@ function onStatusFail(){
         if(statusFails >= 6){
             var b = document.getElementById('awg_badge');
             b.className = 'awg-status connecting';
-            b.innerHTML = '&#9679; Роутер не отвечает…';
+            b.innerHTML = '&#9679; ' + escHtml(T('STAT_ROUTER_NO_RESPONSE'));
         }
         return;
     }
@@ -1493,34 +2038,34 @@ function updateStatusUI(s){
 
     if(s.stopping){
         badge.className = 'awg-status connecting';
-        badge.innerHTML = '&#9679; Остановка…';
+        badge.innerHTML = '&#9679; ' + escHtml(T('STAT_STOPPING'));
         document.getElementById('btn_start').style.display = 'none';
         document.getElementById('btn_stop').style.display = 'none';
         document.getElementById('btn_restart').style.display = 'none';
     } else if(s.running){
         badge.className = 'awg-status running';
-        badge.innerHTML = '&#9679; Подключено';
+        badge.innerHTML = '&#9679; ' + escHtml(T('STAT_CONNECTED'));
         document.getElementById('btn_start').style.display = 'none';
         document.getElementById('btn_stop').style.display = '';
         document.getElementById('btn_restart').style.display = '';
     } else if(s.starting){
         badge.className = 'awg-status connecting';
-        badge.innerHTML = '&#9679; Подключение…';
+        badge.innerHTML = '&#9679; ' + escHtml(T('STAT_CONNECTING'));
         document.getElementById('btn_start').style.display = 'none';
         document.getElementById('btn_stop').style.display = '';
         document.getElementById('btn_restart').style.display = 'none';
     } else {
         badge.className = 'awg-status stopped';
-        badge.innerHTML = '&#9679; Остановлено';
+        badge.innerHTML = '&#9679; ' + escHtml(T('STAT_STOPPED'));
         document.getElementById('btn_start').style.display = '';
         document.getElementById('btn_stop').style.display = 'none';
         document.getElementById('btn_restart').style.display = 'none';
     }
 
     info.innerHTML = '';
-    if(s.interface_addr) info.innerHTML += 'Адрес: ' + escHtml(s.interface_addr) + '<br>';
-    if(s.public_key) info.innerHTML += 'Открытый ключ: ' + escHtml(s.public_key.substring(0,12)) + '...<br>';
-    if(s.listen_port) info.innerHTML += 'Порт: ' + escHtml(s.listen_port) + '<br>';
+    if(s.interface_addr) info.innerHTML += escHtml(T('INFO_ADDRESS')) + escHtml(s.interface_addr) + '<br>';
+    if(s.public_key) info.innerHTML += escHtml(T('INFO_PUBLIC_KEY')) + escHtml(s.public_key.substring(0,12)) + '...<br>';
+    if(s.listen_port) info.innerHTML += escHtml(T('INFO_PORT')) + escHtml(s.listen_port) + '<br>';
 
     // Keep the raw peers for the live handshake ticker (re-read every second).
     awgLastPeers = (s.peers && s.peers.length) ? s.peers : [];
@@ -1533,7 +2078,7 @@ function updateStatusUI(s){
             // strings if they're absent (older status file, e.g. right after an upgrade).
             var rxStr = awgHumanSize(p.rx_bytes); if(rxStr === null) rxStr = p.transfer_rx || '0 B';
             var txStr = awgHumanSize(p.tx_bytes); if(txStr === null) txStr = p.transfer_tx || '0 B';
-            var hsStr = awgAgo(p.hs_epoch);       if(hsStr === null) hsStr = p.latest_handshake || 'никогда';
+            var hsStr = awgAgo(p.hs_epoch);       if(hsStr === null) hsStr = p.latest_handshake || T('HS_NEVER');
             html += '<tr>';
             html += '<td>' + escHtml(p.endpoint || '-') + '</td>';
             html += '<td>' + escHtml(p.allowed_ips || '-') + '</td>';
@@ -1550,10 +2095,10 @@ function updateStatusUI(s){
     var rulesEl = document.getElementById('awg_active_rules');
     if(s.running){
         var infoParts = [];
-        if(s.active_rules > 0) infoParts.push(s.active_rules + ' правил маршрутизации');
-        if(s.ipset_count > 0) infoParts.push(s.ipset_count + ' диапазонов IP');
-        if(s.geo_domains > 0) infoParts.push(s.geo_domains + ' правил по доменам');
-        rulesEl.innerHTML = 'Активно: ' + (infoParts.join(' &middot; ') || 'нет правил');
+        if(s.active_rules > 0) infoParts.push(T('RULES_ROUTING', s.active_rules));
+        if(s.ipset_count > 0) infoParts.push(T('RULES_IPRANGES', s.ipset_count));
+        if(s.geo_domains > 0) infoParts.push(T('RULES_DOMAINS', s.geo_domains));
+        rulesEl.innerHTML = escHtml(T('ACTIVE_PREFIX')) + (infoParts.join(' &middot; ') || escHtml(T('NO_RULES')));
         rulesEl.style.color = '#93E7FF';
     } else {
         rulesEl.innerHTML = '';
@@ -1570,9 +2115,9 @@ function updateStatusUI(s){
     if(geoBtn && !awgGeoBusy){
         geoBtn.disabled = false;
         if(s.geo_downloaded){
-            geoBtn.value = 'Обновить сейчас';
+            geoBtn.value = T('BTN_GEO_UPDATE_NOW');
         } else {
-            geoBtn.value = 'Скачать списки';
+            geoBtn.value = T('BTN_GEO_DOWNLOAD');
             geoBtn.style.fontWeight = 'bold';
         }
     }
@@ -1605,19 +2150,19 @@ function renderCoexistWarning(s){
     if(!needPolicy && !needDns){ el.style.display = 'none'; el.innerHTML = ''; return; }
 
     var steps = '';
-    if(needPolicy) steps += '<li>Смените <b>Политику по умолчанию</b> с <b>«VPN — весь трафик»</b> на <b>«Напрямую»</b> или <b>«VPN — только Geo»</b> — иначе маршрутизация заберёт у ' + escHtml(tool) + ' весь трафик.</li>';
-    if(needDns) steps += '<li>Включите галочку <b>«Не перехватывать DNS»</b> (блок «Совместимость с zapret2/xray») — чтобы перехват :53 не конфликтовал с ' + escHtml(tool) + '.</li>';
+    if(needPolicy) steps += T('COEX_STEP_POLICY', escHtml(tool));
+    if(needDns) steps += T('COEX_STEP_DNS', escHtml(tool));
 
-    el.innerHTML = '⚠ Обнаружен <b>' + escHtml(tool) + '</b> на роутере. Чтобы AmneziaWG не конфликтовал с ним и не оставил сеть без интернета:'
+    el.innerHTML = T('COEX_HEADER', escHtml(tool))
         + '<ul style="margin:5px 0 4px 0; padding-left:20px;">' + steps + '</ul>'
-        + '<span style="opacity:0.85;">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>';
+        + T('COEX_FOOTER');
     el.style.display = '';
 }
 
 function setOfflineUI(){
     var badge = document.getElementById('awg_badge');
     badge.className = 'awg-status stopped';
-    badge.innerHTML = '&#9679; Остановлено';
+    badge.innerHTML = '&#9679; ' + escHtml(T('STAT_STOPPED'));
     document.getElementById('btn_start').style.display = '';
     document.getElementById('btn_stop').style.display = 'none';
     document.getElementById('btn_restart').style.display = 'none';
@@ -1650,7 +2195,7 @@ function parseConfig(text){
     var hadPk = !!((document.getElementById('awg_privatekey') || {}).value);
     var hadPub = !!((document.getElementById('awg_peer_pubkey') || {}).value);
     var hadEp = !!((document.getElementById('awg_peer_endpoint') || {}).value);
-    if((hadPk || hadPub || hadEp) && !confirm('Импорт заменит текущие настройки интерфейса и пира. Продолжить?')) return;
+    if((hadPk || hadPub || hadEp) && !confirm(T('MSG_IMPORT_REPLACE_CONFIRM'))) return;
 
     // Reset all import-target fields first, so values absent from the imported
     // config don't keep stale values (e.g. an old S4 lingering after import).
@@ -1717,10 +2262,10 @@ function parseConfig(text){
     var gotEp = !!((document.getElementById('awg_peer_endpoint') || {}).value);
     updateFirstRun();
     if(!gotPk && !gotPub && !gotEp){
-        alert('Не удалось распознать конфигурацию: не найдены поля [Interface]/[Peer] (PrivateKey, PublicKey, Endpoint). Проверьте, что это .conf из приложения Amnezia / WireGuard.');
+        alert(T('MSG_IMPORT_UNRECOGNIZED'));
         return;
     }
-    alert('Конфиг импортирован. Проверьте поля и нажмите «Применить».');
+    alert(T('MSG_IMPORT_OK'));
 }
 
 function setVal(id, val){
@@ -1906,10 +2451,10 @@ function initAutocompleteIp(){
                 <div>&nbsp;</div>
                 <div class="formfonttitle" style="display:flex; flex-wrap:wrap; align-items:center; gap:10px;">
                     <span style="font-size:20px; font-weight:bold; letter-spacing:1px;">AmneziaWG</span>
-                    <span style="font-size:13px; font-weight:normal;">VPN-клиент</span>
-                    <a href="https://storage.googleapis.com/amnezia/amnezia.org" target="_blank" style="margin-left:auto; display:flex; align-items:center; text-decoration:none;" title="Сайт Amnezia"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAPV0lEQVR4nKyaCXQc5X3Af3PsqWN1rXX5knzK2CDjMwETm9jBNUnKSxsHEpJAk5A2DSYtLwmP5pU2BNricCQ4D0pbHGxwqE2DbRIOO2DjC2PLBzb4vi9J1rmrPWZmZ+brm9VK2pV2V+a1/3mfdjXfN//r+3//a1YVQtAHTzy5nGsHkf5PETAduAMoGOaJ08BG4ARgfwqC/fDTB3/S/11KF2DBkiWoHv+wCExDk41Y91xgIfAVYDwik3HF7UVR3RixcC407cBuYAPw9uiqUZdkR0SHnz6WzG6w4mCbICyuxmVilsLOrTv6kajpGEc3LqZq8mfzMn/1dNOEC/vfegrBF/Otq2mYR2X9dJpeXz54t1IgKoAvpvAkaioqH7n/9rufHlsW1PqXXF4FHbsg3gZaFz9r8vJea0kGlgwB2ueWoH25NitDVntXcXjl2seiWzf/AJAzWMmyXlYUisqr8BQE0CJd+WR1wPXB4b2PHzlz7P4HvvTNZQumzX7N43JnXzmImDx0hTRkRN95f07zN5cdiPxh8w8FyCKFR+Rg3rlZUBLE7y+gZlxjyiyGDjFodEfC1f/8u9+s+/5vHll3uaO1eAhaZ90gilkESHtAN6SOR5/5aedjv94lorH6bESzDgS+ohJcqsLYhlkMFjhD8CwTxy+d+8tvPPmTj7YePzt9KFOfQoCOx3798+jmbf+arvVcRAcPl8eHokBVTT1eX2FOree6NEMf+9CbR3e8e06bnc67GN6EeqH7xVe/Gt2y88e5NJzzEoKCimpKq0aiyOD1qDTOXThAfMjIbl6p4V++W3vxaKeo7tPcYBNSs+1OxxPP/TCycdOvsguY1eqT4B1RzbjbvkZV9QS8Hh8uSeCWBTfNX8yShXNoOX8GS9PZd/Ajmj46iG3nxtUHXZq47p7NrmO/vUWuQ9A5mHxGHFiy4SXn47aO5c+tSwWna+EbyaXiqR1JzS23MaphDoUJiSLnIEuCItUZNmMr/dSWefHYAskQ/GnrDp76r38npsWvhQQlbutglVeffyzsD+3Z+WH//Ywd0M+eq46s3/xbhCjKhaiPiCTLuBbegnrjNEonTqTI9lMckZE0UGSRRKxKNi5F4HYJdE3HrXiQJAlJgUU3zWNCTT2/XPk8h04eycN6L3TrSmO37n8euCv9foaJ9Kx780mRSFTlM9W+G76bZ+H/8Q/wLJyH7Pcj2RKSDYoARRKoKrhd4HILXC6BbRskTAvJcQcKyTGmppYnHniE22/+Qpp6UiO7y10qhLg1qwBbtm75DIK78vu8XiKS103gvrtAdpi2wRRgOa5K4KQDipQSQnGYJymMqkA0rvWikiREMsQIXG4XP/rG97n95kWZPGcnL4N4Op5mdkkBIpGI9IvHf/HEtfh4qaqCogfvxVUdxHCyMTOBbEmgJ9CuXk0KIElgmRqmEUPCRFVttHgPa15dy5lz57GFjdQrZXInHLN6YOl9rHroaXxuzzA8cP1Tzzz17QwB1ry65vZwT/jmYVwaUqCAklX/iP/W2chIyTgtmxbakWOc/PnP6Ni7E9mWkkiP793Je79/BVmyECSorSlj95793Ps3f8/Dj/4LF1uugBsUl50UwuWSCZYW0Vg3Li8PjhC/f/315afPnPH1C7Bt+7a7s21bxvC6KHno63gVNx7nQSGhCht901Zalj+FcbWF0vHTUmdBcOHIRxze/QHtLVdwu2XKA8U03nAdlmWxffcevvN3D/LO9q1IHgnVLZBcAp9H8Midf8HYYFlOGVJfgtu2b1uSFCAcDnuOHju2cDjTKVo0i9I50yhMJvwylikwnl9N+NmV2LqBK1BO8Yg6ZNPJgHVazp7Ctm3WrVyN3+1Keq3bFs3r5yQajfLYM79ixaqVCGECcSQpgs9tsOKbX+C7N9WxeGIx993o4/5Gm3+4Mczogni/Qpua9iYFUJv2NU1FiPK8PkySGLlkDkXIqELF1OHsL1fQs3lb/5LS+qm4LBXZgssnDqPFIsn7F86epfXcZeoqypkypZ7SsgCdnaHknCUsfrdhPaWFPr6+8HNIIowkegh4De6dPQLiEiJ6lR1nLZ5s8ifrgb5IvG///gXJHTh69OjM4VKbkuvqGDVpHGX4KLA8XFz9Oj2b3s/Y2+DEWai6hGzA+cN7M+a2b9uVxKTINp9fMDv9QKLIMqFQG8LuRtghhB0GOwRWFCFivPyJxkM7FFpjUvKZPpy6rgWvNF8pVpv27/uyGJwhpStflpj13aWUiSI028XpnXu5vGZ9hmd1+YoIjpicFECYOpdPHSId585de3jgh/ficdvc/fU/48CBo8iyxNwbG7j9c7OpLPKR6GlHMbpwWV1gRcCK8T+Hwzy3Tycj4xj4Xrhv374Fqq5plUNSvDQIjB9NYW0VVy9cJNTawYnnV2ObZsaaEWMa8Vs+VAPaLpxEj0cyCIa6w7z91tvMnNFAbW0pL/3nw5BIIOk6lhZHD7UjEt0oVgjMMCQiRGIRXtgTwR5SNQ/wqht6pZq1KEm7UTpmFM0HjyNMidildqKXWoY84PVV0nz0ED7Jy9lj72XM+3w+Fi+8FVs32bNzD7UjS5kxfQKKZYClY8RDbNv7MW++/zFaNM4L35oIiSi2EeOuyRYdUYN1Jz3ZtSv6cqFcOyDJjAjW474qYydsug6cgEEZpKJ6KfGMQgqbGHYEU9MYN+YmvF6Z6upKRtaUUx6QwY4i2RZtl1ugoQbbjvHS2u2s2bCXcERLMlMVcIMegkQPxVKMeydrrDvuFPQ5ykvHC/UdpmxQUBCgIF6CiAokU6L7wqWBfDz1ESgajdtwgQmyDZNqv4DLbeL1GRQUWrhtkBIWsmU5foeKch+KFeHypSv8x5odmGkKEcICLQK6M6JEjBj/faIoxV8WJpM7kK3MSYHPU4LdZvc+a0Ms3Jmx1O8uY2xwHnKc3lxIEsiWQMLG5ZYId3bQ3NyKrnfR0tGC1y3zo2/Nh1iESr+gLODlamdsgB9bIIwokh4HO8b6kzLne9ScibZIptMCcnkht12A1O1JpgymZWJaCRTJRVlBHZWl0ygvHIckFNCTeVkSTDnO+bYmmruO0KMN7UZs2n6IxlGNqGaEORNL2bg7OkBPtpG0aK8LtXr4oDmQU7ki9Tf7Ie7bAakcogpOjikJmRmjvo1XLUFVUs0vo7e1lsyJnHIpdoaPWzaSsGI5iX54+CxExiQ9zcKGQjZ8MDA/vkwkmXdcaHdc41D7iMwSMgujeU3IKfkc0xWSjY2Ez12dZNdK5sIDSFVJENFbONT8Oqat5SXY2hmFmHNQY9xQKSh0S0T0Xl85vsRJzbVkNy5uWGimlLdKc+Zkt8fdmiv/kRUvumyhySaaksBQTQyXIEoIXdawXQJcNgnC7L/8KglLy53Tp+4ZCYuLF1oh2oXfiDC/3tU/V1eYADPea0K2PWzx73G7W+UZM2ZuzJY+VAaup7x8Cgm3hekRWD7Q3DGOXVrLvhMriHAVfALVb3OqfQt6IpKfYGrCsgUvbbsI0VByJ+653k4WP17FZnYwmnSh2EbyTImMNHoIysismbO2qNdNmdJEmpuSUJIHtHbEbGy3wHYrCLeEc1Zbzx+gq/t40vcXlJehyCbxnmaaOw4PMcN8W//HjyPcOTHB+JIEo/0GUysk/LJJsRQCoSUP1vvNhb2t6xzm7fF42mpqasLy7FmzPxZCdDjrHObrK26hrLCO9p5TtEVOEqWtt2FeICgZMw5JVikJjsFTDB6fTlS/jG1bQ8wvX1Gim4JV+2MIPYys9/CzmV18Z0ob2PFkoDza5eHZw8E0Mxx6zZg5Y4sjiBoIBPQpDQ1/OnLkyNdsLE63bUWIgQREVlxM/dxdFJYHKSsJMm3BHUhGgpJiCZ9t03qhJ4u2h+/3vHka7msIM9Ifp77ABL/ojTWmxE93VxM3pSF40v+bM3vOm/RVZPPnz3+5t6tmYwsrQ1LLMjjZ9AZeV5ySQptxk+pomDqRioBgRADMRCiLlrM2FjKGaUvsb3FcXaI3PUndX34gyIWIK6vW0xC3LZi/YECAe759zx+Li4p35CIWDXVwdNdbBAt0qosTVBUbBH1xAnI3k6tLcrYY80lQpJqM9Bk42YOz4c5nW0Rhw7niLMszzfOrS5f+ePz48cnWRH9nbtPmTZ9ZtmzZrnzbPrZ+JF9beitex8XGdUplmVl1Nbyx9UNWbz3Axa5Y2jbnOHyy4EtjwnxvcieVvsy0vCWmsvitsanQmBMOHTxw8AYny2Vwa3FSw6Q1gztfg/mZ1TiGO+Y3UOwUJJNGoUYi0NOFGQ5x5Fwzu8+0c6YrTkhLgHCG2c9Pscvie5M6mVBiDOBN47UlqnLb22Pzye8czkUnjp94r+9GRmtxTMXcBy+2711gCasqlwTxUIgyutEMhZUbt3HH5CKCUgI5HuH6Ep1pUyQky0YynaqqE0xjgJI0gMrRW5umcCrsZmLAoMJrUeExqXCbtOlqLu2vRfBe+o2MlUXeyubrar94z6GL64c2d1NQW2hTV2ry5Uc/RE/YvPKuwpKJfr4yTmWkR0e1YqhORKYHLKOXZ2mA+UhCZluzn9fOFnOw05c8zBMDOk/PbWZUgcn08jibLg8mLSh1Wwdr/OZff9KdWdwMEXVq7bR3Rpe9//AbB7uyttfnjnVx8tQVNKPX1XbFLF452MMrB6HUA/VFgoZSmBtUGOl1Ue6x0CyJYz0etjYX8O6VAroNJYO5EyE3a88EeHBaB9eXaWy6VDiYbPjFeVc+/8Kx0tAnXXkEKHBF+NtZLxL0GyvGFiitz+40VzvnLkUnCTdVx1i1L5w1QnZpsM8ZbR5ePhHsrQ+k3qVOApg7OgjWnyvi7nHdNJToGRlomcf65MV5zYumlumdIssLjgwNL6x5m6B1HHpaWdYYWre43lg+ODGLdrWz4ZCW/y1NXwwRkEj1fkXexg10GzL37aimqc2bPhX7pxvb/mpqmd7cL+ogLWR4ofETxg9WjWO5PwEez/s+LU/gzVeODAPnUi/RDwyeOH3qdP/3zPe9QwOHA/8mhPisEOJMvreSua7sIXnYl4SvCcENQnAgW0BLB3moZrIS+BDBdAQrENjZiGYPuNfwUjDzahaIrzoDIcI5Bc8lwDAEwwJxv0BMFog//D9pum8kEDyMoN7RfnYdptMaAPXTmyYngT93PKpI/7FHMum+NgSpZRk/9gAuXdvDmZAhwJ133nmtzzlBYFdq/Pxaf26Tgv/zz23S4X8DAAD//6krBRMCzcQhAAAAAElFTkSuQmCC" alt="Amnezia" style="height:20px; border-radius:4px; display:block;"></a>
-                    <a href="https://t.me/asusxray" target="_blank" style="display:flex; align-items:center; gap:5px; text-decoration:none;" title="Telegram-чат"><svg width="20" height="20" viewBox="0 0 24 24" fill="#29a9eb" xmlns="http://www.w3.org/2000/svg" style="display:block;" aria-hidden="true" focusable="false"><path d="m20.665 3.717-17.73 6.837c-1.21.486-1.203 1.161-.222 1.462l4.552 1.42 10.532-6.645c.498-.303.953-.14.579.192l-8.533 7.701h-.002l.002.001-.314 4.692c.46 0 .663-.211.921-.46l2.211-2.15 4.599 3.397c.848.467 1.457.227 1.668-.785l3.019-14.228c.309-1.239-.473-1.8-1.282-1.434z"/></svg><span style="font-size:12px;">Чат</span></a>
-                    <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" title="GitHub репозиторий Merlin AmneziaWG" style="font-size:12px; text-decoration:none;"><img src="https://img.shields.io/github/v/release/william-aqn/asuswrt-merlin-amneziawg?logo=github&label=release" alt="GitHub" style="height:18px; display:block;" onerror="this.onerror=null; this.outerHTML='🐙 GitHub';"></a>
+                    <span style="font-size:13px; font-weight:normal;" data-i18n="LBL_VPN_CLIENT">VPN client</span>
+                    <a href="https://storage.googleapis.com/amnezia/amnezia.org" target="_blank" style="margin-left:auto; display:flex; align-items:center; text-decoration:none;" title="Amnezia website" data-i18n-title="TITLE_AMNEZIA_SITE"><img src="data:image/png;base64,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" alt="Amnezia" style="height:20px; border-radius:4px; display:block;"></a>
+                    <a href="https://t.me/asusxray" target="_blank" style="display:flex; align-items:center; gap:5px; text-decoration:none;" title="Telegram chat" data-i18n-title="TITLE_TG_CHAT"><svg width="20" height="20" viewBox="0 0 24 24" fill="#29a9eb" xmlns="http://www.w3.org/2000/svg" style="display:block;" aria-hidden="true" focusable="false"><path d="m20.665 3.717-17.73 6.837c-1.21.486-1.203 1.161-.222 1.462l4.552 1.42 10.532-6.645c.498-.303.953-.14.579.192l-8.533 7.701h-.002l.002.001-.314 4.692c.46 0 .663-.211.921-.46l2.211-2.15 4.599 3.397c.848.467 1.457.227 1.668-.785l3.019-14.228c.309-1.239-.473-1.8-1.282-1.434z"/></svg><span style="font-size:12px;" data-i18n="LBL_CHAT">Chat</span></a>
+                    <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" title="Merlin AmneziaWG GitHub repository" data-i18n-title="TITLE_GH_REPO" style="font-size:12px; text-decoration:none;"><img src="https://img.shields.io/github/v/release/william-aqn/asuswrt-merlin-amneziawg?logo=github&label=release" alt="GitHub" style="height:18px; display:block;" onerror="this.onerror=null; this.outerHTML='🐙 GitHub';"></a>
                     <span id="awg_update_btn" style="display:none;"></span>
                 </div>
                 <div style="margin:10px 0 10px 5px;" class="splitLine"></div>
@@ -1917,27 +2462,27 @@ function initAutocompleteIp(){
                 <!-- Status & Actions -->
                 <table width="100%" border="0" cellpadding="4" cellspacing="0">
                 <tr>
-                    <th width="20%">Статус</th>
+                    <th width="20%" data-i18n="TH_STATUS">Status</th>
                     <td>
                         <div class="awg-actions">
-                            <span id="awg_badge" class="awg-status connecting">&#9679; Загрузка…</span>
-                            <input type="button" id="btn_start" class="button_gen awg-btn" value="Запустить" onclick="awgAction('start_awgstart');">
-                            <input type="button" id="btn_stop" class="button_gen awg-btn" value="Остановить" style="display:none;" onclick="awgAction('start_awgstop');">
-                            <input type="button" id="btn_restart" class="button_gen awg-btn" value="Перезапустить" style="display:none;" onclick="awgAction('start_awgrestart');">
+                            <span id="awg_badge" class="awg-status connecting" data-i18n-html="STAT_LOADING_BADGE">&#9679; Loading…</span>
+                            <input type="button" id="btn_start" class="button_gen awg-btn" value="Start" data-i18n-val="BTN_START" onclick="awgAction('start_awgstart');">
+                            <input type="button" id="btn_stop" class="button_gen awg-btn" value="Stop" data-i18n-val="BTN_STOP" style="display:none;" onclick="awgAction('start_awgstop');">
+                            <input type="button" id="btn_restart" class="button_gen awg-btn" value="Restart" data-i18n-val="BTN_RESTART" style="display:none;" onclick="awgAction('start_awgrestart');">
                         </div>
                     </td>
                 </tr>
                 <tr>
-                    <th width="20%">Интерфейс</th>
+                    <th width="20%" data-i18n="TH_INTERFACE">Interface</th>
                     <td><span id="awg_info">-</span></td>
                 </tr>
                 </table>
 
                 <!-- First-run empty state: shown by loadSettings() when no key/peer is set yet -->
                 <div id="awg_firstrun" style="display:none; margin:8px 0 2px 0; padding:10px 14px; background:#1b2a33; border:1px solid #2e88c7; border-radius:5px; font-size:12px; line-height:1.55;">
-                    <b>Похоже, конфигурация ещё не задана.</b><br>
-                    Начните с импорта <code>.conf</code>-файла из приложения Amnezia VPN, затем проверьте поля и нажмите «Применить».
-                    <div style="margin-top:6px;"><input type="button" class="button_gen" value="Импорт конфигурации" onclick="importConfig();"></div>
+                    <span data-i18n-html="FIRSTRUN_HTML"><b>It looks like no configuration is set yet.</b><br>
+                    Start by importing a <code>.conf</code> file from the Amnezia VPN app, then check the fields and click «Apply».</span>
+                    <div style="margin-top:6px;"><input type="button" class="button_gen" value="Import configuration" data-i18n-val="BTN_IMPORT_CONFIG" onclick="importConfig();"></div>
                 </div>
 
                 <!-- Coexistence warning: shown by updateStatusUI() when a co-resident proxy/DPI
@@ -1945,17 +2490,17 @@ function initAutocompleteIp(){
                 <div id="awg_coexist_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a2e1a; border:1px solid #f0ad4e; border-radius:5px; color:#f0ad4e; font-size:12px; line-height:1.5;"></div>
 
                 <!-- Peers Table -->
-                <div class="awg-section">Подключённые пиры</div>
+                <div class="awg-section" data-i18n="SEC_CONNECTED_PEERS">Connected peers</div>
                 <div class="awg-tablewrap">
                 <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_peers_table" style="min-width:520px;">
                 <thead><tr>
-                    <td width="25%">Адрес сервера</td>
-                    <td width="25%">Разрешённые IP</td>
-                    <td width="25%">Трафик (приём/передача)</td>
-                    <td width="25%">Последнее рукопожатие</td>
+                    <td width="25%" data-i18n="TH_SERVER_ADDR">Server address</td>
+                    <td width="25%" data-i18n="TH_ALLOWED_IPS">Allowed IPs</td>
+                    <td width="25%" data-i18n="TH_TRAFFIC">Traffic (rx/tx)</td>
+                    <td width="25%" data-i18n="TH_LAST_HANDSHAKE">Last handshake</td>
                 </tr></thead>
                 <tbody id="awg_peers">
-                    <tr><td colspan="4" style="text-align:center; color:#b6bdc7;">Нет пиров</td></tr>
+                    <tr><td colspan="4" style="text-align:center; color:#b6bdc7;" data-i18n="LBL_NO_PEERS">No peers</td></tr>
                 </tbody>
                 </table>
                 </div>
@@ -1964,15 +2509,15 @@ function initAutocompleteIp(){
 
                 <!-- ==================== CONFIG ==================== -->
                 <div class="awg-section" style="display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
-                    <span>Конфигурация</span>
-                    <input type="button" class="button_gen" value="Импорт .conf-файла из клиента Amnezia VPN" onclick="importConfig();" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
+                    <span data-i18n="SEC_CONFIG">Configuration</span>
+                    <input type="button" class="button_gen" value="Import a .conf file from the Amnezia VPN client" data-i18n-val="BTN_IMPORT_CONF_FILE" onclick="importConfig();" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable">
                 <thead><tr><td colspan="2">Interface</td></tr></thead>
                 <tr>
                     <th width="35%">Private Key</th>
-                    <td><input type="text" class="input_32_table awg-secret" id="awg_privatekey" maxlength="64" autocomplete="off" aria-label="Private Key (секрет)"></td>
+                    <td><input type="text" class="input_32_table awg-secret" id="awg_privatekey" maxlength="64" autocomplete="off" aria-label="Private Key (secret)" data-i18n-aria="ARIA_PRIVATE_KEY"></td>
                 </tr>
                 <tr>
                     <th>Address</th>
@@ -2001,7 +2546,7 @@ function initAutocompleteIp(){
                 </tr>
                 <tr>
                     <th>Preshared Key</th>
-                    <td><input type="text" class="input_32_table awg-secret" id="awg_peer_psk" maxlength="64" autocomplete="off" placeholder="(optional)" aria-label="Preshared Key (секрет)"></td>
+                    <td><input type="text" class="input_32_table awg-secret" id="awg_peer_psk" maxlength="64" autocomplete="off" placeholder="(optional)" aria-label="Preshared Key (secret)" data-i18n-aria="ARIA_PRESHARED_KEY"></td>
                 </tr>
                 <tr>
                     <th>Endpoint</th>
@@ -2019,7 +2564,7 @@ function initAutocompleteIp(){
 
                 <!-- ==================== OBFUSCATION ==================== -->
                 <details class="awg-details" style="margin-top:8px;">
-                <summary style="padding:8px 10px; font-weight:bold; text-transform:uppercase; font-size:11px; letter-spacing:0.5px; background:#3a4548; border:1px solid #5a6b70; border-radius:3px; color:#e8edf2;">AmneziaWG Obfuscation <span style="font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;">— параметры обфускации (обычно заполняются импортом конфига) ▾</span></summary>
+                <summary style="padding:8px 10px; font-weight:bold; text-transform:uppercase; font-size:11px; letter-spacing:0.5px; background:#3a4548; border:1px solid #5a6b70; border-radius:3px; color:#e8edf2;" data-i18n-html="OBF_SUMMARY_HTML">AmneziaWG Obfuscation <span style="font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;">— obfuscation parameters (usually filled in by importing a config) ▾</span></summary>
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:6px;">
                 <tr>
                     <th width="35%">Jc (junk packet count)</th>
@@ -2090,65 +2635,65 @@ function initAutocompleteIp(){
 
                 <!-- ==================== ROUTING ==================== -->
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">Политика маршрутизации</td></tr></thead>
+                <thead><tr><td colspan="2" data-i18n="TBL_ROUTING_POLICY">Routing policy</td></tr></thead>
                 <tr>
-                    <th width="35%">Политика по умолчанию</th>
+                    <th width="35%" data-i18n="TH_DEFAULT_POLICY">Default policy</th>
                     <td>
                         <select id="default_policy" class="input_option" onchange="updateGeoVisibility();"
-                                style="font-size:13px; font-weight:bold;" aria-label="Политика по умолчанию">
-                            <option value="direct">Напрямую (без VPN)</option>
-                            <option value="vpn_all">VPN — весь трафик</option>
-                            <option value="vpn_geo">VPN — только Geo</option>
+                                style="font-size:13px; font-weight:bold;" aria-label="Default policy" data-i18n-aria="ARIA_DEFAULT_POLICY">
+                            <option value="direct" data-i18n="OPT_DIRECT_NO_VPN">Direct (no VPN)</option>
+                            <option value="vpn_all" data-i18n="OPT_VPN_ALL_TRAFFIC">VPN — all traffic</option>
+                            <option value="vpn_geo" data-i18n="OPT_VPN_GEO_ONLY">VPN — Geo only</option>
                         </select>
-                        <div class="awg-hint">Применяется к устройствам, которых нет в списке ниже.</div>
-                        <div class="awg-hint">Geo по доменам работает только если устройство использует роутер как DNS (настройка — в блоке Geo ниже).</div>
+                        <div class="awg-hint" data-i18n="HINT_DEFAULT_POLICY">Applied to devices that are not in the list below.</div>
+                        <div class="awg-hint" data-i18n="HINT_GEO_DNS_DEVICE">Geo by domains only works if the device uses the router as its DNS (configured in the Geo block below).</div>
                         <div id="awg_active_rules" style="margin-top:6px; font-size:11px; color:#93E7FF;"></div>
                     </td>
                 </tr>
                 <tr>
-                    <th>Защита от утечек IPv6</th>
+                    <th data-i18n="TH_IPV6_LEAK">IPv6 leak protection</th>
                     <td>
-                        <label><input type="checkbox" id="awg_block_ipv6_dns"> Блокировать разрешение IPv6-адресов в DNS (filter-AAAA)</label>
-                        <div class="awg-hint">Критично для надёжной Geo-маршрутизации. Не даёт доменам с dual-stack (IPv4+IPv6) обходить VPN через IPv6.</div>
+                        <label><input type="checkbox" id="awg_block_ipv6_dns"> <span data-i18n="LBL_BLOCK_IPV6_DNS">Block resolving IPv6 addresses in DNS (filter-AAAA)</span></label>
+                        <div class="awg-hint" data-i18n="HINT_IPV6_DNS">Critical for reliable Geo routing. Stops dual-stack (IPv4+IPv6) domains from bypassing the VPN over IPv6.</div>
                     </td>
                 </tr>
                 <tr>
-                    <th>Kill-switch</th>
+                    <th data-i18n="TH_KILLSWITCH">Kill-switch</th>
                     <td>
-                        <label><input type="checkbox" id="awg_killswitch"> Блокировать VPN-трафик при падении туннеля (strict kill-switch)</label>
-                        <details class="awg-hint"><summary>Блокирует трафик VPN-устройств, если туннель упал (вместо утечки в обход в WAN). По умолчанию выключено. <u>Подробнее</u></summary>Когда включено: если туннель внезапно падает (краш демона / нехватка памяти), трафик устройств с политикой «VPN» не уходит в обход в WAN открытым текстом, а блокируется до восстановления (watchdog поднимает туннель в течение ~5 мин). Выключено — прежнее поведение (трафик может временно идти мимо VPN). Влияет только на устройства с политикой VPN/Geo; при политике по умолчанию «VPN — весь трафик» затрагивает весь LAN.</details>
+                        <label><input type="checkbox" id="awg_killswitch"> <span data-i18n="LBL_KILLSWITCH">Block VPN traffic when the tunnel goes down (strict kill-switch)</span></label>
+                        <details class="awg-hint" data-i18n-html="HINT_KILLSWITCH_HTML"><summary>Blocks traffic of VPN devices if the tunnel goes down (instead of leaking around it to the WAN). Off by default. <u>Details</u></summary>When enabled: if the tunnel suddenly goes down (daemon crash / out of memory), traffic from devices with a «VPN» policy doesn't leak around it to the WAN in cleartext but is blocked until recovery (the watchdog brings the tunnel back within ~5 min). Off — the previous behavior (traffic may temporarily go around the VPN). Affects only devices with a VPN/Geo policy; with the default policy set to «VPN — all traffic» it affects the whole LAN.</details>
                     </td>
                 </tr>
                 <tr>
-                    <th>Адреса проверки туннеля</th>
+                    <th data-i18n="TH_TUNNEL_CHECK_ADDR">Tunnel check addresses</th>
                     <td>
-                        <input type="text" id="awg_watchdog_hosts" maxlength="200" style="width:95%; max-width:320px;" placeholder="8.8.8.8 1.1.1.1" aria-label="Адреса проверки туннеля">
-                        <details class="awg-hint"><summary>Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут (ответил хоть один — туннель живой). <u>Формат и примеры</u></summary><b>Формат:</b> IP или домен, можно несколько — через пробел или запятую (до 4 адресов).<br><b>Пример:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Лучше указывать IP (без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны — иначе watchdog зря перезапускает VPN. Какие адреса проверяются — видно в журнале ниже.</details>
+                        <input type="text" id="awg_watchdog_hosts" maxlength="200" style="width:95%; max-width:320px;" placeholder="8.8.8.8 1.1.1.1" aria-label="Tunnel check addresses" data-i18n-aria="ARIA_TUNNEL_CHECK_ADDR">
+                        <details class="awg-hint" data-i18n-html="HINT_WATCHDOG_HTML"><summary>Addresses the watchdog pings <b>through the tunnel</b> every 5 minutes (if at least one replies, the tunnel is alive). <u>Format and examples</u></summary><b>Format:</b> IP or domain, several allowed — separated by a space or comma (up to 4 addresses).<br><b>Example:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Prefer IPs (no dependency on DNS). Empty = default <b>8.8.8.8</b> and <b>1.1.1.1</b>. Change it if those addresses are blocked/unreachable for you — otherwise the watchdog restarts the VPN needlessly. Which addresses are checked is shown in the log below.</details>
                     </td>
                 </tr>
                 <tr>
-                    <th>Совместимость с zapret2/xray</th>
+                    <th data-i18n="TH_ZAPRET_COMPAT">zapret2/xray compatibility</th>
                     <td>
-                        <label><input type="checkbox" id="awg_no_dns_intercept"> Не перехватывать DNS (совместимость с zapret2 / Xray и др.)</label>
-                        <details class="awg-hint"><summary>Отключает перехват DNS (порт :53). Включите, если рядом работает <b>zapret2</b> или <b>Xray/XRAYUI</b> (v2ray, sing-box) — иначе конфликт DNS может оставить сеть без интернета. <u>Подробнее</u></summary>Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам — только для клиентов, использующих роутер как DNS. Если рядом обнаружен zapret2 / Xray / v2ray / sing-box или правила NFQUEUE/TPROXY, перехват DNS отключается автоматически даже без этой галочки. Важно: галочка решает только конфликт по DNS — при политике «VPN — весь трафик» маршрутизация всё равно заберёт трафик прокси, поэтому для совместимости выбирайте «Напрямую» или «VPN — только Geo».</details>
+                        <label><input type="checkbox" id="awg_no_dns_intercept"> <span data-i18n="LBL_NO_DNS_INTERCEPT">Don't intercept DNS (compatibility with zapret2 / Xray etc.)</span></label>
+                        <details class="awg-hint" data-i18n-html="HINT_NO_DNS_HTML"><summary>Disables DNS interception (port :53). Enable it if <b>zapret2</b> or <b>Xray/XRAYUI</b> (v2ray, sing-box) is running alongside — otherwise a DNS conflict can leave the network without internet. <u>Details</u></summary>Geo by IP (GeoIP/antifilter) keeps working; geo by domains — only for clients using the router as DNS. If zapret2 / Xray / v2ray / sing-box or NFQUEUE/TPROXY rules are detected nearby, DNS interception is disabled automatically even without this checkbox. Important: the checkbox only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».</details>
                     </td>
                 </tr>
                 </table>
 
-                <div class="awg-section">Правила устройств</div>
+                <div class="awg-section" data-i18n="SEC_DEVICE_RULES">Device rules</div>
                 <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="table-layout:fixed;">
                 <thead><tr>
-                    <td width="20%">IP-адрес</td>
-                    <td width="35%">Имя устройства</td>
-                    <td width="41%">Политика</td>
+                    <td width="20%" data-i18n="TH_IP_ADDRESS">IP address</td>
+                    <td width="35%" data-i18n="TH_DEVICE_NAME">Device name</td>
+                    <td width="41%" data-i18n="TH_POLICY">Policy</td>
                     <td width="4%"></td>
                 </tr></thead>
                 <tbody id="awg_client_rows">
                 </tbody>
                 </table>
                 <div style="margin-top:6px; display:flex; align-items:center; flex-wrap:wrap; gap:6px;">
-                    <input type="button" class="button_gen" value="+ Добавить устройство" onclick="addClientRow('','','vpn_all');">
-                    <input type="button" class="button_gen" value="+ Из списка DHCP" onclick="fetchDhcpClients();">
+                    <input type="button" class="button_gen" value="+ Add device" data-i18n-val="BTN_ADD_DEVICE" onclick="addClientRow('','','vpn_all');">
+                    <input type="button" class="button_gen" value="+ From DHCP list" data-i18n-val="BTN_FROM_DHCP" onclick="fetchDhcpClients();">
                     <span id="awg_client_undo" style="display:none; font-size:12px; margin-left:4px;"></span>
                 </div>
 
@@ -2156,103 +2701,103 @@ function initAutocompleteIp(){
                 <div id="geo_section" style="display:none;">
 
                 <div style="border:1px solid #fc0; border-radius:4px; padding:10px 14px; margin-top:10px; font-size:12px; color:#fc0;">
-                    <b>Важно:</b> Для работы VPN Geo устройства должны использовать роутер как DNS-сервер.<br>
-                    iPhone: Настройки &gt; Wi-Fi &gt; (i) &gt; DNS &gt; Вручную &gt; только <% nvram_get("lan_ipaddr"); %><br>
-                    macOS/Windows: укажите <% nvram_get("lan_ipaddr"); %> как DNS в настройках сети. Отключите DNS-over-HTTPS в браузере.
+                    <span data-i18n-html="GEO_DNS_IMPORTANT_HTML"><b>Important:</b> For VPN Geo to work, devices must use the router as their DNS server.<br>
+                    iPhone: Settings &gt; Wi-Fi &gt; (i) &gt; DNS &gt; Manual &gt; only </span><% nvram_get("lan_ipaddr"); %><br>
+                    <span data-i18n="GEO_DNS_MACOS_PREFIX">macOS/Windows: set </span><% nvram_get("lan_ipaddr"); %><span data-i18n-html="GEO_DNS_MACOS_HTML"> as DNS in your network settings. Disable DNS-over-HTTPS in the browser.</span>
                 </div>
 
                 <!-- Shown by updateStatusUI() when geo routing is on but lists aren't downloaded yet -->
                 <div id="awg_geo_notdl" style="display:none; border:1px solid #f0ad4e; border-radius:4px; padding:9px 12px; margin-top:8px; font-size:12px; color:#f0ad4e;">
-                    ⚠ Списки ещё не загружены — без них Geo-маршрутизация не работает.
-                    <input type="button" class="button_gen" value="Скачать списки" onclick="updateGeoLists();" style="font-size:11px; padding:2px 8px; margin-left:6px;">
+                    <span data-i18n="BANNER_LISTS_NOT_LOADED">⚠ Lists aren't downloaded yet — without them Geo routing doesn't work.</span>
+                    <input type="button" class="button_gen" value="Download lists" data-i18n-val="BTN_DOWNLOAD_LISTS" onclick="updateGeoLists();" style="font-size:11px; padding:2px 8px; margin-left:6px;">
                 </div>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">GeoIP — маршрут по IP сервисов</td></tr></thead>
+                <thead><tr><td colspan="2" data-i18n="TBL_GEOIP">GeoIP — route by service IPs</td></tr></thead>
                 <tr>
-                    <th width="35%">Списки сервисов GeoIP<br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">github.com/Loyalsoldier/geoip</span></th>
+                    <th width="35%"><span data-i18n="TH_GEOIP_LISTS">GeoIP service lists</span><br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">github.com/Loyalsoldier/geoip</span></th>
                     <td>
                         <input type="text" class="input_32_table" id="awg_geo_v2fly_ip" style="width:95%;" maxlength="512"
                             placeholder="telegram,google,facebook,twitter,netflix,cloudflare">
-                        <div class="awg-hint">Через запятую. Доступно: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + коды стран (us, ru, cn, …).</div>
-                        <div class="awg-hint" style="color:#f0ad4e;">⚠ Для youtube, discord, microsoft, github, openai и т.п. IP-списков НЕТ — используйте GeoSite ниже.</div>
+                        <div class="awg-hint" data-i18n="HINT_GEOIP">Comma-separated. Available: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + country codes (us, ru, cn, …).</div>
+                        <div class="awg-hint" style="color:#f0ad4e;" data-i18n="HINT_GEOIP_WARN">⚠ There are NO IP lists for youtube, discord, microsoft, github, openai etc. — use GeoSite below.</div>
                     </td>
                 </tr>
                 </table>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">GeoSite — маршрут по сервисам / доменам</td></tr></thead>
+                <thead><tr><td colspan="2" data-i18n="TBL_GEOSITE">GeoSite — route by services / domains</td></tr></thead>
                 <tr>
-                    <th width="35%">Списки сервисов GeoSite<br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">github.com/v2fly/domain-list-community</span></th>
+                    <th width="35%"><span data-i18n="TH_GEOSITE_LISTS">GeoSite service lists</span><br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">github.com/v2fly/domain-list-community</span></th>
                     <td>
                         <input type="text" class="input_32_table" id="awg_geo_v2fly" style="width:95%;" maxlength="512"
                             placeholder="youtube,google,discord,netflix,telegram,twitter,instagram,facebook,tiktok,spotify">
-                        <div class="awg-hint">Через запятую. 1500+ списков: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …</div>
+                        <div class="awg-hint" data-i18n="HINT_GEOSITE">Comma-separated. 1500+ lists: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …</div>
                     </td>
                 </tr>
                 <tr>
-                    <th>Свои домены</th>
+                    <th data-i18n="TH_CUSTOM_DOMAINS">Custom domains</th>
                     <td>
                         <input type="text" class="input_32_table" id="geo_custom_domains" style="width:95%;"
                                maxlength="2000" placeholder="example.com,another.org,service.net">
-                        <div class="awg-hint">Через запятую. Резолвятся через DNS → маршрутизируются в VPN.</div>
+                        <div class="awg-hint" data-i18n="HINT_CUSTOM_DOMAINS">Comma-separated. Resolved via DNS → routed into the VPN.</div>
                     </td>
                 </tr>
                 <tr>
-                    <th>Свои IP / подсети</th>
+                    <th data-i18n="TH_CUSTOM_IPS">Custom IPs / subnets</th>
                     <td>
                         <input type="text" class="input_32_table" id="geo_custom_ips" style="width:95%;"
                                maxlength="2000" placeholder="8.8.8.8,1.1.1.0/24,203.0.113.0/24">
-                        <div class="awg-hint">Через запятую: отдельные IP или подсети CIDR.</div>
+                        <div class="awg-hint" data-i18n="HINT_CUSTOM_IPS">Comma-separated: individual IPs or CIDR subnets.</div>
                     </td>
                 </tr>
                 </table>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">Geo Antifilter — РКН-списки (antifilter.download)</td></tr></thead>
+                <thead><tr><td colspan="2" data-i18n="TBL_ANTIFILTER">Geo Antifilter — RKN lists (antifilter.download)</td></tr></thead>
                 <tr>
-                    <th width="35%">Antifilter IP-списки<br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">antifilter.download</span></th>
+                    <th width="35%"><span data-i18n="TH_ANTIFILTER_IP">Antifilter IP lists</span><br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">antifilter.download</span></th>
                     <td>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="allyouneed"> allyouneed — все нужные подсети (~15K) <span style="color:#5bd75b;">рекомендуется</span></label>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community"> community — подсети сообщества (~900)</label>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipsum"> ipsum — IP, сжатые до /24 (~15K)</label>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="subnet"> subnet — крупные подсети (~78)</label>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ip"> ip — отдельные IP (~48K)</label>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipresolve"> ipresolve — IP из DNS-резолва (~154K) <span style="color:#f0ad4e;">⚠ очень большой</span></label>
-                        <div class="awg-hint">Добавляются к спискам GeoIP и маршрутизируются через VPN. allyouneed = ipsum + subnet; ip/ipresolve сильно пересекаются с allyouneed — обычно достаточно allyouneed.</div>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="allyouneed"><span data-i18n="AF_ALLYOUNEED"> allyouneed — all the needed subnets (~15K) </span><span style="color:#5bd75b;" data-i18n="AF_RECOMMENDED">recommended</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community"><span data-i18n="AF_COMMUNITY"> community — community subnets (~900)</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipsum"><span data-i18n="AF_IPSUM"> ipsum — IPs compressed to /24 (~15K)</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="subnet"><span data-i18n="AF_SUBNET"> subnet — large subnets (~78)</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ip"><span data-i18n="AF_IP"> ip — individual IPs (~48K)</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipresolve"><span data-i18n="AF_IPRESOLVE"> ipresolve — IPs from DNS resolution (~154K) </span><span style="color:#f0ad4e;" data-i18n="AF_IPRESOLVE_WARN">⚠ very large</span></label>
+                        <div class="awg-hint" data-i18n="HINT_ANTIFILTER_IP">Added to the GeoIP lists and routed through the VPN. allyouneed = ipsum + subnet; ip/ipresolve overlap heavily with allyouneed — allyouneed is usually enough.</div>
                     </td>
                 </tr>
                 <tr>
-                    <th>Antifilter домены</th>
+                    <th data-i18n="TH_ANTIFILTER_DOMAINS">Antifilter domains</th>
                     <td>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community_domains"> community домены (~485) → dnsmasq</label>
-                        <div class="awg-hint">Полный domains.lst (1.4M доменов / 27 МБ) не поддерживается — слишком большой для dnsmasq на роутере.</div>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community_domains"><span data-i18n="AF_COMMUNITY_DOMAINS"> community domains (~485) → dnsmasq</span></label>
+                        <div class="awg-hint" data-i18n="HINT_ANTIFILTER_DOMAINS">The full domains.lst (1.4M domains / 27 MB) isn't supported — too large for dnsmasq on the router.</div>
                     </td>
                 </tr>
                 </table>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">Настройки обновления Geo</td></tr></thead>
+                <thead><tr><td colspan="2" data-i18n="TBL_GEO_UPDATE">Geo update settings</td></tr></thead>
                 <tr>
-                    <th width="35%">Автообновление списков</th>
+                    <th width="35%" data-i18n="TH_AUTOUPDATE">Auto-update lists</th>
                     <td>
-                        <label><input type="checkbox" id="geo_autoupdate"> Ежедневно в 4:00</label>
+                        <label><input type="checkbox" id="geo_autoupdate"> <span data-i18n="LBL_DAILY_4AM">Daily at 4:00</span></label>
                         &nbsp;&nbsp;
-                        <input type="button" class="button_gen" id="btn_geo_update" value="Обновить сейчас" onclick="updateGeoLists();">
+                        <input type="button" class="button_gen" id="btn_geo_update" value="Update now" data-i18n-val="BTN_GEO_UPDATE_NOW" onclick="updateGeoLists();">
                     </td>
                 </tr>
                 <tr>
-                    <th>Очистка перед обновлением</th>
+                    <th data-i18n="TH_WIPE_BEFORE">Wipe before update</th>
                     <td>
-                        <label><input type="checkbox" id="awg_geo_wipe_update"> Удалять все geo-файлы перед полным обновлением / обновлением программы</label>
-                        <div class="awg-hint">Выключено (по умолчанию): существующие geo-списки сохраняются, в том числе при обновлении программы (без повторной загрузки). Включено: очистка перед перекачкой (чистый набор, но при сбое загрузки какой-то список останется отсутствующим).</div>
+                        <label><input type="checkbox" id="awg_geo_wipe_update"> <span data-i18n="LBL_WIPE_BEFORE">Delete all geo files before a full update / program update</span></label>
+                        <div class="awg-hint" data-i18n="HINT_WIPE_BEFORE">Off (default): existing geo lists are kept, including during a program update (no re-download). On: wipe before re-downloading (a clean set, but if a download fails some list will stay missing).</div>
                     </td>
                 </tr>
                 <tr>
-                    <th>Имя ipset</th>
+                    <th data-i18n="TH_IPSET_NAME">ipset name</th>
                     <td>
-                        <input type="text" id="awg_ipset_name" maxlength="31" style="width:95%; max-width:260px;" placeholder="awg_dst" aria-label="Имя ipset">
-                        <div class="awg-hint">Имя ipset-набора для GeoIP/antifilter-подсетей (маршрутизируются через VPN). По умолчанию <code>awg_dst</code>. Набор, <b>созданный самим аддоном</b>, удаляется при остановке, а при смене имени удаляется и старый — висяков/утечек не остаётся. Если указать набор, который <b>уже создан другим подключением/инструментом</b>, аддон лишь добавляет в него записи и не трогает при остановке (общий набор). Допустимы буквы, цифры и <code>_ . -</code>, до 31 символа; пусто = <code>awg_dst</code>.</div>
+                        <input type="text" id="awg_ipset_name" maxlength="31" style="width:95%; max-width:260px;" placeholder="awg_dst" aria-label="ipset name" data-i18n-aria="ARIA_IPSET_NAME">
+                        <div class="awg-hint" data-i18n-html="HINT_IPSET_HTML">The name of the ipset set for GeoIP/antifilter subnets (routed through the VPN). Default <code>awg_dst</code>. A set <b>created by the addon itself</b> is removed on stop, and when the name changes the old one is removed too — no leftovers/leaks. If you specify a set that's <b>already created by another connection/tool</b>, the addon only adds entries to it and doesn't touch it on stop (a shared set). Letters, digits and <code>_ . -</code> are allowed, up to 31 characters; empty = <code>awg_dst</code>.</div>
                     </td>
                 </tr>
                 </table>
@@ -2263,40 +2808,40 @@ function initAutocompleteIp(){
                 <!-- Outside geo_section: the program-update toggle must show even when no
                      device uses geo routing. -->
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2">Загрузка через VPN (обход блокировок)</td></tr></thead>
+                <thead><tr><td colspan="2" data-i18n="TBL_DOWNLOAD_VIA_VPN">Download via VPN (bypass blocking)</td></tr></thead>
                 <tr>
-                    <th width="35%">Geo-списки через VPN</th>
+                    <th width="35%" data-i18n="TH_GEO_VIA_VPN">Geo lists via VPN</th>
                     <td>
-                        <label><input type="checkbox" id="awg_geo_via_awg"> Загружать geo-списки через активный AWG-туннель</label>
-                        <div class="awg-hint">Пока туннель поднят, загрузка GeoIP / GeoSite / antifilter идёт через VPN (обход блокировок GitHub / jsDelivr). Если VPN выключен — загрузка идёт напрямую, как раньше.</div>
+                        <label><input type="checkbox" id="awg_geo_via_awg"> <span data-i18n="LBL_GEO_VIA_VPN">Download geo lists through the active AWG tunnel</span></label>
+                        <div class="awg-hint" data-i18n="HINT_GEO_VIA_VPN">While the tunnel is up, downloading GeoIP / GeoSite / antifilter goes through the VPN (bypassing GitHub / jsDelivr blocking). If the VPN is off — the download goes directly, as before.</div>
                     </td>
                 </tr>
                 <tr>
-                    <th>Обновление программы через VPN</th>
+                    <th data-i18n="TH_UPDATE_VIA_VPN">Program update via VPN</th>
                     <td>
-                        <label><input type="checkbox" id="awg_update_via_awg"> Загружать обновление программы через активный AWG-туннель</label>
-                        <div class="awg-hint">Проверка версии и загрузка <code>.ipk</code> идут через VPN, пока туннель активен — можно ставить обновления прямо с GitHub в обход региональных блокировок (и проверять SHA256 по GitHub API). DNS-резолвинг остаётся системным; обход работает для блокировок по IP/TCP. Если VPN выключен — напрямую, как раньше.</div>
+                        <label><input type="checkbox" id="awg_update_via_awg"> <span data-i18n="LBL_UPDATE_VIA_VPN">Download the program update through the active AWG tunnel</span></label>
+                        <div class="awg-hint" data-i18n-html="HINT_UPDATE_VIA_VPN">Version check and <code>.ipk</code> download go through the VPN while the tunnel is active — you can install updates straight from GitHub bypassing regional blocking (and verify SHA256 via the GitHub API). DNS resolution stays system-wide; the bypass works for IP/TCP blocking. If the VPN is off — directly, as before.</div>
                     </td>
                 </tr>
                 </table>
 
                 <!-- Apply -->
                 <div style="margin-top:12px; text-align:center;">
-                    <input type="button" class="button_gen" value="Применить" onclick="saveSettings();" title="Сохранить и применить без перезапуска VPN">
-                    <input type="button" class="button_gen" value="Сохранить и полностью перезапустить VPN" onclick="forceApply();" style="margin-left:8px;" title="Сохранить + перезапуск VPN (stop → start) + полная пересборка маршрутов и firewall">
+                    <input type="button" class="button_gen" value="Apply" data-i18n-val="BTN_APPLY" onclick="saveSettings();" title="Save and apply without restarting the VPN" data-i18n-title="TITLE_APPLY">
+                    <input type="button" class="button_gen" value="Save and fully restart the VPN" data-i18n-val="BTN_SAVE_RESTART" onclick="forceApply();" style="margin-left:8px;" title="Save + restart the VPN (stop → start) + full rebuild of routes and firewall" data-i18n-title="TITLE_SAVE_RESTART">
                     <span id="awg_ack_bottom" class="awg-ack"></span>
                 </div>
                 <div style="font-size:11px; opacity:0.7; margin:8px auto 0; max-width:640px; line-height:1.55; text-align:left;">
-                    <div><b>Применить</b> — сохранить настройки и применить их «на лету»: обновляет устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite <b>без разрыва VPN-соединения</b>. Если VPN остановлен — настройки просто сохранятся и применятся при следующем запуске.</div>
-                    <div style="margin-top:4px;"><b>Сохранить и полностью перезапустить VPN</b> (stop → start) — заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall, соединение на пару секунд прерывается. Нужно при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».</div>
+                    <div data-i18n-html="APPLY_DESC1_HTML"><b>Apply</b> — save the settings and apply them «on the fly»: updates devices, routing policies, the firewall and the GeoIP/GeoSite lists <b>without dropping the VPN connection</b>. If the VPN is stopped — the settings are just saved and applied at the next start.</div>
+                    <div style="margin-top:4px;" data-i18n-html="APPLY_DESC2_HTML"><b>Save and fully restart the VPN</b> (stop → start) — the config is re-applied (awg setconf), the interface, routes and firewall are rebuilt, the connection drops for a couple of seconds. Needed when changing keys, the server (Endpoint), MTU or obfuscation parameters (Jc, S1, H1…H4), or if the connection is «stuck».</div>
                 </div>
 
                 <!-- ==================== LOG ==================== -->
                 <div class="awg-section" style="margin-top:15px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
-                    <span>Журнал</span>
-                    <input type="button" class="button_gen" value="Получить диагностические данные" onclick="awgRunDiag(this);" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
+                    <span data-i18n="SEC_LOG">Log</span>
+                    <input type="button" class="button_gen" value="Get diagnostic data" data-i18n-val="BTN_GET_DIAG" onclick="awgRunDiag(this);" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
-                <div id="awg_log" class="awg-log">Ожидание данных…</div>
+                <div id="awg_log" class="awg-log" data-i18n="LOG_WAITING">Waiting for data…</div>
                 <div style="text-align:right; font-size:11px; opacity:0.5; margin-top:4px;">
                     <a href="https://github.com/r0otx/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; r0otx</a>
                     &nbsp;&middot;&nbsp;
@@ -2318,20 +2863,20 @@ function initAutocompleteIp(){
 <div id="awg_update_modal" role="dialog" aria-modal="true" aria-labelledby="awg_modal_title" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); z-index:10000;">
     <div style="background:#2b3338; color:#e0e0e0; width:90%; max-width:680px; margin:4% auto; border:1px solid #444; border-radius:8px; box-shadow:0 6px 40px rgba(0,0,0,0.6); display:flex; flex-direction:column; max-height:84vh;">
         <div style="padding:14px 18px; border-bottom:1px solid #444; display:flex; align-items:center;">
-            <span id="awg_modal_title" style="font-size:16px; font-weight:bold;">Обновление</span>
-            <button type="button" aria-label="Закрыть" onclick="closeUpdateModal();" title="Закрыть" style="margin-left:auto; cursor:pointer; font-size:22px; line-height:1; opacity:0.6; background:transparent; border:none; color:inherit; padding:0;">&times;</button>
+            <span id="awg_modal_title" style="font-size:16px; font-weight:bold;" data-i18n="MODAL_UPDATE_TITLE">Update</span>
+            <button type="button" aria-label="Close" data-i18n-aria="ARIA_CLOSE" onclick="closeUpdateModal();" title="Close" data-i18n-title="BTN_CLOSE" style="margin-left:auto; cursor:pointer; font-size:22px; line-height:1; opacity:0.6; background:transparent; border:none; color:inherit; padding:0;">&times;</button>
         </div>
         <div id="awg_modal_body" style="padding:14px 18px; overflow-y:auto; font-size:12px; line-height:1.5;"></div>
         <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:12px;">
-            <span style="opacity:0.75;">Установить:</span>
-            <select id="awg_install_mode" onchange="awgModeUI();" class="awg-modal-input" aria-label="Способ установки">
-                <option value="auto">Автоматически (последняя)</option>
-                <option value="version">Выбрать версию</option>
-                <option value="file">Вручную через файл</option>
+            <span style="opacity:0.75;" data-i18n="INSTALL_LABEL">Install:</span>
+            <select id="awg_install_mode" onchange="awgModeUI();" class="awg-modal-input" aria-label="Install method" data-i18n-aria="ARIA_INSTALL_MODE">
+                <option value="auto" data-i18n="OPT_INSTALL_AUTO">Automatic (latest)</option>
+                <option value="version" data-i18n="OPT_INSTALL_VERSION">Choose version</option>
+                <option value="file" data-i18n="OPT_INSTALL_FILE">Manually from file</option>
             </select>
-            <input type="text" id="awg_version_input" placeholder="напр. 1.1.49" maxlength="12" class="awg-modal-input" aria-label="Версия для установки" style="width:100px; display:none;">
-            <input type="file" id="awg_ipk_file" accept=".ipk" aria-label="Файл .ipk для установки" style="display:none; color:#e0e0e0; max-width:100%;">
-            <input type="button" id="awg_install_btn" class="button_gen" value="Установить" onclick="installUpdate();">
+            <input type="text" id="awg_version_input" placeholder="e.g. 1.1.49" data-i18n-ph="PH_VERSION" maxlength="12" class="awg-modal-input" aria-label="Version to install" data-i18n-aria="ARIA_VERSION_TO_INSTALL" style="width:100px; display:none;">
+            <input type="file" id="awg_ipk_file" accept=".ipk" aria-label=".ipk file to install" data-i18n-aria="ARIA_IPK_FILE" style="display:none; color:#e0e0e0; max-width:100%;">
+            <input type="button" id="awg_install_btn" class="button_gen" value="Install" data-i18n-val="BTN_INSTALL" onclick="installUpdate();">
         </div>
         <div id="awg_manual_progress" style="display:none; padding:0 18px 12px;">
             <div style="height:10px; background:#1c2226; border:1px solid #555; border-radius:5px; overflow:hidden;">
@@ -2341,8 +2886,8 @@ function initAutocompleteIp(){
         </div>
         <div style="padding:12px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
             <span id="awg_modal_status" style="font-size:12px; opacity:0.75; margin-right:auto;"></span>
-            <input type="button" class="button_gen" value="Проверить обновления" onclick="checkForUpdate();">
-            <input type="button" class="button_gen" value="Закрыть" onclick="closeUpdateModal();" style="margin-left:8px;">
+            <input type="button" class="button_gen" value="Check for updates" data-i18n-val="BTN_CHECK_UPDATES" onclick="checkForUpdate();">
+            <input type="button" class="button_gen" value="Close" data-i18n-val="BTN_CLOSE" onclick="closeUpdateModal();" style="margin-left:8px;">
         </div>
     </div>
 </div>
@@ -2351,15 +2896,15 @@ function initAutocompleteIp(){
 <div id="awg_diag_modal" role="dialog" aria-modal="true" aria-labelledby="awg_diag_title" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); z-index:10002;">
     <div style="background:#2b3338; color:#e0e0e0; width:92%; max-width:760px; margin:4% auto; border:1px solid #444; border-radius:8px; box-shadow:0 6px 40px rgba(0,0,0,0.6); display:flex; flex-direction:column; max-height:86vh;">
         <div style="padding:14px 18px; border-bottom:1px solid #444; display:flex; align-items:center;">
-            <span id="awg_diag_title" style="font-size:16px; font-weight:bold;">Диагностические данные</span>
-            <button type="button" aria-label="Закрыть" onclick="awgCloseDiag();" title="Закрыть" style="margin-left:auto; background:transparent; border:none; color:inherit; font-size:22px; line-height:1; cursor:pointer; opacity:0.6; padding:0;">&times;</button>
+            <span id="awg_diag_title" style="font-size:16px; font-weight:bold;" data-i18n="MODAL_DIAG_TITLE">Diagnostic data</span>
+            <button type="button" aria-label="Close" data-i18n-aria="ARIA_CLOSE" onclick="awgCloseDiag();" title="Close" data-i18n-title="BTN_CLOSE" style="margin-left:auto; background:transparent; border:none; color:inherit; font-size:22px; line-height:1; cursor:pointer; opacity:0.6; padding:0;">&times;</button>
         </div>
         <div id="awg_diag_body" style="padding:14px 18px; overflow:auto; font-family:'Courier New','Lucida Console',monospace; font-size:12px; line-height:1.45; white-space:pre-wrap; word-wrap:break-word;"></div>
         <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
-            <input type="button" class="button_gen" value="Скопировать диагностические данные" onclick="awgCopyDiagReport(this);">
+            <input type="button" class="button_gen" value="Copy diagnostic data" data-i18n-val="BTN_COPY_DIAG" onclick="awgCopyDiagReport(this);">
             <span id="awg_diag_note" style="font-size:11px; color:#f0ad4e;"></span>
-            <span style="font-size:11px; opacity:0.7;">Копируется вместе с журналом, обёрнуто для вставки в Telegram.</span>
-            <input type="button" class="button_gen" value="Закрыть" onclick="awgCloseDiag();" style="margin-left:auto;">
+            <span style="font-size:11px; opacity:0.7;" data-i18n="DIAG_COPY_NOTE">Copied together with the log, wrapped for pasting into Telegram.</span>
+            <input type="button" class="button_gen" value="Close" data-i18n-val="BTN_CLOSE" onclick="awgCloseDiag();" style="margin-left:auto;">
         </div>
     </div>
 </div>

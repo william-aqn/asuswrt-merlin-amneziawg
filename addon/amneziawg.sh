@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.84"
+AWG_VERSION="1.1.85"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -482,6 +482,10 @@ download_all_geo(){
 # duplicates or corrupts either one.
 mount_menu_tree(){
     local page="$1"
+    # Firmware UI language at mount time — gives the header widget a zero-flicker first paint
+    # (it self-corrects from the status JSON "lang" field on its first poll if this goes stale).
+    local pref_lang=$(nvram get preferred_lang 2>/dev/null)
+    [ -z "$pref_lang" ] && pref_lang="EN"
     [ ! -f /tmp/menuTree.js ] && cp /www/require/modules/menuTree.js /tmp/
     # Remove our previous tab line (precise match — does not touch the widget block)
     sed -i '/tabName: "AmneziaWG"/d' /tmp/menuTree.js
@@ -492,7 +496,7 @@ mount_menu_tree(){
     # Append the tiny widget loader (runs on every page; version-stamped for cache-busting)
     cat >> /tmp/menuTree.js <<AWGEOF
 /* AWG_WIDGET_START */
-(function(){try{if(window.__awgWidget)return;window.__awgWidget=1;window.__awgPage='${page}';
+(function(){try{if(window.__awgWidget)return;window.__awgWidget=1;window.__awgPage='${page}';window.__awgLang='${pref_lang}';
 var s=document.createElement('script');s.src='/user/awg_widget.js?v=${AWG_VERSION}';s.async=true;
 (document.head||document.documentElement).appendChild(s);}catch(e){}})();
 /* AWG_WIDGET_END */
@@ -1714,12 +1718,15 @@ update_status(){
         if [ -n "$dump" ]; then
             local p_items=""
             while IFS='	' read -r pkey psk endpoint aips handshake rx tx keepalive; do
-                local hs_text="никогда"
+                # English fallback only (rare: used when hs_epoch is absent on an old status
+                # file). The UI normally renders the live "N ago" client-side from hs_epoch and
+                # localizes it; see awgAgo() in the page and awgComputeAgo() in the widget.
+                local hs_text="never"
                 if [ "$handshake" != "0" ] && [ -n "$handshake" ]; then
                     local ago=$(( $(date +%s) - handshake ))
-                    if [ $ago -lt 60 ]; then hs_text="${ago} с назад"
-                    elif [ $ago -lt 3600 ]; then hs_text="$(( ago / 60 )) мин назад"
-                    else hs_text="$(( ago / 3600 )) ч назад"; fi
+                    if [ $ago -lt 60 ]; then hs_text="${ago} s ago"
+                    elif [ $ago -lt 3600 ]; then hs_text="$(( ago / 60 )) min ago"
+                    else hs_text="$(( ago / 3600 )) h ago"; fi
                 fi
                 local rx_h=$(human_size "${rx:-0}")
                 local tx_h=$(human_size "${tx:-0}")
@@ -1774,6 +1781,11 @@ EOF
     local coexist_warn=false
     [ -n "$dpi_tool" ] && [ "$default_policy" = "vpn_all" ] && coexist_warn=true
 
+    # Firmware UI language (preferred_lang nvram) so the page/widget can localize without a
+    # round-trip. The frontend maps RU -> Russian, everything else -> English. Empty -> EN.
+    local pref_lang=$(nvram get preferred_lang 2>/dev/null)
+    [ -z "$pref_lang" ] && pref_lang="EN"
+
     # Write atomically (temp + rename) so the UI never reads a half-written file. The temp is
     # PID-unique ($$) — the 1-min awg_status cron can now run update_status concurrently with a
     # user action, and a shared ".tmp" would let them clobber each other mid-write. Sweep any
@@ -1782,7 +1794,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
@@ -2149,7 +2161,7 @@ do_manual_install(){
     log_msg "Manual install: assembling uploaded package"
     if [ ! -s "$b64" ]; then
         log_msg "Manual install: ERROR no upload data received"
-        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"Нет данных загрузки\"}" > "$AWG_UPLOAD_STATUS"
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"code\":\"no_data\"}" > "$AWG_UPLOAD_STATUS"
         rm -f "$b64"; update_status; return 1
     fi
 
@@ -2157,7 +2169,7 @@ do_manual_install(){
     if ! base64 -d "$b64" > "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
         if ! openssl base64 -d -A -in "$b64" -out "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
             log_msg "Manual install: ERROR base64 decode failed"
-            echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"Ошибка декодирования\"}" > "$AWG_UPLOAD_STATUS"
+            echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"code\":\"decode_failed\"}" > "$AWG_UPLOAD_STATUS"
             rm -f "$b64" "$tmp"; update_status; return 1
         fi
     fi
@@ -2166,7 +2178,7 @@ do_manual_install(){
     got_len=$(wc -c < "$tmp" 2>/dev/null)
     if [ -n "$want_len" ] && [ "$got_len" != "$want_len" ]; then
         log_msg "Manual install: ERROR size mismatch (got ${got_len}, expected ${want_len})"
-        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"Размер не совпал — загрузка повреждена\"}" > "$AWG_UPLOAD_STATUS"
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"code\":\"size_mismatch\"}" > "$AWG_UPLOAD_STATUS"
         rm -f "$tmp"; update_status; return 1
     fi
 
@@ -2176,22 +2188,22 @@ do_manual_install(){
     # always present (opkg itself needs it); try both applet spellings.
     if ! gzip -dc "$tmp" > /dev/null 2>&1 && ! gunzip -c "$tmp" > /dev/null 2>&1; then
         log_msg "Manual install: ERROR archive is corrupt (gzip CRC check failed)"
-        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"Файл повреждён или не .ipk\"}" > "$AWG_UPLOAD_STATUS"
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"code\":\"corrupt\"}" > "$AWG_UPLOAD_STATUS"
         rm -f "$tmp"; update_status; return 1
     fi
     # Must be an opkg .ipk: a gzip tar that contains control.tar.gz (the last member, so a
     # successful listing also proves the archive decompressed fully).
     if ! tar tzf "$tmp" 2>/dev/null | grep -q 'control\.tar\.gz'; then
         log_msg "Manual install: ERROR not an opkg package (no control.tar.gz)"
-        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"Это не пакет opkg (.ipk)\"}" > "$AWG_UPLOAD_STATUS"
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"code\":\"not_ipk\"}" > "$AWG_UPLOAD_STATUS"
         rm -f "$tmp"; update_status; return 1
     fi
 
     log_msg "Manual install: package OK ($(human_size "$got_len")) — installing"
-    if finalize_ipk_install "$tmp" "загруженный пакет"; then
+    if finalize_ipk_install "$tmp" "uploaded package"; then
         echo "{\"status\":\"installed\",\"tok\":\"$tok\"}" > "$AWG_UPLOAD_STATUS"
     else
-        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"msg\":\"opkg install не удался\"}" > "$AWG_UPLOAD_STATUS"
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"code\":\"opkg_failed\"}" > "$AWG_UPLOAD_STATUS"
     fi
 }
 
