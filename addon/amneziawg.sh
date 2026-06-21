@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.99"
+AWG_VERSION="1.1.100"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1970,7 +1970,10 @@ EOF
         ipset_count=$(ipset list "$IPSET_NAME" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
 
     local geo_domains=0
-    [ -f "$DNSMASQ_AWG_CONF" ] && geo_domains=$(grep -c "^ipset=" "$DNSMASQ_AWG_CONF" 2>/dev/null)
+    # Count actual domains, NOT ipset= lines — dnsmasq packs ~18 domains per
+    # "ipset=/d1/d2/.../awg_dst" line, so grep -c (lines) under-reported ~18x. Per line the
+    # domains are the slash-separated fields minus "ipset=" and the trailing set name → NF-2.
+    [ -f "$DNSMASQ_AWG_CONF" ] && geo_domains=$(awk -F/ '/^ipset=/{c+=NF-2} END{print c+0}' "$DNSMASQ_AWG_CONF" 2>/dev/null)
     [ -z "$geo_domains" ] && geo_domains=0
 
     local geo_downloaded=false

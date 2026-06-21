@@ -390,7 +390,7 @@ en: {
     // ---- active rules summary ----
     RULES_ROUTING: "{0} routing rules",
     RULES_IPRANGES: "{0} IP ranges",
-    RULES_DOMAINS: "{0} domain rules",
+    RULES_DOMAINS: "{0} domains",
     ACTIVE_PREFIX: "Active: ",
     NO_RULES: "no rules",
     // ---- coexist warning (innerHTML) ----
@@ -682,7 +682,7 @@ ru: {
     // ---- active rules summary ----
     RULES_ROUTING: "{0} правил маршрутизации",
     RULES_IPRANGES: "{0} диапазонов IP",
-    RULES_DOMAINS: "{0} правил по доменам",
+    RULES_DOMAINS: "{0} доменов",
     ACTIVE_PREFIX: "Активно: ",
     NO_RULES: "нет правил",
     // ---- coexist warning (innerHTML) ----
