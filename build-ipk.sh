@@ -75,6 +75,14 @@ mkdir -p -m 700 /var/run/amneziawg
 mkdir -p /dev/net
 mknod -m 600 /dev/net/tun c 10 200 2>/dev/null || true
 chmod 600 /dev/net/tun 2>/dev/null || true
+# Compatibility mode (don't hijack :53 DNS) defaults ON for brand-new installs only, so an
+# undetected co-resident DPI/proxy tool (zapret2 / Xray / b4 / ...) can't lock the LAN out of
+# DNS. "New" = no AmneziaWG settings yet; upgrades (awg_* keys already present) are untouched.
+SETTINGS=/jffs/addons/custom_settings.txt
+if ! grep -q '^awg_' "$SETTINGS" 2>/dev/null; then
+    : >> "$SETTINGS" 2>/dev/null || true
+    echo "awg_no_dns_intercept 1" >> "$SETTINGS" 2>/dev/null || true
+fi
 if [ -f /usr/sbin/helper.sh ]; then
     /jffs/addons/amneziawg/amneziawg.sh install_page || true
 fi
@@ -85,6 +93,12 @@ echo "============================================"
 echo "  Web UI:  VPN > AmneziaWG"
 echo "  Start:   /opt/etc/init.d/S99amneziawg start"
 echo ""
+if pidof b4 >/dev/null 2>&1 || [ -x /opt/sbin/b4 ] || [ -f /opt/etc/init.d/S99b4 ]; then
+    echo "NOTE: b4 (DPI-bypass) detected. AmneziaWG runs in compatibility mode (no :53 DNS"
+    echo "  hijack) so they don't clash. Both share router CPU/RAM - on low-RAM routers"
+    echo "  (<512MB) running both can OOM/hang. Prefer default policy 'Direct' or 'Geo only'."
+    echo ""
+fi
 POSTEOF
     chmod 755 "$CONTROL_DIR/postinst"
 

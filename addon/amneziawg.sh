@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.96"
+AWG_VERSION="1.1.98"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -91,7 +91,7 @@ ipset(){
 log_msg(){
     logger -t "$SCRIPT_NAME" "$1"
     # Real-time on-page log (web-readable, polled by the UI); reset per user action.
-    echo "$(date '+%H:%M:%S') $1" >> "$UI_LOG" 2>/dev/null
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$UI_LOG" 2>/dev/null
 }
 
 # Clear the on-page log at the start of a user-facing operation
@@ -670,14 +670,17 @@ apply_custom_geo(){
 # --- Unified firewall setup ---
 
 # Detect a co-resident DPI-bypass / proxy tool that we must not fight: zapret/zapret2 by
-# bol-van (nfqws/tpws daemons, or NFQUEUE/TPROXY targets in iptables), OR a transparent
-# proxy daemon (xray/XRAYUI, v2ray, sing-box). When detected we skip the global DNS hijack
-# below so we don't collide with its DNS/redirect handling and lock out the LAN — the addon's
-# marks/table/conntrack flush are already its own. (Name kept as zapret_active for callers.)
+# bol-van (nfqws/tpws), b4 (daniellavrushin), OR a transparent proxy daemon (xray/XRAYUI,
+# v2ray, sing-box) — by process name AND by netfilter footprint (NFQUEUE/TPROXY in iptables
+# OR an nft queue/tproxy rule, so we also catch nftables-backed firmware and tools we don't
+# know by name). When detected we skip the global DNS hijack below so we don't collide with
+# its DNS/redirect handling and lock out the LAN — the addon's marks/table/conntrack flush
+# are already its own. (Name kept as zapret_active for callers.)
 zapret_active(){
-    { pidof nfqws || pidof tpws; } >/dev/null 2>&1 && return 0
+    { pidof nfqws || pidof tpws || pidof b4; } >/dev/null 2>&1 && return 0
     { pidof xray || pidof v2ray || pidof sing-box; } >/dev/null 2>&1 && return 0
     iptables-save 2>/dev/null | grep -qE 'NFQUEUE|TPROXY' && return 0
+    nft list ruleset 2>/dev/null | grep -qE 'queue (num|to)|tproxy' && return 0
     return 1
 }
 
@@ -688,8 +691,10 @@ detect_dpi_tool(){
     pidof xray     >/dev/null 2>&1 && { echo "Xray";     return; }
     pidof v2ray    >/dev/null 2>&1 && { echo "V2Ray";    return; }
     pidof sing-box >/dev/null 2>&1 && { echo "sing-box"; return; }
+    pidof b4       >/dev/null 2>&1 && { echo "b4";       return; }
     { pidof nfqws || pidof tpws; } >/dev/null 2>&1 && { echo "zapret"; return; }
     iptables-save 2>/dev/null | grep -qE 'NFQUEUE|TPROXY' && { echo "DPI (NFQUEUE/TPROXY)"; return; }
+    nft list ruleset 2>/dev/null | grep -qE 'queue (num|to)|tproxy' && { echo "DPI (nft queue)"; return; }
 }
 
 # True when the firmware's OWN DNS redirection is active: DNSFilter / DNS Director
@@ -1204,7 +1209,7 @@ setup_firewall(){
         if [ "$(get_setting awg_no_dns_intercept)" = "1" ]; then
             log_msg "DNS interception OFF (awg_no_dns_intercept=1) — coexistence mode"
         elif zapret_active; then
-            log_msg "DNS interception OFF — zapret/xray/NFQUEUE detected, coexisting (geo-by-IP still active)"
+            log_msg "DNS interception OFF — $(detect_dpi_tool) detected, coexisting (geo-by-IP still active)"
         elif fw_dns_redirect_active; then
             log_msg "DNS interception OFF — firmware DNSFilter/DNS Director/DoT active, not overriding (geo-by-IP still active)"
         else
@@ -1219,8 +1224,11 @@ setup_firewall(){
     # JSON also exposes coexist_warn); we never silently override the user's chosen policy.
     local _dpi
     _dpi=$(detect_dpi_tool)
-    if [ -n "$_dpi" ] && { [ "$default_policy" = "vpn_all" ] || get_setting awg_clients | grep -q vpn_all; }; then
-        log_msg "WARNING: $_dpi co-resident with an all->VPN policy — the tunnel will capture LAN traffic; use Direct or Geo-Only default policy to coexist"
+    if [ -n "$_dpi" ]; then
+        log_msg "NOTE: co-resident DPI/proxy tool ($_dpi) shares router CPU/RAM with AWG geo ipset/dnsmasq — on low-RAM routers (<512MB) running both can exhaust memory (OOM) and hang the router"
+        if [ "$default_policy" = "vpn_all" ] || get_setting awg_clients | grep -q vpn_all; then
+            log_msg "WARNING: $_dpi co-resident with an all->VPN policy — the tunnel will capture LAN traffic; use Direct or Geo-Only default policy to coexist"
+        fi
     fi
 
     # --- Reload dnsmasq if geo active (deferred + retried; see reload_dnsmasq) ---
@@ -1604,7 +1612,17 @@ do_diag(){
     echo "memory (free):"; free 2>/dev/null | sed 's/^/  /'
     echo "amneziawg-go running : $(pidof amneziawg-go 2>/dev/null || echo no)"
     echo "dnsmasq running      : $(pidof dnsmasq 2>/dev/null || echo no)"
-    echo "zapret/xray/NFQUEUE  : $(zapret_active && echo "yes -> DNS interception auto-off (coexist)" || echo no)"
+    echo "--- co-resident DPI / coexistence ---"
+    _dpi_tool=$(detect_dpi_tool 2>/dev/null)
+    echo "co-resident DPI tool : ${_dpi_tool:-none}"
+    echo "b4 process           : $(pidof b4 >/dev/null 2>&1 && echo yes || echo no)"
+    _b4_be=""
+    if iptables-save 2>/dev/null | grep -q 'NFQUEUE'; then _b4_be="iptables"; fi
+    if nft list ruleset 2>/dev/null | grep -qE 'queue (num|to)'; then _b4_be="${_b4_be:+$_b4_be+}nft"; fi
+    echo "NFQUEUE backend seen : ${_b4_be:-none}"
+    echo "compat (no DNS hijack): $([ "$(get_setting awg_no_dns_intercept)" = "1" ] && echo "ON (coexist)" || echo off)"
+    echo "conntrack count/max  : $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo '?')/$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo '?')"
+    echo "ip rule fwmark 0x100 :"; ip rule show 2>/dev/null | grep -i 'fwmark 0x100' | sed 's/^/  /'
     echo "lan_ipaddr           : $(nvram get lan_ipaddr 2>/dev/null)"
     echo "awg0 link            :"; ip link show "$IFACE" 2>&1 | sed 's/^/  /'
     echo "awg0 inet            : $(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2}')"
@@ -1635,7 +1653,7 @@ arm_lan_deadman(){
         is_running || exit 0
         [ -n "$gen" ] && ! pidof amneziawg-go 2>/dev/null | grep -qw "$gen" && exit 0
         logger -t "$SCRIPT_NAME" "DEADMAN: dnsmasq still down ~90s after start — rolling back VPN to restore LAN/DHCP"
-        echo "$(date '+%H:%M:%S') DEADMAN: dnsmasq down, rolling back to restore LAN access" >> "$UI_LOG" 2>/dev/null
+        echo "$(date '+%Y-%m-%d %H:%M:%S') DEADMAN: dnsmasq down, rolling back to restore LAN access" >> "$UI_LOG" 2>/dev/null
         # Auto-rollback (NOT a user stop) — keep the watchdog cron so recovery can continue.
         "$ADDON_DIR/amneziawg.sh" stop_auto >/dev/null 2>&1
         # Bounce dnsmasq only if it's actually still dead (do_stop's reload_dnsmasq may have

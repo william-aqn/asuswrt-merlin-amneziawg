@@ -263,7 +263,7 @@ A: Add CIDR ranges in Custom IPs field, e.g. `149.154.160.0/20,91.108.4.0/22` fo
 
 **Q: Can it run alongside zapret2 or Xray (XRAYUI)?**
 
-A: Yes, with caveats. The addon auto-detects a co-resident DPI-bypass/proxy tool (zapret2/bol-van, Xray/XRAYUI, v2ray, sing-box, or NFQUEUE/TPROXY rules) and in that case **does not enable DNS interception** (the :53 DNAT), to avoid colliding with them -- otherwise the network can lose internet access. You can also disable interception manually via the "Не перехватывать DNS" checkbox (the "Совместимость с zapret2/xray" block).
+A: Yes, with caveats. The addon auto-detects a co-resident DPI-bypass/proxy tool (zapret2/bol-van, Xray/XRAYUI, v2ray, sing-box, **b4**, or NFQUEUE/TPROXY rules in iptables or nftables) and in that case **does not enable DNS interception** (the :53 DNAT), to avoid colliding with them -- otherwise the network can lose internet access. This is controlled by **Compatibility mode** (formerly the "Don't intercept DNS" checkbox): it is **on by default for fresh installs** so even an unknown tool can't leave the network without internet; existing installs keep their previous behavior until you enable it.
 
 Important: this only resolves the DNS-layer conflict. With the default **"VPN -- All Traffic"** policy, routing still pulls the neighbor proxy's traffic into the tunnel, so for coexistence choose the **"Direct"** or **"VPN -- Geo Only"** policy, not "all". Geo routing by IP keeps working.
 

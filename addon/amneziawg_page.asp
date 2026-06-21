@@ -395,7 +395,7 @@ en: {
     NO_RULES: "no rules",
     // ---- coexist warning (innerHTML) ----
     COEX_STEP_POLICY: "<li>Change the <b>Default policy</b> from <b>«VPN — all traffic»</b> to <b>«Direct»</b> or <b>«VPN — Geo only»</b> — otherwise routing will take all traffic away from {0}.</li>",
-    COEX_STEP_DNS: "<li>Tick <b>«Don't intercept DNS»</b> (the «zapret2/xray compatibility» block) — so intercepting :53 doesn't conflict with {0}.</li>",
+    COEX_STEP_DNS: "<li>Enable <b>«Compatibility mode»</b> — so intercepting :53 doesn't conflict with {0}.</li>",
     COEX_HEADER: "⚠ Detected <b>{0}</b> on the router. So AmneziaWG doesn't conflict with it and leave the network without internet:",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">After the changes, click <b>«Apply»</b>. GeoIP routing by IP keeps working in the meantime.</span>",
     // ---- import config ----
@@ -441,9 +441,9 @@ en: {
     TH_TUNNEL_CHECK_ADDR: "Tunnel check addresses",
     ARIA_TUNNEL_CHECK_ADDR: "Tunnel check addresses",
     HINT_WATCHDOG_HTML: "<summary>Addresses the watchdog pings <b>through the tunnel</b> every 5 minutes (if at least one replies, the tunnel is alive). <u>Format and examples</u></summary><b>Format:</b> IP or domain, several allowed — separated by a space or comma (up to 4 addresses).<br><b>Example:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Prefer IPs (no dependency on DNS). Empty = default <b>8.8.8.8</b> and <b>1.1.1.1</b>. Change it if those addresses are blocked/unreachable for you — otherwise the watchdog restarts the VPN needlessly. Which addresses are checked is shown in the log below.",
-    TH_ZAPRET_COMPAT: "zapret2/xray compatibility",
-    LBL_NO_DNS_INTERCEPT: "Don't intercept DNS (compatibility with zapret2 / Xray etc.)",
-    HINT_NO_DNS_HTML: "<summary>Disables DNS interception (port :53). Enable it if <b>zapret2</b> or <b>Xray/XRAYUI</b> (v2ray, sing-box) is running alongside — otherwise a DNS conflict can leave the network without internet. <u>Details</u></summary>Geo by IP (GeoIP/antifilter) keeps working; geo by domains — only for clients using the router as DNS. If zapret2 / Xray / v2ray / sing-box or NFQUEUE/TPROXY rules are detected nearby, DNS interception is disabled automatically even without this checkbox. Important: the checkbox only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».",
+    TH_ZAPRET_COMPAT: "Compatibility mode",
+    LBL_NO_DNS_INTERCEPT: "Compatibility mode — coexist with zapret2 / Xray / b4 (don't intercept DNS)",
+    HINT_NO_DNS_HTML: "<summary>Compatibility mode: disables AmneziaWG's DNS interception (port :53) so it can't clash with a co-resident DPI/proxy tool. ON by default for new installs. <u>Details</u></summary>Keep it on if <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) or <b>b4</b> runs alongside — otherwise a DNS conflict can leave the network without internet. Geo by IP (GeoIP/antifilter) keeps working; geo by domains keeps working for clients that use the router as their DNS — only clients with a hardcoded external resolver lose domain-geo. A nearby zapret2 / Xray / v2ray / sing-box / b4 or NFQUEUE/TPROXY (iptables or nft) footprint also disables interception automatically even without this checkbox. Note: this only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».",
     SEC_DEVICE_RULES: "Device rules",
     TH_IP_ADDRESS: "IP address",
     TH_DEVICE_NAME: "Device name",
@@ -687,7 +687,7 @@ ru: {
     NO_RULES: "нет правил",
     // ---- coexist warning (innerHTML) ----
     COEX_STEP_POLICY: "<li>Смените <b>Политику по умолчанию</b> с <b>«VPN — весь трафик»</b> на <b>«Напрямую»</b> или <b>«VPN — только Geo»</b> — иначе маршрутизация заберёт у {0} весь трафик.</li>",
-    COEX_STEP_DNS: "<li>Включите галочку <b>«Не перехватывать DNS»</b> (блок «Совместимость с zapret2/xray») — чтобы перехват :53 не конфликтовал с {0}.</li>",
+    COEX_STEP_DNS: "<li>Включите <b>«Режим совместимости»</b> — чтобы перехват :53 не конфликтовал с {0}.</li>",
     COEX_HEADER: "⚠ Обнаружен <b>{0}</b> на роутере. Чтобы AmneziaWG не конфликтовал с ним и не оставил сеть без интернета:",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>",
     // ---- import config ----
@@ -733,9 +733,9 @@ ru: {
     TH_TUNNEL_CHECK_ADDR: "Адреса проверки туннеля",
     ARIA_TUNNEL_CHECK_ADDR: "Адреса проверки туннеля",
     HINT_WATCHDOG_HTML: "<summary>Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут (ответил хоть один — туннель живой). <u>Формат и примеры</u></summary><b>Формат:</b> IP или домен, можно несколько — через пробел или запятую (до 4 адресов).<br><b>Пример:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Лучше указывать IP (без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны — иначе watchdog зря перезапускает VPN. Какие адреса проверяются — видно в журнале ниже.",
-    TH_ZAPRET_COMPAT: "Совместимость с zapret2/xray",
-    LBL_NO_DNS_INTERCEPT: "Не перехватывать DNS (совместимость с zapret2 / Xray и др.)",
-    HINT_NO_DNS_HTML: "<summary>Отключает перехват DNS (порт :53). Включите, если рядом работает <b>zapret2</b> или <b>Xray/XRAYUI</b> (v2ray, sing-box) — иначе конфликт DNS может оставить сеть без интернета. <u>Подробнее</u></summary>Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам — только для клиентов, использующих роутер как DNS. Если рядом обнаружен zapret2 / Xray / v2ray / sing-box или правила NFQUEUE/TPROXY, перехват DNS отключается автоматически даже без этой галочки. Важно: галочка решает только конфликт по DNS — при политике «VPN — весь трафик» маршрутизация всё равно заберёт трафик прокси, поэтому для совместимости выбирайте «Напрямую» или «VPN — только Geo».",
+    TH_ZAPRET_COMPAT: "Режим совместимости",
+    LBL_NO_DNS_INTERCEPT: "Режим совместимости — сосуществование с zapret2 / Xray / b4 (не перехватывать DNS)",
+    HINT_NO_DNS_HTML: "<summary>Режим совместимости: отключает перехват DNS (порт :53) у AmneziaWG, чтобы он не конфликтовал с соседней DPI/прокси-утилитой. Для новых установок включён по умолчанию. <u>Подробнее</u></summary>Держите включённым, если рядом работает <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) или <b>b4</b> — иначе конфликт DNS может оставить сеть без интернета. Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам работает для клиентов, использующих роутер как DNS — только клиенты с жёстко прописанным внешним резолвером теряют geo по доменам. Обнаруженный рядом zapret2 / Xray / v2ray / sing-box / b4 или след NFQUEUE/TPROXY (iptables или nft) тоже отключает перехват автоматически даже без этой галочки. Важно: галочка решает только конфликт по DNS — при политике «VPN — весь трафик» маршрутизация всё равно заберёт трафик прокси, поэтому для совместимости выбирайте «Напрямую» или «VPN — только Geo».",
     SEC_DEVICE_RULES: "Правила устройств",
     TH_IP_ADDRESS: "IP-адрес",
     TH_DEVICE_NAME: "Имя устройства",
@@ -1785,7 +1785,10 @@ function loadGeoSettings(){
     // Block IPv6 DNS (default on)
     var b6 = document.getElementById('awg_block_ipv6_dns');
     if(b6) b6.checked = (custom_settings.awg_block_ipv6_dns !== '0');
-    // Coexistence: don't hijack DNS (default off; backend also auto-skips if zapret detected)
+    // Compatibility mode: don't hijack :53 DNS. Seeded ON for brand-new installs (the .ipk
+    // postinst writes awg_no_dns_intercept 1 when no awg_* settings exist yet); existing
+    // installs default off. Backend also auto-skips when a DPI tool (zapret/Xray/b4/NFQUEUE/
+    // nft-queue) is detected.
     var ndi = document.getElementById('awg_no_dns_intercept');
     if(ndi) ndi.checked = (custom_settings.awg_no_dns_intercept === '1');
     // Kill-switch (default off — preserves prior fail-open behavior unless the user opts in)
@@ -3310,10 +3313,10 @@ function initAutocompleteIp(){
                     </td>
                 </tr>
                 <tr>
-                    <th data-i18n="TH_ZAPRET_COMPAT">zapret2/xray compatibility</th>
+                    <th data-i18n="TH_ZAPRET_COMPAT">Compatibility mode</th>
                     <td>
-                        <label><input type="checkbox" id="awg_no_dns_intercept"> <span data-i18n="LBL_NO_DNS_INTERCEPT">Don't intercept DNS (compatibility with zapret2 / Xray etc.)</span></label>
-                        <details class="awg-hint" data-i18n-html="HINT_NO_DNS_HTML"><summary>Disables DNS interception (port :53). Enable it if <b>zapret2</b> or <b>Xray/XRAYUI</b> (v2ray, sing-box) is running alongside — otherwise a DNS conflict can leave the network without internet. <u>Details</u></summary>Geo by IP (GeoIP/antifilter) keeps working; geo by domains — only for clients using the router as DNS. If zapret2 / Xray / v2ray / sing-box or NFQUEUE/TPROXY rules are detected nearby, DNS interception is disabled automatically even without this checkbox. Important: the checkbox only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».</details>
+                        <label><input type="checkbox" id="awg_no_dns_intercept"> <span data-i18n="LBL_NO_DNS_INTERCEPT">Compatibility mode — coexist with zapret2 / Xray / b4 (don't intercept DNS)</span></label>
+                        <details class="awg-hint" data-i18n-html="HINT_NO_DNS_HTML"><summary>Compatibility mode: disables AmneziaWG's DNS interception (port :53) so it can't clash with a co-resident DPI/proxy tool. ON by default for new installs. <u>Details</u></summary>Keep it on if <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) or <b>b4</b> runs alongside — otherwise a DNS conflict can leave the network without internet. Geo by IP (GeoIP/antifilter) keeps working; geo by domains keeps working for clients that use the router as their DNS — only clients with a hardcoded external resolver lose domain-geo. A nearby zapret2 / Xray / v2ray / sing-box / b4 or NFQUEUE/TPROXY (iptables or nft) footprint also disables interception automatically even without this checkbox. Note: this only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».</details>
                     </td>
                 </tr>
                 </table>
