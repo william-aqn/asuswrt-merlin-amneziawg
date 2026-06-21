@@ -281,6 +281,14 @@ Important: this only resolves the DNS-layer conflict. With the default **"VPN --
 - **r0otx** -- [github.com/r0otx](https://github.com/r0otx)
 - **william-aqn** -- [github.com/william-aqn](https://github.com/william-aqn)
 
+## Support the project
+
+If you find this project useful, you can support its development:
+
+**Boosty:** [boosty.to/dcrm/donate](https://boosty.to/dcrm/donate)
+
+**USDT (TRC-20):** `TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr`
+
 ## Disclaimer
 
 This project is a technical tool for network security and privacy. The author is not responsible for any use of this software that violates the laws of any jurisdiction. Users are solely responsible for compliance with applicable legislation.

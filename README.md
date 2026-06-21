@@ -304,6 +304,14 @@ opkg remove amneziawg
 - **r0otx** -- [github.com/r0otx](https://github.com/r0otx)
 - **william-aqn** -- [github.com/william-aqn](https://github.com/william-aqn)
 
+## Поддержать проект
+
+Если проект оказался полезен — можно поддержать разработку:
+
+**Boosty:** [boosty.to/dcrm/donate](https://boosty.to/dcrm/donate)
+
+**USDT (TRC-20):** `TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr`
+
 ## Благодарности
 
 - [AmneziaWG](https://github.com/amnezia-vpn) -- протокол и реализации

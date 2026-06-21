@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.88"
+AWG_VERSION="1.1.89"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -112,6 +112,33 @@ clear_setting(){
     tmp="$SETTINGS.awgtmp.$$"
     grep -v "^$key " "$SETTINGS" > "$tmp" 2>/dev/null && mv "$tmp" "$SETTINGS"
     rm -f "$tmp" 2>/dev/null
+}
+
+# Rename one custom_settings key, carrying its value to $new (only if $new isn't already
+# set) and dropping the old line so the value isn't left duplicated. Idempotent.
+_awg_rename_setting(){
+    local old="$1" new="$2" val tmp
+    [ -f "$SETTINGS" ] || return 0
+    grep -q "^$old " "$SETTINGS" 2>/dev/null || return 0   # nothing stored under the old key
+    if grep -q "^$new " "$SETTINGS" 2>/dev/null; then
+        clear_setting "$old"                               # new key already set -> just drop the stale line
+        return 0
+    fi
+    val=$(get_setting "$old")
+    tmp="$SETTINGS.awgtmp.$$"
+    { grep -v "^$old " "$SETTINGS"; echo "$new $val"; } > "$tmp" 2>/dev/null && mv "$tmp" "$SETTINGS"
+    rm -f "$tmp" 2>/dev/null
+}
+
+# One-time migration of the credential-flavored keys used up to 1.1.88 to neutral names.
+# Safari's password manager treats a config field that reads like a credential as a login
+# and pops "Save password?", so the whole front<->back pipeline now uses neutral field
+# names (DOM id == custom_settings key == get_setting key; see AWG_LEGACY_FIELDS in
+# amneziawg_page.asp). Runs on every invocation but is a cheap no-op once migrated.
+migrate_field_names(){
+    _awg_rename_setting awg_privatekey  awg_iface_p1
+    _awg_rename_setting awg_peer_pubkey awg_peer_p1
+    _awg_rename_setting awg_peer_psk    awg_peer_p2
 }
 
 is_running(){
@@ -1281,7 +1308,9 @@ generate_config(){
     umask 077   # private key + config must not be world-readable
     mkdir -p "$AWG_DIR"
 
-    local privkey=$(get_setting awg_privatekey)
+    # Neutral field names (see migrate_field_names): iface_p1 = interface private key,
+    # peer_p1 = peer public key, peer_p2 = peer preshared key.
+    local iface_p1=$(get_setting awg_iface_p1)
     local listenport=$(get_setting awg_listenport)
     local jc=$(get_setting awg_jc)
     local jmin=$(get_setting awg_jmin)
@@ -1308,19 +1337,19 @@ generate_config(){
         i5=$(echo "$decoded" | awk '/^I5 /{sub(/^[^=]+=[ ]?/,"");print;exit}')
     fi
 
-    local peer_pubkey=$(get_setting awg_peer_pubkey)
-    local peer_psk=$(get_setting awg_peer_psk)
+    local peer_p1=$(get_setting awg_peer_p1)
+    local peer_p2=$(get_setting awg_peer_p2)
     local peer_endpoint=$(get_setting awg_peer_endpoint)
     local peer_allowedips=$(get_setting awg_peer_allowedips | sed 's/,[[:space:]]*$//;s/,/, /g')
     local peer_keepalive=$(get_setting awg_peer_keepalive)
 
-    if [ -z "$privkey" ] || [ -z "$peer_pubkey" ] || [ -z "$peer_endpoint" ]; then
+    if [ -z "$iface_p1" ] || [ -z "$peer_p1" ] || [ -z "$peer_endpoint" ]; then
         log_msg "ERROR: Missing required config"
         return 1
     fi
-    validate_wgkey "$privkey" || return 1
-    validate_wgkey "$peer_pubkey" || return 1
-    [ -n "$peer_psk" ] && { validate_wgkey "$peer_psk" || return 1; }
+    validate_wgkey "$iface_p1" || return 1
+    validate_wgkey "$peer_p1" || return 1
+    [ -n "$peer_p2" ] && { validate_wgkey "$peer_p2" || return 1; }
     validate_endpoint "$peer_endpoint" || return 1
     [ -n "$listenport" ] && { validate_port "$listenport" || { log_msg "ERROR: Invalid listen port: $listenport"; return 1; }; }
     [ -n "$jc" ] && { validate_uint "$jc" || { log_msg "ERROR: Invalid Jc: $jc"; return 1; }; }
@@ -1337,7 +1366,7 @@ generate_config(){
 
     {
         echo "[Interface]"
-        echo "PrivateKey = $privkey"
+        echo "PrivateKey = $iface_p1"
         [ -n "$listenport" ] && echo "ListenPort = $listenport"
         [ -n "$jc" ] && echo "Jc = $jc"
         [ -n "$jmin" ] && echo "Jmin = $jmin"
@@ -1357,8 +1386,8 @@ generate_config(){
         [ -n "$i5" ] && echo "I5 = $i5"
         echo ""
         echo "[Peer]"
-        echo "PublicKey = $peer_pubkey"
-        [ -n "$peer_psk" ] && echo "PresharedKey = $peer_psk"
+        echo "PublicKey = $peer_p1"
+        [ -n "$peer_p2" ] && echo "PresharedKey = $peer_p2"
         [ -n "$peer_endpoint" ] && echo "Endpoint = $peer_endpoint"
         echo "AllowedIPs = ${peer_allowedips:-0.0.0.0/0}"
         [ -n "$peer_keepalive" ] && echo "PersistentKeepalive = $peer_keepalive"
@@ -2678,14 +2707,14 @@ do_service_event(){
         awgforceapply)
             # Force Apply: persist settings, then full restart (re-runs setconf +
             # complete route/firewall/geo rebuild via do_start)
-            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_privatekey)" ]; do sleep 1; _wt=$((_wt+1)); done
+            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_iface_p1)" ]; do sleep 1; _wt=$((_wt+1)); done
             do_stop 2>/dev/null
             wait_for_pid_exit amneziawg-go 10
             do_start
             ensure_geo   # download configured-but-missing geo lists (bg), then re-apply
             ;;
         awgsaveconf)
-            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_privatekey)" ]; do sleep 1; _wt=$((_wt+1)); done
+            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_iface_p1)" ]; do sleep 1; _wt=$((_wt+1)); done
             generate_config
             # Apply WITHOUT a VPN restart, but under the operation lock so this rebuild can't
             # race the firewall-start hook's do_firewall_restart, and with the LAN deadman
@@ -2725,6 +2754,10 @@ do_service_event(){
 }
 
 # --- Main ---
+
+# Rename any pre-1.1.89 credential-flavored config keys to neutral names before any command
+# reads them (cheap no-op once migrated), so existing installs keep working after upgrade.
+migrate_field_names
 
 # Geo ipset name is configurable (so it can be shared with other connections/tools). Default
 # awg_dst; sanitize to a valid ipset name (letters/digits/_.-, <=31 chars), else keep default.

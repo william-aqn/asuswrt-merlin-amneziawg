@@ -98,11 +98,11 @@
    covers Firefox (which ignores -webkit-text-security); -webkit-text-security is kept for
    Chromium/Edge/Safari. type=text (not password) is what stops the browser's save-password
    prompt; the masking here is purely visual. Placeholder uses a normal font so hints read. */
-.awg-secret {
+.awg-masked {
     font-family: 'text-security-disc', "Courier New", "Lucida Console", monospace;
     -webkit-text-security: disc;
 }
-.awg-secret::placeholder {
+.awg-masked::placeholder {
     font-family: "Courier New", "Lucida Console", monospace;
     -webkit-text-security: none; }
 
@@ -496,7 +496,11 @@ en: {
     BTN_CLOSE: "Close",
     MODAL_DIAG_TITLE: "Diagnostic data",
     BTN_COPY_DIAG: "Copy diagnostic data",
-    DIAG_COPY_NOTE: "Copied together with the log, wrapped for pasting into Telegram."
+    DIAG_COPY_NOTE: "Copied together with the log, wrapped for pasting into Telegram.",
+    DONATE_LABEL: "Support the project",
+    DONATE_COPY_TITLE: "Click to copy the address",
+    DONATE_COPIED: "Copied!",
+    DONATE_COPY_FAILED: "Copy failed"
 },
 ru: {
     // ---- status / badge ----
@@ -769,7 +773,11 @@ ru: {
     BTN_CLOSE: "Закрыть",
     MODAL_DIAG_TITLE: "Диагностические данные",
     BTN_COPY_DIAG: "Скопировать диагностические данные",
-    DIAG_COPY_NOTE: "Копируется вместе с журналом, обёрнуто для вставки в Telegram."
+    DIAG_COPY_NOTE: "Копируется вместе с журналом, обёрнуто для вставки в Telegram.",
+    DONATE_LABEL: "Поддержать проект",
+    DONATE_COPY_TITLE: "Нажмите, чтобы скопировать адрес",
+    DONATE_COPIED: "Скопировано!",
+    DONATE_COPY_FAILED: "Не удалось"
 }
 };
 // T(key, ...args): current-lang -> en -> key. {0},{1}.. are positional args.
@@ -1172,7 +1180,7 @@ function awgBytesToB64(bytes){
 
 // Single submit point for the shared form. The browser's "Save password?" prompt fires
 // whenever a form containing an <input type="password"> is submitted — here the WG private
-// key / PSK. Those fields are rendered as masked type=text (class awg-secret, see CSS) rather
+// key / PSK. Those fields are rendered as masked type=text (class awg-masked, see CSS) rather
 // than type=password specifically so the browser never treats the form as a login. (Disabling
 // the fields at submit — 1.1.74 — was not enough: Chromium captures the value while typing.)
 function awgSubmitForm(){
@@ -1371,10 +1379,35 @@ function mdToHtml(md){
     return out.join('');
 }
 
+// Field names are neutral end-to-end: DOM id == custom_settings key == backend
+// get_setting key. Safari (and Chromium) pop "Save password?" / offer autofill for any
+// form field whose id/name/class reads like a credential ("key"/"secret"/"private"/
+// "psk"), even on a plain type=text — so neither the markup the browser scans nor the
+// keys we persist may contain those words. AWG_LEGACY_FIELDS maps each current key to
+// the credential-flavored key used up to 1.1.88; loadSettings() carries an existing
+// value forward so an in-place upgrade keeps the config (the next Apply persists it
+// under the new key, and the backend's migrate_field_names() renames it on disk and
+// drops the stale line).
+var AWG_LEGACY_FIELDS = {
+    awg_iface_p1: 'awg_privatekey',
+    awg_peer_p1:  'awg_peer_pubkey',
+    awg_peer_p2:  'awg_peer_psk'
+};
+
 function loadSettings(){
+    // Carry forward any value still stored under a pre-1.1.89 (credential-flavored) key,
+    // so an in-place upgrade keeps the config even before the backend migrates the file.
+    // Drop the old key from the object too, so a subsequent Apply never POSTs it back
+    // (the backend's migrate_field_names removes the stale line on disk).
+    for(var lk in AWG_LEGACY_FIELDS){
+        var ok = AWG_LEGACY_FIELDS[lk];
+        if(custom_settings[lk] == undefined && custom_settings[ok] != undefined)
+            custom_settings[lk] = custom_settings[ok];
+        delete custom_settings[ok];
+    }
     var fields = [
-        'awg_privatekey', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
-        'awg_peer_pubkey', 'awg_peer_psk', 'awg_peer_endpoint',
+        'awg_iface_p1', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
+        'awg_peer_p1', 'awg_peer_p2', 'awg_peer_endpoint',
         'awg_peer_allowedips', 'awg_peer_keepalive',
         'awg_jc', 'awg_jmin', 'awg_jmax',
         'awg_s1', 'awg_s2', 'awg_s3', 'awg_s4',
@@ -1462,8 +1495,8 @@ function awgFlagField(id, msg){
 }
 // First-run: no key/peer yet → guide to Import and don't let Start run an empty config.
 function updateFirstRun(){
-    var pk = (document.getElementById('awg_privatekey') || {}).value || '';
-    var pubk = (document.getElementById('awg_peer_pubkey') || {}).value || '';
+    var pk = (document.getElementById('awg_iface_p1') || {}).value || '';
+    var pubk = (document.getElementById('awg_peer_p1') || {}).value || '';
     var empty = !pk && !pubk;
     var fr = document.getElementById('awg_firstrun');
     if(fr) fr.style.display = empty ? '' : 'none';
@@ -1473,8 +1506,8 @@ function updateFirstRun(){
 
 function applyConfig(actionScript){
     var fields = [
-        'awg_privatekey', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
-        'awg_peer_pubkey', 'awg_peer_psk', 'awg_peer_endpoint',
+        'awg_iface_p1', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
+        'awg_peer_p1', 'awg_peer_p2', 'awg_peer_endpoint',
         'awg_peer_allowedips', 'awg_peer_keepalive',
         'awg_jc', 'awg_jmin', 'awg_jmax',
         'awg_s1', 'awg_s2', 'awg_s3', 'awg_s4',
@@ -1532,16 +1565,16 @@ function applyConfig(actionScript){
     custom_settings.awg_antifilter_lists = afChecked.join(',');
 
     // Basic validation
-    var pk = document.getElementById('awg_privatekey').value;
-    var pubk = document.getElementById('awg_peer_pubkey').value;
+    var pk = document.getElementById('awg_iface_p1').value;
+    var pubk = document.getElementById('awg_peer_p1').value;
     var ep = document.getElementById('awg_peer_endpoint').value;
     if(!pk || !pubk || !ep){
-        awgFlagField(!pk ? 'awg_privatekey' : (!pubk ? 'awg_peer_pubkey' : 'awg_peer_endpoint'),
+        awgFlagField(!pk ? 'awg_iface_p1' : (!pubk ? 'awg_peer_p1' : 'awg_peer_endpoint'),
                      T('MSG_REQUIRED_FIELDS'));
         return;
     }
     if(pk.length !== 44 || pubk.length !== 44){
-        awgFlagField(pk.length !== 44 ? 'awg_privatekey' : 'awg_peer_pubkey',
+        awgFlagField(pk.length !== 44 ? 'awg_iface_p1' : 'awg_peer_p1',
                      T('MSG_BAD_KEY_FORMAT'));
         return;
     }
@@ -1925,6 +1958,16 @@ function awgCopyText(text, done){
     } else {
         awgCopyFallback(text, done);
     }
+}
+// Footer donation: click the USDT (TRC-20) address to copy it (a 34-char address is
+// awkward to select by hand). Briefly swaps the text for feedback, then restores it.
+function awgCopyAddr(addr, el){
+    awgCopyText(addr, function(ok){
+        if(!el) return;
+        if(el._addr == null) el._addr = el.textContent;
+        el.textContent = ok ? T('DONATE_COPIED') : T('DONATE_COPY_FAILED');
+        setTimeout(function(){ if(el._addr != null){ el.textContent = el._addr; el._addr = null; } }, 1200);
+    });
 }
 // Diagnostics: the "Get diagnostic data" button triggers the backend diag dump (to a SEPARATE
 // file — it does NOT touch the on-page log), waits for [DIAG_DONE], and shows the result in a
@@ -2406,19 +2449,19 @@ function parseConfig(text){
     if(!text) return;
 
     // Warn before overwriting an existing config (import clears every field first).
-    var hadPk = !!((document.getElementById('awg_privatekey') || {}).value);
-    var hadPub = !!((document.getElementById('awg_peer_pubkey') || {}).value);
+    var hadPk = !!((document.getElementById('awg_iface_p1') || {}).value);
+    var hadPub = !!((document.getElementById('awg_peer_p1') || {}).value);
     var hadEp = !!((document.getElementById('awg_peer_endpoint') || {}).value);
     if((hadPk || hadPub || hadEp) && !confirm(T('MSG_IMPORT_REPLACE_CONFIRM'))) return;
 
     // Reset all import-target fields first, so values absent from the imported
     // config don't keep stale values (e.g. an old S4 lingering after import).
     var clearFields = [
-        'awg_privatekey', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
+        'awg_iface_p1', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
         'awg_jc', 'awg_jmin', 'awg_jmax', 'awg_s1', 'awg_s2', 'awg_s3', 'awg_s4',
         'awg_h1', 'awg_h2', 'awg_h3', 'awg_h4',
         'awg_i1', 'awg_i2', 'awg_i3', 'awg_i4', 'awg_i5',
-        'awg_peer_pubkey', 'awg_peer_psk', 'awg_peer_endpoint',
+        'awg_peer_p1', 'awg_peer_p2', 'awg_peer_endpoint',
         'awg_peer_allowedips', 'awg_peer_keepalive'
     ];
     for(var ci = 0; ci < clearFields.length; ci++){ setVal(clearFields[ci], ''); }
@@ -2438,7 +2481,7 @@ function parseConfig(text){
 
         if(section === 'iface'){
             switch(key){
-                case 'PrivateKey': setVal('awg_privatekey', val); break;
+                case 'PrivateKey': setVal('awg_iface_p1', val); break;
                 case 'Address':    setVal('awg_address', val); break;
                 case 'ListenPort': setVal('awg_listenport', val); break;
                 case 'MTU':        setVal('awg_mtu', val); break;
@@ -2462,8 +2505,8 @@ function parseConfig(text){
             }
         } else if(section === 'peer'){
             switch(key){
-                case 'PublicKey':          setVal('awg_peer_pubkey', val); break;
-                case 'PresharedKey':       setVal('awg_peer_psk', val); break;
+                case 'PublicKey':          setVal('awg_peer_p1', val); break;
+                case 'PresharedKey':       setVal('awg_peer_p2', val); break;
                 case 'Endpoint':           setVal('awg_peer_endpoint', val); break;
                 case 'AllowedIPs':         setVal('awg_peer_allowedips', val); break;
                 case 'PersistentKeepalive': setVal('awg_peer_keepalive', val); break;
@@ -2471,8 +2514,8 @@ function parseConfig(text){
         }
     }
     // If nothing recognizable was parsed, the file wasn't a valid WG/AWG config.
-    var gotPk = !!((document.getElementById('awg_privatekey') || {}).value);
-    var gotPub = !!((document.getElementById('awg_peer_pubkey') || {}).value);
+    var gotPk = !!((document.getElementById('awg_iface_p1') || {}).value);
+    var gotPub = !!((document.getElementById('awg_peer_p1') || {}).value);
     var gotEp = !!((document.getElementById('awg_peer_endpoint') || {}).value);
     updateFirstRun();
     if(!gotPk && !gotPub && !gotEp){
@@ -2731,7 +2774,7 @@ function initAutocompleteIp(){
                 <thead><tr><td colspan="2">Interface</td></tr></thead>
                 <tr>
                     <th width="35%">Private Key</th>
-                    <td><input type="text" class="input_32_table awg-secret" id="awg_privatekey" maxlength="64" autocomplete="off" aria-label="Private Key (secret)" data-i18n-aria="ARIA_PRIVATE_KEY"></td>
+                    <td><input type="text" class="input_32_table awg-masked" id="awg_iface_p1" maxlength="64" autocomplete="off" aria-label="Private Key (secret)" data-i18n-aria="ARIA_PRIVATE_KEY"></td>
                 </tr>
                 <tr>
                     <th>Address</th>
@@ -2756,11 +2799,11 @@ function initAutocompleteIp(){
                 <thead><tr><td colspan="2">Peer</td></tr></thead>
                 <tr>
                     <th width="35%">Public Key</th>
-                    <td><input type="text" class="input_32_table" id="awg_peer_pubkey" maxlength="64" aria-label="Public Key"></td>
+                    <td><input type="text" class="input_32_table" id="awg_peer_p1" maxlength="64" aria-label="Public Key"></td>
                 </tr>
                 <tr>
                     <th>Preshared Key</th>
-                    <td><input type="text" class="input_32_table awg-secret" id="awg_peer_psk" maxlength="64" autocomplete="off" placeholder="(optional)" aria-label="Preshared Key (secret)" data-i18n-aria="ARIA_PRESHARED_KEY"></td>
+                    <td><input type="text" class="input_32_table awg-masked" id="awg_peer_p2" maxlength="64" autocomplete="off" placeholder="(optional)" aria-label="Preshared Key (secret)" data-i18n-aria="ARIA_PRESHARED_KEY"></td>
                 </tr>
                 <tr>
                     <th>Endpoint</th>
@@ -3057,10 +3100,16 @@ function initAutocompleteIp(){
                     <input type="button" class="button_gen" value="Get diagnostic data" data-i18n-val="BTN_GET_DIAG" onclick="awgRunDiag(this);" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
                 <div id="awg_log" class="awg-log" data-i18n="LOG_WAITING">Waiting for data…</div>
-                <div style="text-align:right; font-size:11px; opacity:0.5; margin-top:4px;">
-                    <a href="https://github.com/r0otx/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; r0otx</a>
-                    &nbsp;&middot;&nbsp;
-                    <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">mod by DCRM</a>
+                <div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px 10px; font-size:11px; opacity:0.55; margin-top:4px;">
+                    <span style="margin-right:auto;">
+                        <span data-i18n="DONATE_LABEL">Support the project</span>&nbsp;&middot;&nbsp;<a href="https://boosty.to/dcrm/donate" target="_blank" style="text-decoration:none;">Boosty</a>&nbsp;&middot;&nbsp;USDT (TRC-20):
+                        <code onclick="awgCopyAddr('TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr', this);" title="Click to copy the address" data-i18n-title="DONATE_COPY_TITLE" style="cursor:pointer; padding:1px 4px; border:1px solid #555; border-radius:3px; font-size:11px;">TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr</code>
+                    </span>
+                    <span style="text-align:right;">
+                        <a href="https://github.com/r0otx/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; r0otx</a>
+                        &nbsp;&middot;&nbsp;
+                        <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">mod by DCRM</a>
+                    </span>
                 </div>
 
             </td></tr>
