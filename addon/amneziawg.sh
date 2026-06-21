@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.87"
+AWG_VERSION="1.1.88"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1897,6 +1897,30 @@ ANEOF
     mv "${ANALYZE_FILE}.$$" "$ANALYZE_FILE" 2>/dev/null
 }
 
+# Emit "proto dst dport" for each of the device's flows, read from the kernel conntrack table in
+# /proc — the `conntrack` CLI is NOT installed on stock Asuswrt-Merlin, so we parse the proc file
+# directly (nf_conntrack, with the older ip_conntrack as a fallback). proto is the L4 name token
+# (tcp/udp/…), and dst/dport are the ORIGINAL tuple (the FIRST dst=/dport= on the line = the real
+# destination before NAT). The line carries two src= (orig + reply); grepping the device's src
+# with a trailing space matches the original tuple and won't prefix-match a longer IP.
+analyze_flows(){
+    local ip="$1" src=""
+    [ -r /proc/net/nf_conntrack ] && src=/proc/net/nf_conntrack
+    [ -z "$src" ] && [ -r /proc/net/ip_conntrack ] && src=/proc/net/ip_conntrack
+    [ -z "$src" ] && return 0
+    grep "src=$ip " "$src" 2>/dev/null | awk '
+        {
+            proto=""; d=""; dp="";
+            for(i=1;i<=NF;i++){
+                if(proto==""&&($i=="tcp"||$i=="udp"||$i=="icmp"||$i=="icmpv6"||$i=="udplite"||$i=="sctp"||$i=="dccp")) proto=$i;
+                if(d==""&&$i ~ /^dst=/)    d=substr($i,5);
+                if(dp==""&&$i ~ /^dport=/)  dp=substr($i,7);
+            }
+            if(proto=="") proto="ip";
+            if(d!="") print proto" "d" "dp;
+        }'
+}
+
 # Background capture worker. Every ~2s while the flag exists (and under the safety cap): refresh
 # the name map, snapshot the device's NEW conntrack flows, name + verdict each, append to the
 # ring buffer, publish. Self-tears-down on timeout (the no-stop path).
@@ -1916,24 +1940,18 @@ analyze_loop(){
                 { tail -c 131072 "$ANALYZE_DNS_LOG" > "${ANALYZE_DNS_LOG}.t" 2>/dev/null && mv "${ANALYZE_DNS_LOG}.t" "$ANALYZE_DNS_LOG"; }
         fi
         analyze_build_map
-        if command -v conntrack >/dev/null 2>&1; then
-            # Original-tuple dst/dport of the device's flows (first dst=/dport= on each line).
-            conntrack -L -s "$ip" 2>/dev/null | awk '
-                { proto=$1; d=""; dp="";
-                  for(i=1;i<=NF;i++){ if(d==""&&$i ~ /^dst=/)d=substr($i,5); if(dp==""&&$i ~ /^dport=/)dp=substr($i,7); }
-                  if(d!="") print proto" "d" "dp; }' | while read -r proto dst dport; do
-                # Skip LAN-local / router / loopback / multicast / broadcast destinations.
-                case "$dst" in "$router_ip"|127.*|224.*|225.*|226.*|227.*|228.*|229.*|23[0-9].*|255.*|0.*) continue ;; esac
-                [ -n "$lan_pre" ] && case "$dst" in "$lan_pre"*) continue ;; esac
-                key="$proto:$dst:$dport"
-                grep -qxF "$key" "$ANALYZE_SEEN" 2>/dev/null && continue
-                echo "$key" >> "$ANALYZE_SEEN"
-                name=$(awk -F'\t' -v ip="$dst" '$1==ip{print $2; exit}' "$ANALYZE_MAP" 2>/dev/null)
-                [ -z "$name" ] && name="$dst"
-                verdict=$(analyze_verdict "$policy" "$dst")
-                echo "{\"t\":\"$(date '+%H:%M:%S')\",\"name\":\"$name\",\"ip\":\"$dst\",\"proto\":\"$proto\",\"port\":\"$dport\",\"verdict\":\"$verdict\"}" >> "$ANALYZE_ENTRIES"
-            done
-        fi
+        analyze_flows "$ip" | while read -r proto dst dport; do
+            # Skip LAN-local / router / loopback / multicast / broadcast destinations.
+            case "$dst" in "$router_ip"|127.*|224.*|225.*|226.*|227.*|228.*|229.*|23[0-9].*|255.*|0.*) continue ;; esac
+            [ -n "$lan_pre" ] && case "$dst" in "$lan_pre"*) continue ;; esac
+            key="$proto:$dst:$dport"
+            grep -qxF "$key" "$ANALYZE_SEEN" 2>/dev/null && continue
+            echo "$key" >> "$ANALYZE_SEEN"
+            name=$(awk -F'\t' -v ip="$dst" '$1==ip{print $2; exit}' "$ANALYZE_MAP" 2>/dev/null)
+            [ -z "$name" ] && name="$dst"
+            verdict=$(analyze_verdict "$policy" "$dst")
+            echo "{\"t\":\"$(date '+%H:%M:%S')\",\"name\":\"$name\",\"ip\":\"$dst\",\"proto\":\"$proto\",\"port\":\"$dport\",\"verdict\":\"$verdict\"}" >> "$ANALYZE_ENTRIES"
+        done
         if [ -f "$ANALYZE_ENTRIES" ]; then
             tail -n "$ANALYZE_MAX_ENTRIES" "$ANALYZE_ENTRIES" > "${ANALYZE_ENTRIES}.t" 2>/dev/null && mv "${ANALYZE_ENTRIES}.t" "$ANALYZE_ENTRIES"
         fi
