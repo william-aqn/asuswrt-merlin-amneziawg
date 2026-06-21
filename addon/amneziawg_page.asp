@@ -130,8 +130,8 @@
 
 #awg_client_table { width: 100%; margin-top: 6px; }
 #awg_client_table td { padding: 5px 8px; }
-/* Action column: tight padding so the small × button isn't lost in its (narrow) cell. */
-#awg_client_table td:last-child { padding-left: 2px; padding-right: 2px; }
+/* Actions column: analyze + remove buttons grouped and centered in a single cell. */
+.awg-cell-actions { display: flex; justify-content: center; align-items: center; gap: 8px; }
 /* Keep every control inside its fixed-width cell so nothing overflows and forces a scrollbar. */
 #awg_client_table input, #awg_client_table select { box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; }
 #awg_client_table .awg-remove-btn { max-width: 100%; box-sizing: border-box; }
@@ -314,7 +314,6 @@ en: {
     ARIA_REMOVE_DEVICE: "Remove device",
     TITLE_REMOVE: "Remove",
     // ---- traffic analysis (per-device) ----
-    TH_ANALYZE: "Analysis",
     ARIA_ANALYZE: "Analyze device traffic",
     TITLE_ANALYZE: "Traffic analysis",
     ANALYZE_MODAL_TITLE: "Traffic analysis — {0}",
@@ -430,6 +429,7 @@ en: {
     TH_IP_ADDRESS: "IP address",
     TH_DEVICE_NAME: "Device name",
     TH_POLICY: "Policy",
+    TH_ACTIONS: "Actions",
     BTN_ADD_DEVICE: "+ Add device",
     BTN_FROM_DHCP: "+ From DHCP list",
     GEO_DNS_IMPORTANT_HTML: "<b>Important:</b> For VPN Geo to work, devices must use the router as their DNS server.<br>\n                    iPhone: Settings &gt; Wi-Fi &gt; (i) &gt; DNS &gt; Manual &gt; only ",
@@ -590,7 +590,6 @@ ru: {
     ARIA_REMOVE_DEVICE: "Удалить устройство",
     TITLE_REMOVE: "Удалить",
     // ---- traffic analysis (per-device) ----
-    TH_ANALYZE: "Анализ",
     ARIA_ANALYZE: "Анализ трафика устройства",
     TITLE_ANALYZE: "Анализ трафика",
     ANALYZE_MODAL_TITLE: "Анализ трафика — {0}",
@@ -706,6 +705,7 @@ ru: {
     TH_IP_ADDRESS: "IP-адрес",
     TH_DEVICE_NAME: "Имя устройства",
     TH_POLICY: "Политика",
+    TH_ACTIONS: "Действия",
     BTN_ADD_DEVICE: "+ Добавить устройство",
     BTN_FROM_DHCP: "+ Из списка DHCP",
     GEO_DNS_IMPORTANT_HTML: "<b>Важно:</b> Для работы VPN Geo устройства должны использовать роутер как DNS-сервер.<br>\n                    iPhone: Настройки &gt; Wi-Fi &gt; (i) &gt; DNS &gt; Вручную &gt; только ",
@@ -1630,15 +1630,17 @@ function addClientRow(ip, name, policy){
             '<option value="vpn_geo"' + (policy==='vpn_geo'?' selected':'') + '>' + escHtml(T('OPT_VPN_GEO')) + '</option>' +
             '<option value="direct"' + (policy==='direct'?' selected':'') + '>' + escHtml(T('OPT_DIRECT')) + '</option>' +
         '</select></td>' +
-        '<td style="text-align:center;"><button type="button" class="awg-analyze-btn" aria-label="' + escHtml(T('ARIA_ANALYZE')) + '" title="' + escHtml(T('TITLE_ANALYZE')) + '" onclick="awgOpenAnalyze(this);"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 17 9 11 13 15 21 7"></polyline><polyline points="15 7 21 7 21 13"></polyline></svg></button></td>' +
-        '<td style="text-align:center;"><button type="button" class="awg-remove-btn" aria-label="' + escHtml(T('ARIA_REMOVE_DEVICE')) + '" title="' + escHtml(T('TITLE_REMOVE')) + '" onclick="awgRemoveClientRow(this);"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg></button></td>';
+        '<td><div class="awg-cell-actions">' +
+            '<button type="button" class="awg-analyze-btn" aria-label="' + escHtml(T('ARIA_ANALYZE')) + '" title="' + escHtml(T('TITLE_ANALYZE')) + '" onclick="awgOpenAnalyze(this);"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 17 9 11 13 15 21 7"></polyline><polyline points="15 7 21 7 21 13"></polyline></svg></button>' +
+            '<button type="button" class="awg-remove-btn" aria-label="' + escHtml(T('ARIA_REMOVE_DEVICE')) + '" title="' + escHtml(T('TITLE_REMOVE')) + '" onclick="awgRemoveClientRow(this);"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg></button>' +
+        '</div></td>';
     tbody.appendChild(tr);
     updateGeoVisibility();
 }
 
-// Remove a device row with one-level undo: a mis-tap on the × (which sits right next to the
-// policy select) is easy, and the deletion only becomes permanent on Apply. Stash the row
-// and offer an "Undo" link near the Add buttons.
+// Remove a device row with one-level undo: a mis-tap on the × (which shares the Actions
+// column with the analyze button) is easy, and the deletion only becomes permanent on Apply.
+// Stash the row and offer an "Undo" link near the Add buttons.
 var awgLastRemoved = null;
 function awgRemoveClientRow(btn){
     var tr = btn.closest('tr');
@@ -3015,10 +3017,9 @@ function initAutocompleteIp(){
                 <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="table-layout:fixed;">
                 <thead><tr>
                     <td width="18%" data-i18n="TH_IP_ADDRESS">IP address</td>
-                    <td width="32%" data-i18n="TH_DEVICE_NAME">Device name</td>
-                    <td width="34%" data-i18n="TH_POLICY">Policy</td>
-                    <td width="12%" data-i18n="TH_ANALYZE">Analysis</td>
-                    <td width="4%"></td>
+                    <td width="33%" data-i18n="TH_DEVICE_NAME">Device name</td>
+                    <td width="37%" data-i18n="TH_POLICY">Policy</td>
+                    <td width="12%" data-i18n="TH_ACTIONS">Actions</td>
                 </tr></thead>
                 <tbody id="awg_client_rows">
                 </tbody>

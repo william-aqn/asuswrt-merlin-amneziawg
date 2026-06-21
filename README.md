@@ -40,6 +40,13 @@ VPN-клиент с обходом DPI-блокировок на базе [Amnez
 
 </details>
 
+<details>
+<summary>Скриншот Анализатора трафика</summary>
+
+![analyse](assets/analyse.png)
+
+</details>
+
 ## Changelog
 
 Полный список изменений — в файле [CHANGELOG.md](CHANGELOG.md).
