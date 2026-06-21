@@ -515,7 +515,7 @@ en: {
     APPLY_DESC1_HTML: "<b>Apply</b> — save the settings and apply them «on the fly»: updates devices, routing policies, the firewall and the GeoIP/GeoSite lists <b>without dropping the VPN connection</b>. If the VPN is stopped — the settings are just saved and applied at the next start.",
     APPLY_DESC2_HTML: "<b>Save and fully restart the VPN</b> (stop → start) — the config is re-applied (awg setconf), the interface, routes and firewall are rebuilt, the connection drops for a couple of seconds. Needed when changing keys, the server (Endpoint), MTU or obfuscation parameters (Jc, S1, H1…H4), or if the connection is «stuck».",
     SEC_LOG: "Log",
-    BTN_GET_DIAG: "Get diagnostic data",
+    BTN_GET_DIAG: "Get diagnostic data and copy log",
     LOG_WAITING: "Waiting for data…",
     MODAL_UPDATE_TITLE: "Update",
     INSTALL_LABEL: "Install:",
@@ -807,7 +807,7 @@ ru: {
     APPLY_DESC1_HTML: "<b>Применить</b> — сохранить настройки и применить их «на лету»: обновляет устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite <b>без разрыва VPN-соединения</b>. Если VPN остановлен — настройки просто сохранятся и применятся при следующем запуске.",
     APPLY_DESC2_HTML: "<b>Сохранить и полностью перезапустить VPN</b> (stop → start) — заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall, соединение на пару секунд прерывается. Нужно при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».",
     SEC_LOG: "Журнал",
-    BTN_GET_DIAG: "Получить диагностические данные",
+    BTN_GET_DIAG: "Получить диагностические данные и скопировать лог",
     LOG_WAITING: "Ожидание данных…",
     MODAL_UPDATE_TITLE: "Обновление",
     INSTALL_LABEL: "Установить:",
@@ -3504,7 +3504,7 @@ function initAutocompleteIp(){
                 <!-- ==================== LOG ==================== -->
                 <div class="awg-section" style="margin-top:15px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
                     <span data-i18n="SEC_LOG">Log</span>
-                    <input type="button" class="button_gen" value="Get diagnostic data" data-i18n-val="BTN_GET_DIAG" onclick="awgRunDiag(this);" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
+                    <input type="button" class="button_gen" value="Get diagnostic data and copy log" data-i18n-val="BTN_GET_DIAG" onclick="awgRunDiag(this);" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
                 <div id="awg_log" class="awg-log" data-i18n="LOG_WAITING">Waiting for data…</div>
                 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px 10px; font-size:11px; opacity:0.55; margin-top:4px;">
