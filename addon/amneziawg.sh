@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.86"
+AWG_VERSION="1.1.87"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -14,6 +14,22 @@ IFACE="awg0"
 STATUS_FILE="/www/user/awg_status.htm"
 UI_LOG="/www/user/awg_log.htm"
 DIAG_FILE="/www/user/awg_diag.htm"
+# --- Per-device traffic analysis (diagnostic) ---
+# A user-started, per-device capture: conntrack gives the live connection stream, a temporary
+# dnsmasq query log supplies domain names for the destinations, and the routing verdict per
+# request is derived from the device policy + `ipset test` (NOT a conntrack mark — the fwmark
+# is per-packet, never CONNMARK-saved). The UI polls ANALYZE_FILE while a capture runs.
+ANALYZE_FILE="/www/user/awg_analyze.htm"          # JSON the UI polls
+ANALYZE_FLAG="/tmp/.awg_analyze_run"              # presence = active; contents = target IP
+ANALYZE_PID="/tmp/.awg_analyze.pid"              # PID of the background capture loop
+ANALYZE_STARTED="/tmp/.awg_analyze_started"      # capture start epoch
+ANALYZE_ENTRIES="/tmp/.awg_analyze_entries"      # one JSON object per line, ring-trimmed
+ANALYZE_SEEN="/tmp/.awg_analyze_seen"            # seen flow keys proto:dst:dport (dedup)
+ANALYZE_MAP="/tmp/.awg_analyze_map"              # ip<TAB>name from the dnsmasq query log
+ANALYZE_DNS_LOG="/tmp/awg_analyze_dns.log"       # dnsmasq query log, only while capturing
+ANALYZE_DNS_CONF="$AWG_DIR/dnsmasq_analyze.conf" # temp dnsmasq snippet enabling query logging
+ANALYZE_MAX_SECONDS=600                           # auto-stop safety cap (10 min)
+ANALYZE_MAX_ENTRIES=200                           # ring-buffer size for the on-page table
 # Manual .ipk upload (web UI): base64 text is appended here chunk-by-chunk (awgupload
 # event), then decoded + installed (awgmanualinstall). Progress/result the UI polls:
 AWG_UPLOAD_B64="/tmp/amneziawg_manual.ipk.b64"
@@ -1644,6 +1660,7 @@ do_stop(){
     local user_stop="$1"   # "user" = deliberate user stop/uninstall; removes the watchdog cron
     acquire_lock || { log_msg "Cannot acquire lock, aborting stop"; return 1; }
     rm -f "$STARTING_FLAG"
+    do_analyze_stop quiet   # never leave a capture (or its dnsmasq query logging) running past a stop
     # Mark stop-in-progress so the UI shows "Stopping..." even across a page refresh
     touch "$STOPPING_FLAG"
     update_status
@@ -1769,6 +1786,8 @@ EOF
     [ -f "$STARTING_FLAG" ] && starting=true
     local stopping=false
     [ -f "$STOPPING_FLAG" ] && stopping=true
+    local analyze_active=false
+    [ -f "$ANALYZE_FLAG" ] && analyze_active=true
 
     # Co-resident DPI/proxy tool (Xray/zapret/etc.), surfaced to the UI so it can warn that
     # "all->VPN" + DNS interception will collide with it.
@@ -1794,9 +1813,178 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
+}
+
+# --- Per-device traffic analysis ---
+
+# Ground-truth routing policy for a device IP: its explicit entry in clients.list, else the
+# default policy, else "direct". This is the APPLIED policy (what actually routes), not the
+# unsaved dropdown in the UI — the modal shows what we return so there's no confusion.
+analyze_device_policy(){
+    local ip="$1" pol=""
+    if [ -f "$CLIENTS_FILE" ]; then
+        pol=$(awk -F',' -v ip="$ip" '
+            { k=$1; gsub(/[ \t\r]/,"",k);
+              if(k==ip){ p=$3; gsub(/[ \t\r]/,"",p); print p; exit } }
+        ' "$CLIENTS_FILE")
+    fi
+    [ -z "$pol" ] && pol=$(get_setting awg_default_policy)
+    [ -z "$pol" ] && pol="direct"
+    echo "$pol"
+}
+
+# Routing verdict for one destination IP under a policy: vpn | geo | direct.
+# vpn_geo asks the SAME ipset the mangle rule matches on, so this reproduces the kernel's choice.
+analyze_verdict(){
+    case "$1" in
+        vpn_all) echo "vpn" ;;
+        vpn_geo) if ipset test "$IPSET_NAME" "$2" >/dev/null 2>&1; then echo "geo"; else echo "direct"; fi ;;
+        *)       echo "direct" ;;
+    esac
+}
+
+# Turn dnsmasq query logging ON (only while a capture runs) via a dedicated conf snippet,
+# registered in the include exactly like the geo conf (conf-file= line, idempotent). The log
+# feeds the IP->name map. Uses the existing self-healing reload_dnsmasq.
+analyze_dns_log_on(){
+    : > "$ANALYZE_DNS_LOG" 2>/dev/null
+    printf 'log-queries=extra\nlog-facility=%s\n' "$ANALYZE_DNS_LOG" > "$ANALYZE_DNS_CONF"
+    if ! grep -qF "conf-file=$ANALYZE_DNS_CONF" "$DNSMASQ_INCLUDE" 2>/dev/null; then
+        echo "conf-file=$ANALYZE_DNS_CONF" >> "$DNSMASQ_INCLUDE"
+    fi
+    reload_dnsmasq
+}
+
+# Turn dnsmasq query logging back OFF and remove the log. Only reloads dnsmasq if the snippet
+# was actually registered, so a stop with nothing running is cheap (no needless restart).
+analyze_dns_log_off(){
+    rm -f "$ANALYZE_DNS_CONF"
+    if [ -f "$DNSMASQ_INCLUDE" ] && grep -qF "$ANALYZE_DNS_CONF" "$DNSMASQ_INCLUDE" 2>/dev/null; then
+        grep -vF "$ANALYZE_DNS_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.awgan.tmp" 2>/dev/null \
+            && mv "${DNSMASQ_INCLUDE}.awgan.tmp" "$DNSMASQ_INCLUDE"
+        reload_dnsmasq
+    fi
+    rm -f "$ANALYZE_DNS_LOG"
+}
+
+# (Re)build the IP->name map from the dnsmasq query log. Indexes from the end of each line so it
+# works with or without the log-queries=extra prefix; "<name> is <ipv4>" reply/cached lines only
+# (CNAME replies end in a name, not an IPv4, and are skipped). Name sanitized to a JSON-safe set.
+analyze_build_map(){
+    if [ ! -f "$ANALYZE_DNS_LOG" ]; then : > "$ANALYZE_MAP" 2>/dev/null; return; fi
+    awk '
+        / is [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {
+            ip=$NF; name=$(NF-2);
+            gsub(/[^A-Za-z0-9._-]/,"",name);
+            if(name!="") map[ip]=name;
+        }
+        END { for(k in map) print k"\t"map[k] }
+    ' "$ANALYZE_DNS_LOG" > "$ANALYZE_MAP" 2>/dev/null
+}
+
+# Publish the analysis state as JSON (atomic temp+rename, like update_status). The entries file
+# holds one ready-made JSON object per line; we just splice them into an array.
+analyze_write(){
+    local ip="$1" policy="$2" active="$3" started="${4:-0}" arr=""
+    [ -f "$ANALYZE_ENTRIES" ] && arr=$(awk 'BEGIN{ORS=""} {if(NR>1)print ","; print}' "$ANALYZE_ENTRIES" 2>/dev/null)
+    rm -f "${ANALYZE_FILE}.tmp" "${ANALYZE_FILE}".[0-9]* 2>/dev/null
+    cat > "${ANALYZE_FILE}.$$" <<ANEOF
+{"active":${active},"device":"${ip}","policy":"${policy}","started":${started},"entries":[${arr}]}
+ANEOF
+    mv "${ANALYZE_FILE}.$$" "$ANALYZE_FILE" 2>/dev/null
+}
+
+# Background capture worker. Every ~2s while the flag exists (and under the safety cap): refresh
+# the name map, snapshot the device's NEW conntrack flows, name + verdict each, append to the
+# ring buffer, publish. Self-tears-down on timeout (the no-stop path).
+analyze_loop(){
+    local ip="$1" policy="$2" started="$3"
+    local router_ip lan_pre deadline now sz
+    router_ip=$(get_router_ip)
+    lan_pre=$(printf '%s' "$router_ip" | sed 's/\.[0-9]*$/./')
+    deadline=$((started + ANALYZE_MAX_SECONDS))
+    while [ -f "$ANALYZE_FLAG" ]; do
+        now=$(date +%s)
+        [ "$now" -ge "$deadline" ] && break
+        # Keep the query log from growing without bound on a busy LAN.
+        if [ -f "$ANALYZE_DNS_LOG" ]; then
+            sz=$(wc -c < "$ANALYZE_DNS_LOG" 2>/dev/null)
+            [ -n "$sz" ] && [ "$sz" -gt 262144 ] 2>/dev/null && \
+                { tail -c 131072 "$ANALYZE_DNS_LOG" > "${ANALYZE_DNS_LOG}.t" 2>/dev/null && mv "${ANALYZE_DNS_LOG}.t" "$ANALYZE_DNS_LOG"; }
+        fi
+        analyze_build_map
+        if command -v conntrack >/dev/null 2>&1; then
+            # Original-tuple dst/dport of the device's flows (first dst=/dport= on each line).
+            conntrack -L -s "$ip" 2>/dev/null | awk '
+                { proto=$1; d=""; dp="";
+                  for(i=1;i<=NF;i++){ if(d==""&&$i ~ /^dst=/)d=substr($i,5); if(dp==""&&$i ~ /^dport=/)dp=substr($i,7); }
+                  if(d!="") print proto" "d" "dp; }' | while read -r proto dst dport; do
+                # Skip LAN-local / router / loopback / multicast / broadcast destinations.
+                case "$dst" in "$router_ip"|127.*|224.*|225.*|226.*|227.*|228.*|229.*|23[0-9].*|255.*|0.*) continue ;; esac
+                [ -n "$lan_pre" ] && case "$dst" in "$lan_pre"*) continue ;; esac
+                key="$proto:$dst:$dport"
+                grep -qxF "$key" "$ANALYZE_SEEN" 2>/dev/null && continue
+                echo "$key" >> "$ANALYZE_SEEN"
+                name=$(awk -F'\t' -v ip="$dst" '$1==ip{print $2; exit}' "$ANALYZE_MAP" 2>/dev/null)
+                [ -z "$name" ] && name="$dst"
+                verdict=$(analyze_verdict "$policy" "$dst")
+                echo "{\"t\":\"$(date '+%H:%M:%S')\",\"name\":\"$name\",\"ip\":\"$dst\",\"proto\":\"$proto\",\"port\":\"$dport\",\"verdict\":\"$verdict\"}" >> "$ANALYZE_ENTRIES"
+            done
+        fi
+        if [ -f "$ANALYZE_ENTRIES" ]; then
+            tail -n "$ANALYZE_MAX_ENTRIES" "$ANALYZE_ENTRIES" > "${ANALYZE_ENTRIES}.t" 2>/dev/null && mv "${ANALYZE_ENTRIES}.t" "$ANALYZE_ENTRIES"
+        fi
+        analyze_write "$ip" "$policy" true "$started"
+        sleep 2
+    done
+    # Timeout / flag-cleared path: publish final inactive state and remove the DNS log snippet.
+    rm -f "$ANALYZE_FLAG"
+    analyze_write "$ip" "$policy" false "$started"
+    analyze_dns_log_off
+    rm -f "$ANALYZE_PID"
+}
+
+# Start a capture for the device IP in the awg_analyze_device setting. Returns immediately
+# (service-event context must not block) — the worker runs detached.
+do_analyze_start(){
+    local ip pol now
+    ip=$(get_setting awg_analyze_device)
+    ip=$(printf '%s' "$ip" | tr -cd '0-9.')
+    if ! echo "$ip" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+        echo '{"active":false,"device":"","policy":"","started":0,"entries":[],"error":"bad_ip"}' > "$ANALYZE_FILE"
+        return
+    fi
+    do_analyze_stop quiet          # clear any prior session first
+    pol=$(analyze_device_policy "$ip")
+    now=$(date +%s)
+    echo "$ip" > "$ANALYZE_FLAG"
+    echo "$now" > "$ANALYZE_STARTED"
+    : > "$ANALYZE_ENTRIES"; : > "$ANALYZE_SEEN"; : > "$ANALYZE_MAP"
+    analyze_dns_log_on
+    analyze_write "$ip" "$pol" true "$now"
+    analyze_loop "$ip" "$pol" "$now" </dev/null >/dev/null 2>&1 &
+    echo $! > "$ANALYZE_PID"
+    log_msg "Traffic analysis started for $ip ($pol)"
+}
+
+# Stop the capture: clear the flag, kill the worker, restore DNS, publish a final inactive
+# state (keeping the last entries visible). $1="quiet" suppresses the log line.
+do_analyze_stop(){
+    local ip pol was=0 pid
+    [ -f "$ANALYZE_FLAG" ] && was=1
+    rm -f "$ANALYZE_FLAG"
+    pid=$(cat "$ANALYZE_PID" 2>/dev/null)
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null
+    rm -f "$ANALYZE_PID" "$ANALYZE_SEEN" "$ANALYZE_MAP"
+    analyze_dns_log_off
+    ip=$(get_setting awg_analyze_device); ip=$(printf '%s' "$ip" | tr -cd '0-9.')
+    pol=$(analyze_device_policy "$ip")
+    analyze_write "$ip" "$pol" false "$(cat "$ANALYZE_STARTED" 2>/dev/null || echo 0)"
+    rm -f "$ANALYZE_STARTED"
+    [ "$1" = quiet ] || [ "$was" = 0 ] || log_msg "Traffic analysis stopped"
 }
 
 # --- Install/Mount/Uninstall ---
@@ -1889,6 +2077,7 @@ do_uninstall(){
     local page=$(ls /www/user/ 2>/dev/null | while read f; do grep -l "AmneziaWG" "/www/user/$f" 2>/dev/null; done | head -1)
     [ -n "$page" ] && rm -f "$page"
     rm -f "$STATUS_FILE" /www/user/awg_widget.js /www/user/v2fly_categories.htm /www/user/awg_changelog.htm /www/user/awg_update.htm /www/user/awg_log.htm /www/user/awg_diag.htm
+    rm -f "$ANALYZE_FILE" "$ANALYZE_DNS_CONF" "$ANALYZE_DNS_LOG" /tmp/.awg_analyze_*
 
     rm -rf "$ADDON_DIR"
 
@@ -2512,6 +2701,8 @@ do_service_event(){
             do_diag > "$DIAG_FILE" 2>&1
             echo "[DIAG_DONE]" >> "$DIAG_FILE"
             ;;
+        awganalyzestart) do_analyze_start ;;
+        awganalyzestop)  do_analyze_stop ;;
     esac
 }
 
@@ -2543,5 +2734,7 @@ case "$1" in
     firewall_restart) do_firewall_restart fast ;;
     download_geo)   download_all_geo ;;
     ensure_geo)     ensure_geo ;;
+    analyze_start)  do_analyze_start ;;
+    analyze_stop)   do_analyze_stop ;;
     *)              echo "Usage: $0 {start|stop|restart|status|diag|update_geo|download_geo|install_page|uninstall}" ;;
 esac

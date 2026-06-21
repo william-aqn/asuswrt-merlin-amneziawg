@@ -140,6 +140,24 @@
     border-radius: 4px; cursor: pointer; font-size: 16px; line-height: 1;
 }
 .awg-remove-btn:hover { background: #a00; color: #fff; }
+/* Per-device traffic-analysis trigger: same footprint as the remove button, neutral blue. */
+.awg-analyze-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; padding: 0;
+    background: transparent; border: 1px solid #5db0ff; color: #5db0ff;
+    border-radius: 4px; cursor: pointer; line-height: 1;
+}
+.awg-analyze-btn:hover { background: #5db0ff; color: #15202b; }
+/* Verdict badges in the analysis table. Green = goes through the VPN, gray = direct. */
+.awg-verdict { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:bold; white-space:nowrap; }
+.awg-verdict.vpn  { background:#1a6e2e; color:#fff; }
+.awg-verdict.geo  { background:#1a6e2e; color:#fff; }
+.awg-verdict.direct { background:#444b52; color:#cfd6dd; }
+/* Live analysis table layout. */
+#awg_analyze_table { width:100%; border-collapse:collapse; font-size:12px; }
+#awg_analyze_table th { text-align:left; padding:5px 8px; border-bottom:1px solid #444; color:#b6bdc7; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; position:sticky; top:0; background:#2b3338; }
+#awg_analyze_table td { padding:4px 8px; border-bottom:1px solid #353d43; vertical-align:top; word-break:break-all; }
+#awg_analyze_table td.awg-an-mono { font-family:"Courier New","Lucida Console",monospace; color:#9aa3ad; white-space:nowrap; }
 .awg-add-btn, .awg-import-btn {
     cursor: pointer;
     font-size: 12px;
@@ -290,6 +308,25 @@ en: {
     ARIA_DEVICE_POLICY: "Device routing policy",
     ARIA_REMOVE_DEVICE: "Remove device",
     TITLE_REMOVE: "Remove",
+    // ---- traffic analysis (per-device) ----
+    TH_ANALYZE: "Analysis",
+    ARIA_ANALYZE: "Analyze device traffic",
+    TITLE_ANALYZE: "Traffic analysis",
+    ANALYZE_MODAL_TITLE: "Traffic analysis — {0}",
+    ANALYZE_START: "Start",
+    ANALYZE_STOP: "Stop",
+    ANALYZE_POLICY: "Policy",
+    ANALYZE_NEED_IP: "Enter the device IP first.",
+    ANALYZE_WAITING: "Capturing… generate some traffic on the device.",
+    ANALYZE_NO_DATA: "Press “Start” to capture this device's requests.",
+    ANALYZE_COL_TIME: "Time",
+    ANALYZE_COL_NAME: "Request",
+    ANALYZE_COL_DEST: "Destination",
+    ANALYZE_COL_VERDICT: "Route",
+    VERDICT_VPN: "VPN",
+    VERDICT_GEO: "VPN (Geo)",
+    VERDICT_DIRECT: "Direct",
+    ANALYZE_NOTE: "Diagnostic. Starting briefly restarts DNS to capture domain names; only devices that use the router as DNS get named. The route reflects the device's applied policy and the current geo lists.",
     MSG_DEVICE_REMOVED: "Device removed.",
     BTN_UNDO: "Undo",
     // ---- geo download ----
@@ -544,6 +581,25 @@ ru: {
     ARIA_DEVICE_POLICY: "Политика маршрутизации устройства",
     ARIA_REMOVE_DEVICE: "Удалить устройство",
     TITLE_REMOVE: "Удалить",
+    // ---- traffic analysis (per-device) ----
+    TH_ANALYZE: "Анализ",
+    ARIA_ANALYZE: "Анализ трафика устройства",
+    TITLE_ANALYZE: "Анализ трафика",
+    ANALYZE_MODAL_TITLE: "Анализ трафика — {0}",
+    ANALYZE_START: "Старт",
+    ANALYZE_STOP: "Стоп",
+    ANALYZE_POLICY: "Политика",
+    ANALYZE_NEED_IP: "Сначала укажите IP устройства.",
+    ANALYZE_WAITING: "Идёт захват… создайте трафик на устройстве.",
+    ANALYZE_NO_DATA: "Нажмите «Старт», чтобы захватить запросы устройства.",
+    ANALYZE_COL_TIME: "Время",
+    ANALYZE_COL_NAME: "Запрос",
+    ANALYZE_COL_DEST: "Назначение",
+    ANALYZE_COL_VERDICT: "Маршрут",
+    VERDICT_VPN: "VPN",
+    VERDICT_GEO: "VPN (Geo)",
+    VERDICT_DIRECT: "Напрямую",
+    ANALYZE_NOTE: "Диагностика. При старте кратко перезапускается DNS для захвата доменных имён; имена видны только для устройств, использующих роутер как DNS. Маршрут отражает применённую политику устройства и текущие гео-списки.",
     MSG_DEVICE_REMOVED: "Устройство удалено.",
     BTN_UNDO: "Отменить",
     // ---- geo download ----
@@ -1536,6 +1592,7 @@ function addClientRow(ip, name, policy){
             '<option value="vpn_geo"' + (policy==='vpn_geo'?' selected':'') + '>' + escHtml(T('OPT_VPN_GEO')) + '</option>' +
             '<option value="direct"' + (policy==='direct'?' selected':'') + '>' + escHtml(T('OPT_DIRECT')) + '</option>' +
         '</select></td>' +
+        '<td style="text-align:center;"><button type="button" class="awg-analyze-btn" aria-label="' + escHtml(T('ARIA_ANALYZE')) + '" title="' + escHtml(T('TITLE_ANALYZE')) + '" onclick="awgOpenAnalyze(this);"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 17 9 11 13 15 21 7"></polyline><polyline points="15 7 21 7 21 13"></polyline></svg></button></td>' +
         '<td style="text-align:center;"><button type="button" class="awg-remove-btn" aria-label="' + escHtml(T('ARIA_REMOVE_DEVICE')) + '" title="' + escHtml(T('TITLE_REMOVE')) + '" onclick="awgRemoveClientRow(this);">&times;</button></td>';
     tbody.appendChild(tr);
     updateGeoVisibility();
@@ -1932,6 +1989,163 @@ function awgCloseDiag(){
     if(awgDiagPrevFocus){ try { awgDiagPrevFocus.focus(); } catch(e){} awgDiagPrevFocus = null; }
 }
 function awgDiagKeydown(e){ if(e.key === 'Escape' || e.keyCode === 27) awgCloseDiag(); }
+
+// ---- Per-device traffic analysis modal (Start/Stop + live request log) ----
+// Fires awganalyzestart/awganalyzestop (same form/service-event channel as diagnostics) and
+// polls /user/awg_analyze.htm for the live stream the backend captures (conntrack flows named
+// from a temporary dnsmasq query log, with a Direct/VPN verdict per request).
+var awgAnalyzeIp = '';
+var awgAnalyzeActive = false;
+var awgAnalyzeTimer = null;
+var awgAnalyzePrevFocus = null;
+
+function awgPolicyLabel(p){
+    if(p === 'vpn_all') return T('OPT_VPN_ALL');
+    if(p === 'vpn_geo') return T('OPT_VPN_GEO');
+    if(p === 'direct')  return T('OPT_DIRECT');
+    return '—';
+}
+function awgVerdictInfo(v){
+    if(v === 'vpn') return { cls:'vpn',    label:T('VERDICT_VPN') };
+    if(v === 'geo') return { cls:'geo',    label:T('VERDICT_GEO') };
+    return            { cls:'direct', label:T('VERDICT_DIRECT') };
+}
+function awgRowOf(el){
+    if(el.closest) return el.closest('tr');
+    var n = el; while(n && n.tagName !== 'TR') n = n.parentNode; return n;
+}
+function awgAnalyzeShowEmpty(msg){
+    var t = document.getElementById('awg_analyze_table');
+    var e = document.getElementById('awg_analyze_empty');
+    if(msg){ if(t) t.style.display='none'; if(e){ e.style.display='block'; e.textContent = msg; } }
+    else   { if(t) t.style.display='';     if(e){ e.style.display='none';  e.textContent = ''; } }
+}
+function awgAnalyzeSetToggle(active){
+    var b = document.getElementById('awg_analyze_toggle');
+    if(b) b.value = active ? T('ANALYZE_STOP') : T('ANALYZE_START');
+}
+function awgOpenAnalyze(btn){
+    var tr = awgRowOf(btn);
+    var ipEl = tr ? tr.querySelector('.client_ip') : null;
+    var ip = ipEl ? String(ipEl.value || '').trim() : '';
+    if(!ip){ alert(T('ANALYZE_NEED_IP')); return; }
+    var polEl = tr ? tr.querySelector('.client_policy') : null;
+    awgAnalyzeIp = ip;
+    var m = document.getElementById('awg_analyze_modal');
+    if(!m) return;
+    var title = document.getElementById('awg_analyze_title');
+    if(title) title.textContent = T('ANALYZE_MODAL_TITLE', ip);
+    var polBox = document.getElementById('awg_analyze_policy');
+    if(polBox) polBox.textContent = awgPolicyLabel(polEl ? polEl.value : '');
+    var rows = document.getElementById('awg_analyze_rows');
+    if(rows) rows.innerHTML = '';
+    awgAnalyzeActive = false;
+    awgAnalyzeSetToggle(false);
+    awgAnalyzeShowEmpty(T('ANALYZE_NO_DATA'));
+    m.style.display = 'block';
+    awgAnalyzePrevFocus = document.activeElement;
+    document.addEventListener('keydown', awgAnalyzeKeydown);
+    awgAnalyzeResumeCheck();   // resume display if a capture for this device is already running
+}
+function awgAnalyzeResumeCheck(){
+    var x = new XMLHttpRequest();
+    x.open('GET', '/user/awg_analyze.htm?_=' + Date.now(), true);
+    x.timeout = 3000;
+    x.onload = function(){
+        if(x.status !== 200 || !x.responseText) return;
+        var data; try { data = JSON.parse(x.responseText); } catch(e){ return; }
+        if(data && data.active && data.device === awgAnalyzeIp){
+            awgAnalyzeActive = true;
+            awgAnalyzeSetToggle(true);
+            if(awgAnalyzeTimer) clearInterval(awgAnalyzeTimer);
+            awgAnalyzeTimer = setInterval(awgAnalyzePoll, 1500);
+            awgAnalyzeRender(data);
+        }
+    };
+    x.send();
+}
+function awgAnalyzeToggle(){
+    if(awgAnalyzeActive) awgAnalyzeStop(); else awgAnalyzeStart();
+}
+function awgAnalyzeStart(){
+    if(!awgAnalyzeIp) return;
+    custom_settings.awg_analyze_device = awgAnalyzeIp;
+    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
+    document.form.action_script.value = 'start_awganalyzestart';
+    awgSubmitForm();
+    awgAnalyzeActive = true;
+    awgAnalyzeSetToggle(true);
+    var rows = document.getElementById('awg_analyze_rows');
+    if(rows) rows.innerHTML = '';
+    awgAnalyzeShowEmpty(T('ANALYZE_WAITING'));
+    if(awgAnalyzeTimer) clearInterval(awgAnalyzeTimer);
+    awgAnalyzeTimer = setInterval(awgAnalyzePoll, 1500);
+    setTimeout(awgAnalyzePoll, 700);
+}
+function awgAnalyzeStop(){
+    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
+    document.form.action_script.value = 'start_awganalyzestop';
+    awgSubmitForm();
+    awgAnalyzeActive = false;
+    awgAnalyzeSetToggle(false);
+    if(awgAnalyzeTimer){ clearInterval(awgAnalyzeTimer); awgAnalyzeTimer = null; }
+    setTimeout(awgAnalyzePoll, 800);   // pick up the final inactive state
+}
+function awgAnalyzePoll(){
+    var x = new XMLHttpRequest();
+    x.open('GET', '/user/awg_analyze.htm?_=' + Date.now(), true);
+    x.timeout = 3000;
+    x.onload = function(){
+        if(x.status !== 200 || !x.responseText) return;
+        var data; try { data = JSON.parse(x.responseText); } catch(e){ return; }
+        awgAnalyzeRender(data);
+    };
+    x.send();
+}
+function awgAnalyzeRender(data){
+    if(!data) return;
+    if(data.device && awgAnalyzeIp && data.device !== awgAnalyzeIp) return;   // stale file, other device
+    var polBox = document.getElementById('awg_analyze_policy');
+    if(polBox && data.policy) polBox.textContent = awgPolicyLabel(data.policy);
+    if(awgAnalyzeActive && data.active === false){   // backend auto-stopped (timeout)
+        awgAnalyzeActive = false;
+        awgAnalyzeSetToggle(false);
+        if(awgAnalyzeTimer){ clearInterval(awgAnalyzeTimer); awgAnalyzeTimer = null; }
+    }
+    var entries = (data.entries && data.entries.length) ? data.entries : [];
+    var rows = document.getElementById('awg_analyze_rows');
+    if(!rows) return;
+    if(!entries.length){
+        rows.innerHTML = '';
+        awgAnalyzeShowEmpty(awgAnalyzeActive ? T('ANALYZE_WAITING') : T('ANALYZE_NO_DATA'));
+        return;
+    }
+    awgAnalyzeShowEmpty(null);
+    var html = '';
+    for(var i = entries.length - 1; i >= 0; i--){   // newest first
+        var e = entries[i] || {};
+        var vi = awgVerdictInfo(e.verdict);
+        var dest = escHtml(String(e.ip || '')) +
+                   (e.port ? (':' + escHtml(String(e.port))) : '') +
+                   (e.proto ? (' ' + escHtml(String(e.proto))) : '');
+        html += '<tr>' +
+            '<td class="awg-an-mono">' + escHtml(String(e.t || '')) + '</td>' +
+            '<td>' + escHtml(String(e.name || '')) + '</td>' +
+            '<td class="awg-an-mono">' + dest + '</td>' +
+            '<td><span class="awg-verdict ' + vi.cls + '">' + escHtml(vi.label) + '</span></td>' +
+            '</tr>';
+    }
+    rows.innerHTML = html;
+}
+function awgCloseAnalyze(){
+    if(awgAnalyzeActive) awgAnalyzeStop();
+    if(awgAnalyzeTimer){ clearInterval(awgAnalyzeTimer); awgAnalyzeTimer = null; }
+    var m = document.getElementById('awg_analyze_modal');
+    if(m) m.style.display = 'none';
+    document.removeEventListener('keydown', awgAnalyzeKeydown);
+    if(awgAnalyzePrevFocus){ try { awgAnalyzePrevFocus.focus(); } catch(e){} awgAnalyzePrevFocus = null; }
+}
+function awgAnalyzeKeydown(e){ if(e.key === 'Escape' || e.keyCode === 27) awgCloseAnalyze(); }
 // "Copy diagnostic data": diagnostics + current log, wrapped for a Telegram post.
 function awgCopyDiagReport(btn){
     if(!awgDiagText){ alert(T('DIAG_NOT_READY')); return; }
@@ -2683,9 +2897,10 @@ function initAutocompleteIp(){
                 <div class="awg-section" data-i18n="SEC_DEVICE_RULES">Device rules</div>
                 <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_client_table" style="table-layout:fixed;">
                 <thead><tr>
-                    <td width="20%" data-i18n="TH_IP_ADDRESS">IP address</td>
-                    <td width="35%" data-i18n="TH_DEVICE_NAME">Device name</td>
-                    <td width="41%" data-i18n="TH_POLICY">Policy</td>
+                    <td width="18%" data-i18n="TH_IP_ADDRESS">IP address</td>
+                    <td width="32%" data-i18n="TH_DEVICE_NAME">Device name</td>
+                    <td width="34%" data-i18n="TH_POLICY">Policy</td>
+                    <td width="12%" data-i18n="TH_ANALYZE">Analysis</td>
                     <td width="4%"></td>
                 </tr></thead>
                 <tbody id="awg_client_rows">
@@ -2905,6 +3120,39 @@ function initAutocompleteIp(){
             <span id="awg_diag_note" style="font-size:11px; color:#f0ad4e;"></span>
             <span style="font-size:11px; opacity:0.7;" data-i18n="DIAG_COPY_NOTE">Copied together with the log, wrapped for pasting into Telegram.</span>
             <input type="button" class="button_gen" value="Close" data-i18n-val="BTN_CLOSE" onclick="awgCloseDiag();" style="margin-left:auto;">
+        </div>
+    </div>
+</div>
+
+<div id="awg_analyze_modal" role="dialog" aria-modal="true" aria-labelledby="awg_analyze_title" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); z-index:10003;">
+    <div style="background:#2b3338; color:#e0e0e0; width:92%; max-width:760px; margin:4% auto; border:1px solid #444; border-radius:8px; box-shadow:0 6px 40px rgba(0,0,0,0.6); display:flex; flex-direction:column; max-height:86vh;">
+        <div style="padding:14px 18px; border-bottom:1px solid #444; display:flex; align-items:center;">
+            <span id="awg_analyze_title" style="font-size:16px; font-weight:bold;">Traffic analysis</span>
+            <button type="button" data-i18n-aria="ARIA_CLOSE" onclick="awgCloseAnalyze();" data-i18n-title="BTN_CLOSE" style="margin-left:auto; background:transparent; border:none; color:inherit; font-size:22px; line-height:1; cursor:pointer; opacity:0.6; padding:0;">&times;</button>
+        </div>
+        <div style="padding:10px 18px; border-bottom:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:10px;">
+            <input type="button" id="awg_analyze_toggle" class="button_gen" value="Start" data-i18n-val="ANALYZE_START" onclick="awgAnalyzeToggle(this);">
+            <span style="font-size:12px;"><span data-i18n="ANALYZE_POLICY">Policy</span>: <b id="awg_analyze_policy">—</b></span>
+            <span style="margin-left:auto; display:flex; gap:6px; align-items:center;">
+                <span class="awg-verdict geo" data-i18n="VERDICT_VPN">VPN</span>
+                <span class="awg-verdict direct" data-i18n="VERDICT_DIRECT">Direct</span>
+            </span>
+        </div>
+        <div id="awg_analyze_body" style="padding:8px 18px; overflow:auto; min-height:170px;">
+            <table id="awg_analyze_table">
+                <thead><tr>
+                    <th style="width:60px;" data-i18n="ANALYZE_COL_TIME">Time</th>
+                    <th data-i18n="ANALYZE_COL_NAME">Request</th>
+                    <th style="width:160px;" data-i18n="ANALYZE_COL_DEST">Destination</th>
+                    <th style="width:96px;" data-i18n="ANALYZE_COL_VERDICT">Route</th>
+                </tr></thead>
+                <tbody id="awg_analyze_rows"></tbody>
+            </table>
+            <div id="awg_analyze_empty" style="padding:20px 4px; color:#9aa3ad; font-size:12px;"></div>
+        </div>
+        <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:flex-start; flex-wrap:wrap; gap:8px;">
+            <span id="awg_analyze_note" class="awg-hint" style="flex:1; min-width:220px; margin-top:0;" data-i18n="ANALYZE_NOTE">Diagnostic.</span>
+            <input type="button" class="button_gen" value="Close" data-i18n-val="BTN_CLOSE" onclick="awgCloseAnalyze();">
         </div>
     </div>
 </div>
