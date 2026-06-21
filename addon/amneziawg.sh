@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.98"
+AWG_VERSION="1.1.99"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -899,6 +899,12 @@ reload_dnsmasq(){
             done
         fi
         wait_for_dns 10
+        # Install the LAN :53 DNAT ONLY now that dnsmasq is confirmed answering. Doing it
+        # before/while the restart_dnsmasq loop above bounces the resolver would DNAT every
+        # client's DNS to a dead dnsmasq — the all-LAN "can't connect" blackout. The arg is
+        # passed only by setup_firewall when interception is wanted; every other caller omits
+        # it, so they never touch the DNAT. setup_dns_interception self-guards on dnsmasq up.
+        [ "$1" = "1" ] && setup_dns_interception
         if [ -f "$DNSMASQ_AWG_CONF" ]; then
             bg_count=0
             awk -F/ '/^ipset=/{for(i=2;i<NF;i++)print $i}' "$DNSMASQ_AWG_CONF" | while read -r domain; do
@@ -1205,6 +1211,11 @@ setup_firewall(){
     # lets AWG coexist with xray/zapret. NOTE: this only resolves the DNS-layer clash — with
     # default_policy=vpn_all the marks/table still steal the proxy's traffic, so coexistence
     # also needs a direct/geo default policy, not all->VPN.
+    # Decide whether the global :53 DNAT is wanted, but DON'T install it inline — defer it to
+    # after dnsmasq is confirmed answering (the reload block below). Installing it here, before
+    # reload_dnsmasq restarts dnsmasq, would DNAT all LAN DNS to a resolver that's bouncing →
+    # every device loses DNS until the restart/retry loop settles (the "can't connect" hang).
+    local _want_intercept=0
     if [ "$default_policy" != "direct" ] || [ "$has_geo" = true ]; then
         if [ "$(get_setting awg_no_dns_intercept)" = "1" ]; then
             log_msg "DNS interception OFF (awg_no_dns_intercept=1) — coexistence mode"
@@ -1213,7 +1224,7 @@ setup_firewall(){
         elif fw_dns_redirect_active; then
             log_msg "DNS interception OFF — firmware DNSFilter/DNS Director/DoT active, not overriding (geo-by-IP still active)"
         else
-            setup_dns_interception
+            _want_intercept=1
         fi
     fi
 
@@ -1232,8 +1243,13 @@ setup_firewall(){
     fi
 
     # --- Reload dnsmasq if geo active (deferred + retried; see reload_dnsmasq) ---
+    # When a reload runs, it installs the :53 DNAT itself AFTER dnsmasq is back up, so the DNAT
+    # never points at a restarting resolver. When no reload is needed, dnsmasq is already
+    # serving the current config, so install the DNAT inline.
     if [ $domain_count -gt 0 ] || [ "$has_geo" = true ] || [ "$want_aaaa" = 1 ]; then
-        reload_dnsmasq
+        reload_dnsmasq "$_want_intercept"
+    elif [ "$_want_intercept" = 1 ]; then
+        setup_dns_interception
     fi
 
     # --- Flush conntrack of already-marked flows so they re-establish through the tunnel.
