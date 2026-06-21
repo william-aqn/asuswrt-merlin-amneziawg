@@ -94,15 +94,17 @@
     font-family: 'text-security-disc';
     src: url(data:font/woff2;base64,d09GMgABAAAAAAjoAAsAAAAAMGgAAAidAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHFQGVgDWYgpQdQE2AiQDCAsGAAQgBYUOBy4bvi8lYxtWw7BxAPB87x5FmeAMlf3/96RzDN74RcXUcjTKmrJ3T2VDSShiPhfiIJxxS7DiLkHFfQV33CM4427mAred74pWur/J3dyVsKy7coREA8fzvPvpfUk+tB3R8YTCzE0SCLepejmJ2u1yqp+kC7W4Rc/tDTs3GpNJ8ttRPOSTPhsXlwbi4kVYWQmAcXmlrqYHMMsBwP/zHMz7fkF1gijOKuFQIxjwlGa2lkARhYaBxFHT54IOgBMQADi3LipIMAA3geO41EUkBTCO2gkxnOwnKYBx1E6p5WS+QUCMq50rNch6MwUCAAiAcdgttYVSIfPJ5kn6ApRFQ6I88BxLvvIC/maHUHS3TIoKiwLbbM8nEFWgE1oDz3woSxpagWbBXcQWhKtPeIlg6tK+7vX57QOszwU3sGUJrA7h2Mx1IWCNr9BKxsYo+pzS/OCO0OG9mwBkx337+lcuSxRdBcc+fJxlcAjK/zCfdgtBzuxQcTqfY4Yn6EB/Az3JS/RMu5f6B8wrn55S0IxdlLn+4Yb/ctIT+ocWYPcGAOvxSjEjpSiVMqSgFWVjzpCCXjAIRirTABpEQ2gYjaBRNIbG0QSaRFNoGs2gWTSH5tECWkRLaBmtoFW0htbRBtpEW2gb7aBdtIf20QE6REdFDlkZEh2jE3SKztA5ukCX6Apdoxt0i+7QPXpAj+gJPaMX9Ire0Dv6QJ/oC/qKvqHv6Af6iX6h3+gP+ov+of+I+ECMxETMiDmxIJbEilgTG2JL7Ig9cSCOxIk4ExfiStyIO/EgnsSLeBMf4kv8iD/taQANoiE0jEbQKBpD42gCTaIpNI1m0CyaQ/NoAS2iJbSMVtAqWkPraANtoi20jXbQLtpD++gAHaIjdIxO0Ck6Q+foAl2iK3SNbtAtukP36AE9oif0jF7QK3pD79B79AF9RJ/QZ/QFfUXf0Hf0A/1Ev9Bv9Af9Rf/Qf9DQABpEQ2gYjaBRNIbG0QSaRFNoGs2gWTSH5tECWkRLaBmtoFW0htbRBtpEW2gb7aBdtIf20QE6REfoGJ2gU3SGztEFukRX6BrdoFt0h+7RA3pET+gZvaBX9Aa9Re/Qe/QBfUSf0Gf0BX1F39B39AP9RL/Qb/QH/UX/0P8l9vq9gXwDIUCliyAhRAgTIoQoIUaIExKEJCFFSBMyhCwhR8gTCoQioUQoEyqEKqFGqBMahCahRWgTOoQuoUfoEwaEIWFEGBMmhClhRpgTFoQlYUVYEzaELWFH2BMOhGPCCeGUcEY4J1wQLglXhGvCDeGWcEe4JzwQHglPhGfCC+GV8EZ4J3wQPglfhG/CD+GX8Ef4p9sdgoQQIUyIEKKEGCFOSBCShBQhTcgQsoQcIU8oEIqEEqFMqBCqhBqhTmgkNBGaCS2EVkIboZ3QQegkdBG6CT2EXkIfoZ8wQBgkDBGGCSOEUcIYYZwwQZgkTBGmCTOEWcIcYZ6wQFgkLBGWCSuEVcIaYZ2wQdgkbBG2CTuEXcIeYZ9wQDgkHBGOCSeEU8IZ4ZxwQbgkXBGuCTeEW8Id4Z7wQHgkPBGeCS+EV8Ib4Z3wQfgkfBG+CT+EX8If4Z8AZpAQIoQJEUKUECPECQlCkpAipAkZQpaQI+QJBUKRUCKUCRVClVAj1AkNQpPQIrQJHUKX0CP0CQPCkDAijAkTwpQwI8wJC8KSsCKsCRvClrAj7AkHwpFwIpwJF8IV4ZpwQ7gl3BHuCQ+ER8IT4ZnwQnglvBHeCR+ET8IX4ZvwQ/gl/BH+lzv+AmMkTYAmSBOiCdNEaKI0MZo4TYImSZOiSdNkaLI0OZo8TYGmSFOiKdNUaKo0NZo6TYOmSdOiadN0aLo0PZo+zYBmSDOiGdNMaKY0M5o5zYJmSbOiWdNsaLY0O5o9zYHmmOaE5pTmjOac5oLmkuaK5prmhuaW5o7mnuaB5pHmieaZ5oXmleaN5p3mg+aT5ovmm+aH5pfmj2ZRAqCCoEKgwqAioKKgYqDioBKgkqBSoNKgMqCyoHKg8qAKoIqgSqDKoCqgqqBqoOqgGkE1gWoG1QKqFVQbqHZQHaA6QXWB6gbVA6oXVB+oflADoAZBDYH+uxaEWDBiIYiFIhaGWDhiEYhFIhaFWDRiMYjFIhaHWDxiCYglIpaEWDJiKYilIpaGWDpiGYhlIpaFWDZiOYjlIpaHWD5iBYgVIlaEWDFiJYiVIlaGWDliFYhVIlaFWDViNYjVIlaHWD1iDYg1ItaEWDNiLYi1ItaGWDtiHYh1ItaFWDdiPYj1ItaHWD9iA4gNIjaE2DBiI4iNIjaG2DhiE4hNIjaF2DRiM4jNIjaH2DxiC4gtIraE2DJiK4itIraG2DpiG4htIraF2DZiO4jtIraH2D5iB4gdInaE2DFiJ4idInaG2DliF4hdInaF2DViN4jdInaH2D1iD4g9IvaE2DNiL4i9IvaG2DvE3iP2AbGPiH1C7DNiXxD7itg3xL4j9gOxn4j9Quw3Yn8Q+4vYP8T+M6cIDBz9EXfeUHR1JyygPL/++I3R1cRvdDr+E12Jfh3Q0EN/fHn2mXptpJxUkIqu/Cs2egM33OjSLcT33I82+B9nP37X/c0W52623s45CYCo03QIBCVrAFAycnSYSqvO4YJt/NP73YqA/giNZhJ6sBbmql+0SQZaxNOZudJbc2nqxNvpM+veq7Sz2LUgFEu+VLs+Ay3yp7MVertp6i23v2Rmv5gmHDhSQ6t5GmTaqTsqhpWwmbOk3uKJrNOmwSSMC17jghqygilDOUU3KlLmHHNrajw3DVNVGWytGZDisM/cbkdRnvfIUJkaGJlgAYcoQ5bGptTmGc1R7pBC3XhFsLXnXR54qrMc+dGNBkqE4laBi4KmZYGom8vIy0lTyBkppBjLoTndMmrofIRORirsNlCbXzCgulmo36KztS2iV8rrNoRUL5VdkMSGoSXroC1KOQAA) format('woff2');
 }
-/* Mask secret fields (WG private key / PSK) as discs in ALL browsers: the disc font
-   covers Firefox (which ignores -webkit-text-security); -webkit-text-security is kept for
-   Chromium/Edge/Safari. type=text (not password) is what stops the browser's save-password
-   prompt; the masking here is purely visual. Placeholder uses a normal font so hints read. */
-.awg-masked {
+/* Visually mask the WG key fields as discs in ALL browsers: the disc font covers Firefox
+   (which ignores -webkit-text-security); -webkit-text-security is kept for Chromium/Edge/
+   Safari. The masking is purely visual (type=text, not password). Stopping the browser's
+   "Save password?" prompt is handled separately by keeping every id/class/name/aria-label
+   on these inputs free of credential words (key/secret/private/psk) — class name is the
+   neutral "awg-dotted" for the same reason. Placeholder uses a normal font so hints read. */
+.awg-dotted {
     font-family: 'text-security-disc', "Courier New", "Lucida Console", monospace;
     -webkit-text-security: disc;
 }
-.awg-masked::placeholder {
+.awg-dotted::placeholder {
     font-family: "Courier New", "Lucida Console", monospace;
     -webkit-text-security: none; }
 
@@ -399,8 +401,6 @@ en: {
     LBL_NO_PEERS: "No peers",
     SEC_CONFIG: "Configuration",
     BTN_IMPORT_CONF_FILE: "Import a .conf file from the Amnezia VPN client",
-    ARIA_PRIVATE_KEY: "Private Key (secret)",
-    ARIA_PRESHARED_KEY: "Preshared Key (secret)",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— obfuscation parameters (usually filled in by importing a config) ▾</span>",
     TBL_ROUTING_POLICY: "Routing policy",
     TH_DEFAULT_POLICY: "Default policy",
@@ -676,8 +676,6 @@ ru: {
     LBL_NO_PEERS: "Нет пиров",
     SEC_CONFIG: "Конфигурация",
     BTN_IMPORT_CONF_FILE: "Импорт .conf-файла из клиента Amnezia VPN",
-    ARIA_PRIVATE_KEY: "Private Key (секрет)",
-    ARIA_PRESHARED_KEY: "Preshared Key (секрет)",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— параметры обфускации (обычно заполняются импортом конфига) ▾</span>",
     TBL_ROUTING_POLICY: "Политика маршрутизации",
     TH_DEFAULT_POLICY: "Политика по умолчанию",
@@ -1180,9 +1178,11 @@ function awgBytesToB64(bytes){
 
 // Single submit point for the shared form. The browser's "Save password?" prompt fires
 // whenever a form containing an <input type="password"> is submitted — here the WG private
-// key / PSK. Those fields are rendered as masked type=text (class awg-masked, see CSS) rather
+// key / PSK. Those fields are rendered as masked type=text (class awg-dotted, see CSS) rather
 // than type=password specifically so the browser never treats the form as a login. (Disabling
 // the fields at submit — 1.1.74 — was not enough: Chromium captures the value while typing.)
+// Safari also sniffs id/class/name/aria-label for credential words, so those are kept neutral
+// too (1.1.89/1.1.90) — see AWG_LEGACY_FIELDS and awg-dotted.
 function awgSubmitForm(){
     document.form.submit();
 }
@@ -1626,7 +1626,7 @@ function addClientRow(ip, name, policy){
             '<option value="direct"' + (policy==='direct'?' selected':'') + '>' + escHtml(T('OPT_DIRECT')) + '</option>' +
         '</select></td>' +
         '<td style="text-align:center;"><button type="button" class="awg-analyze-btn" aria-label="' + escHtml(T('ARIA_ANALYZE')) + '" title="' + escHtml(T('TITLE_ANALYZE')) + '" onclick="awgOpenAnalyze(this);"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 17 9 11 13 15 21 7"></polyline><polyline points="15 7 21 7 21 13"></polyline></svg></button></td>' +
-        '<td style="text-align:center;"><button type="button" class="awg-remove-btn" aria-label="' + escHtml(T('ARIA_REMOVE_DEVICE')) + '" title="' + escHtml(T('TITLE_REMOVE')) + '" onclick="awgRemoveClientRow(this);">&times;</button></td>';
+        '<td style="text-align:center;"><button type="button" class="awg-remove-btn" aria-label="' + escHtml(T('ARIA_REMOVE_DEVICE')) + '" title="' + escHtml(T('TITLE_REMOVE')) + '" onclick="awgRemoveClientRow(this);"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg></button></td>';
     tbody.appendChild(tr);
     updateGeoVisibility();
 }
@@ -1866,7 +1866,9 @@ function showClientPicker(clients){
             '</div>' +
         '</div>';
     document.body.appendChild(ov);
+    document.addEventListener('keydown', awgDhcpKeydown);
 }
+function awgDhcpKeydown(e){ if(e.key === 'Escape' || e.keyCode === 27) awgCloseDhcp(); }
 function awgDhcpToggleRow(cb){
     var row = cb.parentNode;   // the <label> wrapping the checkbox + cells
     if(!row) return;
@@ -1876,6 +1878,7 @@ function awgDhcpToggleRow(cb){
 function awgCloseDhcp(){
     var ov = document.getElementById('awg_dhcp_modal');
     if(ov) ov.parentNode.removeChild(ov);
+    document.removeEventListener('keydown', awgDhcpKeydown);
 }
 function awgAddDhcpSelected(){
     var pol = (document.getElementById('awg_dhcp_policy') || {}).value || 'vpn_all';
@@ -2067,17 +2070,77 @@ function awgAnalyzeSetToggle(active){
     var b = document.getElementById('awg_analyze_toggle');
     if(b) b.value = active ? T('ANALYZE_STOP') : T('ANALYZE_START');
 }
+// IP -> {mac,name} map from the firmware client list (same get_clientlist() hook the
+// device picker uses). Fetched once on first need and cached for the page lifetime; the
+// MAC for a given IP is stable enough across a diagnostic session. Offline/unknown IPs
+// simply resolve to no MAC.
+var awgMacMap = null;          // null = not loaded; object once fetched (possibly empty)
+var awgMacMapPending = false;
+var awgMacMapWaiters = [];
+function awgLoadMacMap(cb){
+    if(awgMacMap){ cb(awgMacMap); return; }
+    awgMacMapWaiters.push(cb);
+    if(awgMacMapPending) return;
+    awgMacMapPending = true;
+    var done = function(map){
+        awgMacMap = map || {};
+        awgMacMapPending = false;
+        var ws = awgMacMapWaiters; awgMacMapWaiters = [];
+        for(var i = 0; i < ws.length; i++){ try { ws[i](awgMacMap); } catch(e){} }
+    };
+    var x = new XMLHttpRequest();
+    x.open('GET', '/appGet.cgi?hook=get_clientlist()&_=' + Date.now(), true);
+    x.timeout = 4000;
+    x.onload = function(){
+        var map = {};
+        try {
+            var data = JSON.parse(x.responseText);
+            var cl = data.get_clientlist || data;
+            for(var key in cl){
+                if(!cl.hasOwnProperty(key)) continue;
+                var c = cl[key];
+                if(c && typeof c === 'object' && c.ip){
+                    map[c.ip] = { mac: (c.mac || key || ''), name: (c.nickName || c.name || '') };
+                }
+            }
+        } catch(e){}
+        done(map);
+    };
+    x.onerror = function(){ done({}); };
+    x.ontimeout = function(){ done({}); };
+    x.send();
+}
+// Render the device identity in the modal header: custom name (or IP) as the title,
+// IP and/or MAC on the muted subtitle. IP is shown in the subtitle only when the title
+// already carries the custom name, so it never appears twice.
+function awgAnalyzeSetIdentity(name, ip, mac){
+    var title = document.getElementById('awg_analyze_title');
+    if(title) title.textContent = T('ANALYZE_MODAL_TITLE', name || ip);
+    var sub = document.getElementById('awg_analyze_sub');
+    if(sub){
+        var parts = [];
+        if(name) parts.push(ip);
+        if(mac)  parts.push(mac);
+        sub.textContent = parts.join(' · ');
+    }
+}
 function awgOpenAnalyze(btn){
     var tr = awgRowOf(btn);
     var ipEl = tr ? tr.querySelector('.client_ip') : null;
     var ip = ipEl ? String(ipEl.value || '').trim() : '';
     if(!ip){ alert(T('ANALYZE_NEED_IP')); return; }
+    var nameEl = tr ? tr.querySelector('.client_name') : null;
+    var name = nameEl ? String(nameEl.value || '').trim() : '';
     var polEl = tr ? tr.querySelector('.client_policy') : null;
     awgAnalyzeIp = ip;
     var m = document.getElementById('awg_analyze_modal');
     if(!m) return;
-    var title = document.getElementById('awg_analyze_title');
-    if(title) title.textContent = T('ANALYZE_MODAL_TITLE', ip);
+    awgAnalyzeSetIdentity(name, ip, '');   // immediate; MAC filled in once the client list loads
+    awgLoadMacMap(function(map){
+        if(awgAnalyzeIp !== ip) return;    // user moved on to another device meanwhile
+        var info = map[ip];
+        awgAnalyzeSetIdentity(name, ip, info && info.mac ? info.mac : '');
+    });
     var polBox = document.getElementById('awg_analyze_policy');
     if(polBox) polBox.textContent = awgPolicyLabel(polEl ? polEl.value : '');
     var rows = document.getElementById('awg_analyze_rows');
@@ -2773,8 +2836,8 @@ function initAutocompleteIp(){
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable">
                 <thead><tr><td colspan="2">Interface</td></tr></thead>
                 <tr>
-                    <th width="35%">Private Key</th>
-                    <td><input type="text" class="input_32_table awg-masked" id="awg_iface_p1" maxlength="64" autocomplete="off" aria-label="Private Key (secret)" data-i18n-aria="ARIA_PRIVATE_KEY"></td>
+                    <th width="35%" scope="row">Private Key</th>
+                    <td><input type="text" class="input_32_table awg-dotted" id="awg_iface_p1" maxlength="64" autocomplete="off"></td>
                 </tr>
                 <tr>
                     <th>Address</th>
@@ -2798,12 +2861,12 @@ function initAutocompleteIp(){
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
                 <thead><tr><td colspan="2">Peer</td></tr></thead>
                 <tr>
-                    <th width="35%">Public Key</th>
-                    <td><input type="text" class="input_32_table" id="awg_peer_p1" maxlength="64" aria-label="Public Key"></td>
+                    <th width="35%" scope="row">Public Key</th>
+                    <td><input type="text" class="input_32_table" id="awg_peer_p1" maxlength="64"></td>
                 </tr>
                 <tr>
-                    <th>Preshared Key</th>
-                    <td><input type="text" class="input_32_table awg-masked" id="awg_peer_p2" maxlength="64" autocomplete="off" placeholder="(optional)" aria-label="Preshared Key (secret)" data-i18n-aria="ARIA_PRESHARED_KEY"></td>
+                    <th scope="row">Preshared Key</th>
+                    <td><input type="text" class="input_32_table awg-dotted" id="awg_peer_p2" maxlength="64" autocomplete="off" placeholder="(optional)"></td>
                 </tr>
                 <tr>
                     <th>Endpoint</th>
@@ -3176,8 +3239,11 @@ function initAutocompleteIp(){
 <div id="awg_analyze_modal" role="dialog" aria-modal="true" aria-labelledby="awg_analyze_title" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.65); z-index:10003;">
     <div style="background:#2b3338; color:#e0e0e0; width:92%; max-width:760px; margin:4% auto; border:1px solid #444; border-radius:8px; box-shadow:0 6px 40px rgba(0,0,0,0.6); display:flex; flex-direction:column; max-height:86vh;">
         <div style="padding:14px 18px; border-bottom:1px solid #444; display:flex; align-items:center;">
-            <span id="awg_analyze_title" style="font-size:16px; font-weight:bold;">Traffic analysis</span>
-            <button type="button" data-i18n-aria="ARIA_CLOSE" onclick="awgCloseAnalyze();" data-i18n-title="BTN_CLOSE" style="margin-left:auto; background:transparent; border:none; color:inherit; font-size:22px; line-height:1; cursor:pointer; opacity:0.6; padding:0;">&times;</button>
+            <div style="display:flex; flex-direction:column; min-width:0; flex:1;">
+                <span id="awg_analyze_title" style="font-size:16px; font-weight:bold;">Traffic analysis</span>
+                <span id="awg_analyze_sub" style="font-size:12px; color:#9aa3ad; margin-top:3px; font-family:'Courier New','Lucida Console',monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></span>
+            </div>
+            <button type="button" data-i18n-aria="ARIA_CLOSE" onclick="awgCloseAnalyze();" data-i18n-title="BTN_CLOSE" style="margin-left:12px; flex:0 0 auto; background:transparent; border:none; color:inherit; font-size:22px; line-height:1; cursor:pointer; opacity:0.6; padding:0;">&times;</button>
         </div>
         <div style="padding:10px 18px; border-bottom:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:10px;">
             <input type="button" id="awg_analyze_toggle" class="button_gen" value="Start" data-i18n-val="ANALYZE_START" onclick="awgAnalyzeToggle(this);">
