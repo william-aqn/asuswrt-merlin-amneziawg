@@ -10,7 +10,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PKG_NAME="amneziawg"
-PKG_VERSION="1.1.84-1"
+# Single source of truth: read the addon version from amneziawg.sh (the value the UI shows
+# and the release tag uses) and append the packaging revision. Prevents the .ipk version
+# from drifting behind AWG_VERSION at release time.
+AWG_VERSION="$(awk -F'"' '/^AWG_VERSION=/{print $2; exit}' addon/amneziawg.sh)"
+[ -n "$AWG_VERSION" ] || { echo "ERROR: could not read AWG_VERSION from addon/amneziawg.sh" >&2; exit 1; }
+PKG_VERSION="${AWG_VERSION}-1"
 
 build_ipk(){
     local arch="$1"

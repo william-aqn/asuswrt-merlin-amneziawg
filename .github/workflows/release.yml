@@ -123,6 +123,11 @@ jobs:
             NOTES="--generate-notes"
           fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # Drop any stale assets first (e.g. a prior build whose package version differed),
+            # so --clobber (which only overwrites same-named files) can't leave them behind.
+            for a in $(gh release view "$GITHUB_REF_NAME" --json assets -q '.assets[].name'); do
+              case "$a" in *.ipk) gh release delete-asset "$GITHUB_REF_NAME" "$a" -y || true ;; esac
+            done
             gh release upload "$GITHUB_REF_NAME" output/*.ipk --clobber
             gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" $NOTES
           else
