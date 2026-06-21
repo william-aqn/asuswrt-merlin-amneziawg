@@ -187,6 +187,20 @@
 .awg-src { color:#b6bdc7; font-weight:normal; font-size:11px; }
 .awg-input-wide { width:95%; }
 
+/* Geo service-list / custom domain+IP / GeoCustom fields: multi-line + user-resizable.
+   Inherits firmware input_32_table colours; the `textarea.` prefix outranks `.input_32_table`
+   so our sizing wins regardless of firmware stylesheet order. */
+textarea.awg-geo-ta {
+    width:95%;
+    height:auto;            /* let the `rows` attribute set the default height */
+    min-height:48px;        /* never collapse below ~2 lines */
+    resize:vertical;
+    line-height:1.5;
+    white-space:pre-wrap;
+    word-break:break-word;
+    vertical-align:top;
+}
+
 /* Horizontal-scroll wrapper for data grids on narrow screens. */
 .awg-tablewrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
 
@@ -332,6 +346,10 @@ en: {
     VERDICT_DIRECT: "Direct",
     VERDICT_PENDING: "resolving…",
     ANALYZE_NOTE: "Diagnostic. Shows the device's DNS requests (tagged DNS — what it's trying to reach) and its actual connections, each labeled Direct or VPN/Geo. Starting briefly restarts DNS to capture queries; only devices that use the router as DNS are visible. Verdict reflects the device's applied policy and the current geo lists.",
+    ANALYZE_ADD_SELECTED: "+ To custom domains/IPs",
+    ANALYZE_ADDED_ACK: "Added: {0} domains, {1} IPs (don't forget to Apply)",
+    ANALYZE_NONE_SELECTED: "Nothing selected",
+    ARIA_AN_SELALL: "Select all rows",
     MSG_REMOVE_DEVICE_CONFIRM: "Remove device «{0}» from the rules?",
     MSG_DEVICE_REMOVED: "Device removed.",
     BTN_UNDO: "Undo",
@@ -440,15 +458,26 @@ en: {
     BTN_DOWNLOAD_LISTS: "Download lists",
     TBL_GEOIP: "GeoIP — route by service IPs",
     TH_GEOIP_LISTS: "GeoIP service lists",
-    HINT_GEOIP: "Comma-separated. Available: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + country codes (us, ru, cn, …).",
+    HINT_GEOIP: "Comma- or newline-separated. Available: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + country codes (us, ru, cn, …).",
     HINT_GEOIP_WARN: "⚠ There are NO IP lists for youtube, discord, microsoft, github, openai etc. — use GeoSite below.",
     TBL_GEOSITE: "GeoSite — route by services / domains",
     TH_GEOSITE_LISTS: "GeoSite service lists",
-    HINT_GEOSITE: "Comma-separated. 1500+ lists: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …",
+    HINT_GEOSITE: "Comma- or newline-separated. 1500+ lists: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …",
     TH_CUSTOM_DOMAINS: "Custom domains",
-    HINT_CUSTOM_DOMAINS: "Comma-separated. Resolved via DNS → routed into the VPN.",
+    HINT_CUSTOM_DOMAINS: "Comma- or newline-separated. Resolved via DNS → routed into the VPN.",
     TH_CUSTOM_IPS: "Custom IPs / subnets",
-    HINT_CUSTOM_IPS: "Comma-separated: individual IPs or CIDR subnets.",
+    HINT_CUSTOM_IPS: "Comma- or newline-separated: individual IPs or CIDR subnets.",
+    TBL_GEO_CUSTOM: "GeoCustom — your own files",
+    HINT_GEO_CUSTOM_FORMAT: "One entry per line. A domain (<code>example.com</code>) is routed via DNS; an IP or CIDR subnet (<code>1.2.3.0/24</code>) is added to the ipset. Lines starting with <code>#</code> are comments. A URL must return a plain-text list in this format.",
+    TH_GEO_FILES: "Custom files",
+    TH_GEO_URLS: "URL sources",
+    BTN_ADD_GEO_FILE: "+ Add file",
+    BTN_ADD_GEO_URL: "+ Add URL",
+    BTN_LOAD_FROM_FILE: "Load from file",
+    BTN_REMOVE: "Remove",
+    PH_GEO_FILE_NAME: "name (a-z, 0-9)",
+    PH_GEO_URL: "https://example.com/list.txt",
+    MSG_GEO_FILES_TOO_BIG: "Custom files are too large to store in settings. Reduce the content or use a URL source for big lists.",
     TBL_ANTIFILTER: "Geo Antifilter — RKN lists (antifilter.download)",
     TH_ANTIFILTER_IP: "Antifilter IP lists",
     AF_ALLYOUNEED: " allyouneed — all the needed subnets (~15K) ",
@@ -609,6 +638,10 @@ ru: {
     VERDICT_DIRECT: "Напрямую",
     VERDICT_PENDING: "резолв…",
     ANALYZE_NOTE: "Диагностика. Показывает DNS-запросы устройства (метка DNS — что оно пытается вызвать) и его реальные соединения, у каждого — вердикт «напрямую» или «VPN/Geo». При старте кратко перезапускается DNS для захвата запросов; видны только устройства, использующие роутер как DNS. Вердикт отражает применённую политику устройства и текущие гео-списки.",
+    ANALYZE_ADD_SELECTED: "+ В свои домены/IP",
+    ANALYZE_ADDED_ACK: "Добавлено: {0} доменов, {1} IP (не забудьте «Применить»)",
+    ANALYZE_NONE_SELECTED: "Ничего не отмечено",
+    ARIA_AN_SELALL: "Выбрать все строки",
     MSG_REMOVE_DEVICE_CONFIRM: "Удалить устройство «{0}» из правил?",
     MSG_DEVICE_REMOVED: "Устройство удалено.",
     BTN_UNDO: "Отменить",
@@ -717,15 +750,26 @@ ru: {
     BTN_DOWNLOAD_LISTS: "Скачать списки",
     TBL_GEOIP: "GeoIP — маршрут по IP сервисов",
     TH_GEOIP_LISTS: "Списки сервисов GeoIP",
-    HINT_GEOIP: "Через запятую. Доступно: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + коды стран (us, ru, cn, …).",
+    HINT_GEOIP: "Через запятую или с новой строки. Доступно: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + коды стран (us, ru, cn, …).",
     HINT_GEOIP_WARN: "⚠ Для youtube, discord, microsoft, github, openai и т.п. IP-списков НЕТ — используйте GeoSite ниже.",
     TBL_GEOSITE: "GeoSite — маршрут по сервисам / доменам",
     TH_GEOSITE_LISTS: "Списки сервисов GeoSite",
-    HINT_GEOSITE: "Через запятую. 1500+ списков: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …",
+    HINT_GEOSITE: "Через запятую или с новой строки. 1500+ списков: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …",
     TH_CUSTOM_DOMAINS: "Свои домены",
-    HINT_CUSTOM_DOMAINS: "Через запятую. Резолвятся через DNS → маршрутизируются в VPN.",
+    HINT_CUSTOM_DOMAINS: "Через запятую или с новой строки. Резолвятся через DNS → маршрутизируются в VPN.",
     TH_CUSTOM_IPS: "Свои IP / подсети",
-    HINT_CUSTOM_IPS: "Через запятую: отдельные IP или подсети CIDR.",
+    HINT_CUSTOM_IPS: "Через запятую или с новой строки: отдельные IP или подсети CIDR.",
+    TBL_GEO_CUSTOM: "GeoCustom — собственные файлы",
+    HINT_GEO_CUSTOM_FORMAT: "Один элемент в строке. Домен (<code>example.com</code>) маршрутизируется через DNS; IP или подсеть CIDR (<code>1.2.3.0/24</code>) добавляется в ipset. Строки, начинающиеся с <code>#</code>, — комментарии. Файл по ссылке должен возвращать простой текстовый список в этом формате.",
+    TH_GEO_FILES: "Свои файлы",
+    TH_GEO_URLS: "URL-источники",
+    BTN_ADD_GEO_FILE: "+ Добавить файл",
+    BTN_ADD_GEO_URL: "+ Добавить ссылку",
+    BTN_LOAD_FROM_FILE: "Загрузить из файла",
+    BTN_REMOVE: "Удалить",
+    PH_GEO_FILE_NAME: "имя (a-z, 0-9)",
+    PH_GEO_URL: "https://example.com/list.txt",
+    MSG_GEO_FILES_TOO_BIG: "Свои файлы слишком большие для хранения в настройках. Уменьшите содержимое или используйте URL-источник для больших списков.",
     TBL_ANTIFILTER: "Geo Antifilter — РКН-списки (antifilter.download)",
     TH_ANTIFILTER_IP: "Antifilter IP-списки",
     AF_ALLYOUNEED: " allyouneed — все нужные подсети (~15K) ",
@@ -1548,11 +1592,19 @@ function applyConfig(actionScript){
         return;
     }
 
-    // Save geo settings
-    custom_settings.awg_geo_v2fly = document.getElementById('awg_geo_v2fly').value;
-    custom_settings.awg_geo_v2fly_ip = document.getElementById('awg_geo_v2fly_ip').value;
-    custom_settings.awg_geo_custom_domains = document.getElementById('geo_custom_domains').value;
-    custom_settings.awg_geo_custom_ips = document.getElementById('geo_custom_ips').value;
+    // Save geo settings. These four are textareas now, so normalize whitespace/newlines to
+    // commas: Merlin truncates custom_settings values at the first whitespace, so stored values
+    // must be whitespace-free comma-separated tokens (awgCsv).
+    custom_settings.awg_geo_v2fly = awgCsv('awg_geo_v2fly');
+    custom_settings.awg_geo_v2fly_ip = awgCsv('awg_geo_v2fly_ip');
+    custom_settings.awg_geo_custom_domains = awgCsv('geo_custom_domains');
+    custom_settings.awg_geo_custom_ips = awgCsv('geo_custom_ips');
+    // GeoCustom — own files (base64'd content, settings-stored) + URL sources. Files share the
+    // ~52 KB custom_settings budget, so cap pasted content and steer big lists to URLs.
+    var geoFilesSer = serializeGeoFiles();
+    if(geoFilesSer.length > 30000){ alert(T('MSG_GEO_FILES_TOO_BIG')); return; }
+    custom_settings.awg_geo_custom_files = geoFilesSer;
+    custom_settings.awg_geo_custom_urls = serializeGeoUrls();
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
     custom_settings.awg_no_dns_intercept = document.getElementById('awg_no_dns_intercept').checked ? '1' : '0';
@@ -1724,6 +1776,9 @@ function loadGeoSettings(){
     if(cd) cd.value = custom_settings.awg_geo_custom_domains || '';
     var ci = document.getElementById('geo_custom_ips');
     if(ci) ci.value = custom_settings.awg_geo_custom_ips || '';
+    // GeoCustom — own files + URL sources
+    loadGeoFiles();
+    loadGeoUrls();
     // Auto-update
     var au = document.getElementById('geo_autoupdate');
     if(au) au.checked = (custom_settings.awg_geo_autoupdate === '1');
@@ -2058,6 +2113,7 @@ var awgAnalyzeIp = '';
 var awgAnalyzeActive = false;
 var awgAnalyzeTimer = null;
 var awgAnalyzePrevFocus = null;
+var awgAnalyzeSel = {};   // checked-row map (key -> {dom, ip}); survives the 1.5 s re-render
 
 function awgPolicyLabel(p){
     if(p === 'vpn_all') return T('OPT_VPN_ALL');
@@ -2160,6 +2216,9 @@ function awgOpenAnalyze(btn){
     if(polBox) polBox.textContent = awgPolicyLabel(polEl ? polEl.value : '');
     var rows = document.getElementById('awg_analyze_rows');
     if(rows) rows.innerHTML = '';
+    awgAnalyzeSel = {};   // fresh selection per modal session
+    awgAnalyzeClearAck();
+    awgAnalyzeSyncSelAll();
     awgAnalyzeActive = false;
     awgAnalyzeSetToggle(false);
     awgAnalyzeShowEmpty(T('ANALYZE_NO_DATA'));
@@ -2254,7 +2313,13 @@ function awgAnalyzeRender(data){
             : (escHtml(String(e.ip || '')) +
                (e.port ? (':' + escHtml(String(e.port))) : '') +
                (e.proto ? (' ' + escHtml(String(e.proto))) : ''));
+        // Stable per-row key so checkbox selection survives the 1.5 s re-render.
+        var rk = (e.proto || '') + '|' + (e.name || '') + '|' + (e.ip || '') + '|' + (e.port || '');
+        var cbChecked = awgAnalyzeSel[rk] ? ' checked' : '';
         html += '<tr>' +
+            '<td style="text-align:center;"><input type="checkbox" class="awg-an-cb"' + cbChecked +
+                ' data-key="' + escHtml(rk) + '" data-dom="' + escHtml(String(e.name || '')) + '" data-ip="' + escHtml(String(e.ip || '')) +
+                '" onclick="awgAnalyzeCbToggle(this);"></td>' +
             '<td class="awg-an-mono">' + escHtml(String(e.t || '')) + '</td>' +
             '<td>' + req + '</td>' +
             '<td class="awg-an-mono">' + dest + '</td>' +
@@ -2262,6 +2327,7 @@ function awgAnalyzeRender(data){
             '</tr>';
     }
     rows.innerHTML = html;
+    awgAnalyzeSyncSelAll();
 }
 function awgCloseAnalyze(){
     if(awgAnalyzeActive) awgAnalyzeStop();
@@ -2272,6 +2338,99 @@ function awgCloseAnalyze(){
     if(awgAnalyzePrevFocus){ try { awgAnalyzePrevFocus.focus(); } catch(e){} awgAnalyzePrevFocus = null; }
 }
 function awgAnalyzeKeydown(e){ if(e.key === 'Escape' || e.keyCode === 27) awgCloseAnalyze(); }
+
+// ---- Analyzer selection → «Свои домены» / «Свои IP» ----
+// Tick rows in the analyzer, then "Add selected" pushes each row's domain (if it has one,
+// else its IP) into the custom-domains / custom-IPs fields, deduped. Selection lives in
+// awgAnalyzeSel so it survives the 1.5 s poll re-render.
+function awgAnalyzeCbToggle(cb){
+    var k = cb.getAttribute('data-key');
+    if(cb.checked){ awgAnalyzeSel[k] = { dom: cb.getAttribute('data-dom') || '', ip: cb.getAttribute('data-ip') || '' }; }
+    else { delete awgAnalyzeSel[k]; }
+    awgAnalyzeSyncSelAll();
+}
+function awgAnalyzeToggleAll(master){
+    var cbs = document.querySelectorAll('#awg_analyze_rows .awg-an-cb');
+    for(var i = 0; i < cbs.length; i++){
+        cbs[i].checked = master.checked;
+        var k = cbs[i].getAttribute('data-key');
+        if(master.checked){ awgAnalyzeSel[k] = { dom: cbs[i].getAttribute('data-dom') || '', ip: cbs[i].getAttribute('data-ip') || '' }; }
+        else { delete awgAnalyzeSel[k]; }
+    }
+}
+function awgAnalyzeSyncSelAll(){
+    var master = document.getElementById('awg_an_selall');
+    if(!master) return;
+    var cbs = document.querySelectorAll('#awg_analyze_rows .awg-an-cb');
+    var total = cbs.length, checked = 0;
+    for(var i = 0; i < cbs.length; i++){ if(cbs[i].checked) checked++; }
+    master.checked = (total > 0 && checked === total);
+    master.indeterminate = (checked > 0 && checked < total);
+}
+function awgAnalyzeShowAck(msg, ok){
+    var el = document.getElementById('awg_an_ack');
+    if(!el) return;
+    el.textContent = msg;
+    el.className = 'awg-ack show ' + (ok ? 'ok' : 'err');
+}
+function awgAnalyzeClearAck(){
+    var el = document.getElementById('awg_an_ack');
+    if(el){ el.textContent = ''; el.className = 'awg-ack'; }
+}
+// Normalize a captured name to a routable domain, or '' if it's not one (e.g. a bare IP).
+function awgCleanDomain(s){
+    s = String(s || '').trim().toLowerCase().replace(/^\*\./, '').replace(/\.$/, '');
+    if(!s || !/^[a-z0-9._-]+$/.test(s)) return '';
+    if(s.indexOf('.') < 0 || !/[a-z]/.test(s)) return '';   // need a dot + a letter (excludes IPs)
+    return s;
+}
+function awgCleanIp(s){
+    s = String(s || '').trim();
+    if(/^[0-9]{1,3}(\.[0-9]{1,3}){3}(\/[0-9]{1,2})?$/.test(s)) return s;   // IPv4 / CIDR
+    if(s.indexOf(':') >= 0 && /^[0-9a-fA-F:.\/]+$/.test(s)) return s;       // IPv6
+    return '';
+}
+// Append items to a comma/newline field, deduped case-insensitively against existing tokens.
+function awgMergeIntoField(id, items){
+    var el = document.getElementById(id);
+    if(!el) return 0;
+    var existing = String(el.value || '').split(/[,\n]/).map(function(s){ return s.trim(); }).filter(function(s){ return s; });
+    var seen = {};
+    for(var i = 0; i < existing.length; i++){ seen[existing[i].toLowerCase()] = true; }
+    var added = [];
+    for(var j = 0; j < items.length; j++){
+        var it = String(items[j]).trim();
+        if(!it) continue;
+        var lk = it.toLowerCase();
+        if(seen[lk]) continue;
+        seen[lk] = true;
+        added.push(it);
+    }
+    if(added.length){
+        var cur = String(el.value || '').replace(/\s+$/, '');
+        el.value = (cur ? cur + '\n' : '') + added.join('\n');
+    }
+    return added.length;
+}
+function awgAnalyzeAddSelected(){
+    var domains = [], ips = [];
+    for(var k in awgAnalyzeSel){
+        if(!awgAnalyzeSel.hasOwnProperty(k)) continue;
+        var sel = awgAnalyzeSel[k] || {};
+        var d = awgCleanDomain(sel.dom);
+        if(d){ domains.push(d); }
+        else { var ip = awgCleanIp(sel.ip); if(ip) ips.push(ip); }
+    }
+    if(!domains.length && !ips.length){ awgAnalyzeShowAck(T('ANALYZE_NONE_SELECTED'), false); return; }
+    var nDom = awgMergeIntoField('geo_custom_domains', domains);
+    var nIp  = awgMergeIntoField('geo_custom_ips', ips);
+    awgAnalyzeShowAck(T('ANALYZE_ADDED_ACK', nDom, nIp), true);
+    awgAnalyzeSel = {};
+    var cbs = document.querySelectorAll('#awg_analyze_rows .awg-an-cb');
+    for(var ci = 0; ci < cbs.length; ci++) cbs[ci].checked = false;
+    awgAnalyzeSyncSelAll();
+}
+
 // "Copy diagnostic data": diagnostics + current log, wrapped for a Telegram post.
 function awgCopyDiagReport(btn){
     if(!awgDiagText){ alert(T('DIAG_NOT_READY')); return; }
@@ -2613,6 +2772,143 @@ function setVal(id, val){
     if(el) el.value = val;
 }
 
+// ---- GeoCustom: own list files (paste/edit/load) + downloadable URL sources ----
+// Files are stored in settings as `name,<base64(content)>;…` (name sanitized to [A-Za-z0-9_]);
+// URLs as base64 of a newline-joined list. The router regenerates files on Apply and downloads
+// URLs on update; each list auto-detects domain-vs-IP per line (see HINT_GEO_CUSTOM_FORMAT).
+function sanitizeGeoName(s){ return String(s).replace(/[^a-zA-Z0-9]/g, '_'); }
+// Read a (now multi-line) field and flatten it to a whitespace-free comma list, safe for the
+// custom_settings store (Merlin truncates values at the first whitespace).
+function awgCsv(id){
+    var el = document.getElementById(id);
+    return el ? String(el.value || '').replace(/[\s,]+/g, ',').replace(/^,+|,+$/g, '') : '';
+}
+
+function addGeoFileRow(name, content){
+    var tbody = document.getElementById('awg_geo_files_rows');
+    if(!tbody) return;
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td style="padding:6px 0; border-bottom:1px solid #353d43;">' +
+            '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:4px;">' +
+                '<input type="text" class="geo_file_name input_25_table" style="flex:1; min-width:120px;" placeholder="' + escHtml(T('PH_GEO_FILE_NAME')) + '" value="' + escHtml(name || '') + '" oninput="this.value=sanitizeGeoName(this.value);" aria-label="' + escHtml(T('PH_GEO_FILE_NAME')) + '">' +
+                '<input type="button" class="button_gen" value="' + escHtml(T('BTN_LOAD_FROM_FILE')) + '" onclick="geoFileLoad(this);">' +
+                '<input type="button" class="button_gen" value="✕" title="' + escHtml(T('BTN_REMOVE')) + '" aria-label="' + escHtml(T('BTN_REMOVE')) + '" onclick="removeGeoRow(this);" style="padding:2px 9px;">' +
+            '</div>' +
+            '<textarea class="geo_file_content awg-geo-ta" rows="3" placeholder="example.com&#10;1.2.3.0/24" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>' +
+        '</td>';
+    tbody.appendChild(tr);
+    var ta = tr.querySelector('.geo_file_content');
+    if(ta) ta.value = content || '';   // set via .value so content isn't HTML-parsed
+}
+
+function addGeoUrlRow(url){
+    var tbody = document.getElementById('awg_geo_url_rows');
+    if(!tbody) return;
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+        '<td style="padding:6px 0; border-bottom:1px solid #353d43;">' +
+            '<div style="display:flex; gap:6px; align-items:center;">' +
+                '<input type="text" class="geo_url input_25_table" style="flex:1; min-width:160px;" placeholder="' + escHtml(T('PH_GEO_URL')) + '" value="' + escHtml(url || '') + '" spellcheck="false" autocapitalize="off" autocorrect="off">' +
+                '<input type="button" class="button_gen" value="✕" title="' + escHtml(T('BTN_REMOVE')) + '" aria-label="' + escHtml(T('BTN_REMOVE')) + '" onclick="removeGeoRow(this);" style="padding:2px 9px;">' +
+            '</div>' +
+        '</td>';
+    tbody.appendChild(tr);
+}
+
+function removeGeoRow(btn){
+    var tr = btn.closest ? btn.closest('tr') : null;
+    if(!tr){ var n = btn; while(n && n.tagName !== 'TR') n = n.parentNode; tr = n; }
+    if(tr && tr.parentNode) tr.parentNode.removeChild(tr);
+}
+
+// "Load from file": read a local text file into this row's textarea (and name, if empty).
+function geoFileLoad(btn){
+    var row = btn.closest ? btn.closest('tr') : null;
+    if(!row) return;
+    var fi = document.createElement('input');
+    fi.type = 'file';
+    fi.accept = '.txt,.lst,.conf,.csv';
+    fi.style.display = 'none';
+    document.body.appendChild(fi);
+    fi.onchange = function(){
+        if(fi.files && fi.files[0]){
+            var f = fi.files[0];
+            var reader = new FileReader();
+            reader.onload = function(e){
+                var ta = row.querySelector('.geo_file_content');
+                if(ta) ta.value = String(e.target.result || '');
+                var nm = row.querySelector('.geo_file_name');
+                if(nm && !nm.value){ nm.value = sanitizeGeoName(f.name.replace(/\.[^.]*$/, '')); }
+            };
+            reader.readAsText(f);
+        }
+        try { document.body.removeChild(fi); } catch(e){}
+    };
+    fi.click();
+}
+
+function serializeGeoFiles(){
+    var rows = document.querySelectorAll('#awg_geo_files_rows tr');
+    var parts = [];
+    for(var i = 0; i < rows.length; i++){
+        var nmEl = rows[i].querySelector('.geo_file_name');
+        var ctEl = rows[i].querySelector('.geo_file_content');
+        if(!nmEl || !ctEl) continue;
+        var name = sanitizeGeoName(nmEl.value);
+        var content = ctEl.value;
+        if(!name || !content.replace(/\s+/g, '')) continue;   // skip nameless/empty rows
+        var b64;
+        try { b64 = btoa(unescape(encodeURIComponent(content))); } catch(e){ continue; }
+        parts.push(name + ',' + b64);
+    }
+    return parts.join(';');
+}
+
+function serializeGeoUrls(){
+    var inputs = document.querySelectorAll('#awg_geo_url_rows .geo_url');
+    var urls = [];
+    for(var i = 0; i < inputs.length; i++){
+        var u = String(inputs[i].value || '').replace(/\s+/g, '');
+        if(u) urls.push(u);
+    }
+    if(!urls.length) return '';
+    try { return btoa(unescape(encodeURIComponent(urls.join('\n')))); } catch(e){ return ''; }
+}
+
+function loadGeoFiles(){
+    var tbody = document.getElementById('awg_geo_files_rows');
+    if(!tbody) return;
+    tbody.innerHTML = '';
+    var data = custom_settings.awg_geo_custom_files || '';
+    if(!data) return;
+    var entries = data.split(';');
+    for(var i = 0; i < entries.length; i++){
+        if(!entries[i]) continue;
+        var ci = entries[i].indexOf(',');
+        if(ci < 0) continue;
+        var name = entries[i].slice(0, ci);
+        var content = '';
+        try { content = decodeURIComponent(escape(atob(entries[i].slice(ci + 1)))); } catch(e){ content = ''; }
+        addGeoFileRow(name, content);
+    }
+}
+
+function loadGeoUrls(){
+    var tbody = document.getElementById('awg_geo_url_rows');
+    if(!tbody) return;
+    tbody.innerHTML = '';
+    var data = custom_settings.awg_geo_custom_urls || '';
+    if(!data) return;
+    var txt = '';
+    try { txt = decodeURIComponent(escape(atob(data))); } catch(e){ txt = ''; }
+    var urls = txt.split('\n');
+    for(var i = 0; i < urls.length; i++){
+        var u = urls[i].replace(/\s+/g, '');
+        if(u) addGeoUrlRow(u);
+    }
+}
+
 function initAutocomplete(){
     var input = document.getElementById('awg_geo_v2fly');
     if(!input) return;
@@ -2633,12 +2929,12 @@ function initAutocomplete(){
 
     function getLastToken(){
         var val = input.value;
-        var parts = val.split(',');
+        var parts = val.split(/[,\n]/);
         return parts[parts.length - 1].trim();
     }
 
     function getExisting(){
-        return input.value.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s; });
+        return input.value.split(/[,\n]/).map(function(s){ return s.trim(); }).filter(function(s){ return s; });
     }
 
     function showSuggestions(){
@@ -2664,10 +2960,11 @@ function initAutocomplete(){
     }
 
     function pickItem(val){
-        var parts = input.value.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s; });
-        parts.pop();
-        parts.push(val);
-        input.value = parts.join(',') + ',';
+        // Preserve existing separators (commas AND newlines) so a multi-line textarea keeps
+        // the user's line breaks; only the trailing partial token is replaced.
+        var v = input.value;
+        var m = v.match(/[,\n][^,\n]*$/);
+        input.value = (m ? v.slice(0, m.index + 1) : '') + val + ',';
         list.style.display = 'none'; input.setAttribute('aria-expanded', 'false');
         input.focus();
     }
@@ -2706,11 +3003,11 @@ function initAutocompleteIp(){
     var selIdx = -1;
 
     function getLastToken(){
-        var parts = input.value.split(',');
+        var parts = input.value.split(/[,\n]/);
         return parts[parts.length - 1].trim();
     }
     function getExisting(){
-        return input.value.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s; });
+        return input.value.split(/[,\n]/).map(function(s){ return s.trim(); }).filter(function(s){ return s; });
     }
     function showSuggestions(){
         var q = getLastToken().toLowerCase();
@@ -2734,10 +3031,11 @@ function initAutocompleteIp(){
         input.setAttribute('aria-expanded', 'true');
     }
     function pickItem(val){
-        var parts = input.value.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s; });
-        parts.pop();
-        parts.push(val);
-        input.value = parts.join(',') + ',';
+        // Preserve existing separators (commas AND newlines) so a multi-line textarea keeps
+        // the user's line breaks; only the trailing partial token is replaced.
+        var v = input.value;
+        var m = v.match(/[,\n][^,\n]*$/);
+        input.value = (m ? v.slice(0, m.index + 1) : '') + val + ',';
         list.style.display = 'none'; input.setAttribute('aria-expanded', 'false');
         input.focus();
     }
@@ -3057,8 +3355,9 @@ function initAutocompleteIp(){
                 <tr>
                     <th width="35%"><span data-i18n="TH_GEOIP_LISTS">GeoIP service lists</span><br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">github.com/Loyalsoldier/geoip</span></th>
                     <td>
-                        <input type="text" class="input_32_table" id="awg_geo_v2fly_ip" style="width:95%;" maxlength="512"
-                            placeholder="telegram,google,facebook,twitter,netflix,cloudflare">
+                        <textarea class="input_32_table awg-geo-ta" id="awg_geo_v2fly_ip" rows="2" maxlength="512"
+                            placeholder="telegram,google,facebook,twitter,netflix,cloudflare"
+                            autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
                         <div class="awg-hint" data-i18n="HINT_GEOIP">Comma-separated. Available: telegram, google, facebook, twitter, netflix, cloudflare, fastly, cloudfront, tor + country codes (us, ru, cn, …).</div>
                         <div class="awg-hint" style="color:#f0ad4e;" data-i18n="HINT_GEOIP_WARN">⚠ There are NO IP lists for youtube, discord, microsoft, github, openai etc. — use GeoSite below.</div>
                     </td>
@@ -3070,27 +3369,50 @@ function initAutocompleteIp(){
                 <tr>
                     <th width="35%"><span data-i18n="TH_GEOSITE_LISTS">GeoSite service lists</span><br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">github.com/v2fly/domain-list-community</span></th>
                     <td>
-                        <input type="text" class="input_32_table" id="awg_geo_v2fly" style="width:95%;" maxlength="512"
-                            placeholder="youtube,google,discord,netflix,telegram,twitter,instagram,facebook,tiktok,spotify">
+                        <textarea class="input_32_table awg-geo-ta" id="awg_geo_v2fly" rows="2" maxlength="512"
+                            placeholder="youtube,google,discord,netflix,telegram,twitter,instagram,facebook,tiktok,spotify"
+                            autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
                         <div class="awg-hint" data-i18n="HINT_GEOSITE">Comma-separated. 1500+ lists: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …</div>
                     </td>
                 </tr>
                 <tr>
                     <th data-i18n="TH_CUSTOM_DOMAINS">Custom domains</th>
                     <td>
-                        <input type="text" class="input_32_table" id="geo_custom_domains" style="width:95%;"
-                               maxlength="2000" placeholder="example.com,another.org,service.net">
+                        <textarea class="input_32_table awg-geo-ta" id="geo_custom_domains" rows="3"
+                               maxlength="2000" placeholder="example.com,another.org,service.net"
+                               autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
                         <div class="awg-hint" data-i18n="HINT_CUSTOM_DOMAINS">Comma-separated. Resolved via DNS → routed into the VPN.</div>
                     </td>
                 </tr>
                 <tr>
                     <th data-i18n="TH_CUSTOM_IPS">Custom IPs / subnets</th>
                     <td>
-                        <input type="text" class="input_32_table" id="geo_custom_ips" style="width:95%;"
-                               maxlength="2000" placeholder="8.8.8.8,1.1.1.0/24,203.0.113.0/24">
+                        <textarea class="input_32_table awg-geo-ta" id="geo_custom_ips" rows="3"
+                               maxlength="2000" placeholder="8.8.8.8,1.1.1.0/24,203.0.113.0/24"
+                               autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
                         <div class="awg-hint" data-i18n="HINT_CUSTOM_IPS">Comma-separated: individual IPs or CIDR subnets.</div>
                     </td>
                 </tr>
+                </table>
+
+                <!-- ==================== GEOCUSTOM — own files + URL sources ==================== -->
+                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
+                <thead><tr><td colspan="2" data-i18n="TBL_GEO_CUSTOM">GeoCustom — custom files</td></tr></thead>
+                <tr><td colspan="2">
+                    <div class="awg-hint" data-i18n-html="HINT_GEO_CUSTOM_FORMAT">One entry per line. A domain (<code>example.com</code>) is routed via DNS; an IP or CIDR subnet (<code>1.2.3.0/24</code>) is added to the ipset. Lines starting with <code>#</code> are comments. A URL must return a plain-text list in this format.</div>
+
+                    <div style="margin-top:8px; font-weight:bold; font-size:12px;" data-i18n="TH_GEO_FILES">Custom files</div>
+                    <table width="100%" border="0" cellpadding="0" cellspacing="0" style="table-layout:fixed;"><tbody id="awg_geo_files_rows"></tbody></table>
+                    <div style="margin-top:5px;">
+                        <input type="button" class="button_gen" value="+ Add file" data-i18n-val="BTN_ADD_GEO_FILE" onclick="addGeoFileRow('','');">
+                    </div>
+
+                    <div style="margin-top:12px; font-weight:bold; font-size:12px;" data-i18n="TH_GEO_URLS">URL sources</div>
+                    <table width="100%" border="0" cellpadding="0" cellspacing="0" style="table-layout:fixed;"><tbody id="awg_geo_url_rows"></tbody></table>
+                    <div style="margin-top:5px;">
+                        <input type="button" class="button_gen" value="+ Add URL" data-i18n-val="BTN_ADD_GEO_URL" onclick="addGeoUrlRow('');">
+                    </div>
+                </td></tr>
                 </table>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
@@ -3275,6 +3597,7 @@ function initAutocompleteIp(){
         <div id="awg_analyze_body" style="padding:8px 18px; overflow:auto; min-height:170px;">
             <table id="awg_analyze_table">
                 <thead><tr>
+                    <th style="width:26px; text-align:center;"><input type="checkbox" id="awg_an_selall" onclick="awgAnalyzeToggleAll(this);" data-i18n-aria="ARIA_AN_SELALL" aria-label="Select all"></th>
                     <th style="width:60px;" data-i18n="ANALYZE_COL_TIME">Time</th>
                     <th data-i18n="ANALYZE_COL_NAME">Request</th>
                     <th style="width:160px;" data-i18n="ANALYZE_COL_DEST">Destination</th>
@@ -3284,8 +3607,10 @@ function initAutocompleteIp(){
             </table>
             <div id="awg_analyze_empty" style="padding:20px 4px; color:#9aa3ad; font-size:12px;"></div>
         </div>
-        <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:flex-start; flex-wrap:wrap; gap:8px;">
-            <span id="awg_analyze_note" class="awg-hint" style="flex:1; min-width:220px; margin-top:0;" data-i18n="ANALYZE_NOTE">Diagnostic.</span>
+        <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
+            <span id="awg_analyze_note" class="awg-hint" style="flex:1; min-width:160px; margin-top:0;" data-i18n="ANALYZE_NOTE">Diagnostic.</span>
+            <span id="awg_an_ack" class="awg-ack" style="margin-left:0;"></span>
+            <input type="button" class="button_gen" id="awg_an_add" value="+ To custom domains/IPs" data-i18n-val="ANALYZE_ADD_SELECTED" onclick="awgAnalyzeAddSelected();">
             <input type="button" class="button_gen" value="Close" data-i18n-val="BTN_CLOSE" onclick="awgCloseAnalyze();">
         </div>
     </div>

@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.95"
+AWG_VERSION="1.1.96"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -478,6 +478,56 @@ download_geosite(){
     fi
 }
 
+# Remove userurl_* files whose URL key is no longer present in awg_geo_custom_urls (a URL
+# removed or edited in the UI). $1 = the decoded newline/space-separated URL list ("" = none).
+prune_custom_urls(){
+    local urls="$1" sel=" " url key f fkey
+    set -f
+    for url in $urls; do
+        [ -z "$url" ] && continue
+        key=$(echo "$url" | sha256sum | awk '{print $1}' | cut -c1-16)
+        sel="$sel$key "
+    done
+    set +f
+    for f in "$GEO_DIR"/domains/userurl_*.txt "$GEO_DIR"/geoip/userurl_*.cidr; do
+        [ -f "$f" ] || continue
+        fkey=$(basename "$f"); fkey=${fkey#userurl_}; fkey=${fkey%.txt}; fkey=${fkey%.cidr}
+        case "$sel" in *" $fkey "*) ;; *) rm -f "$f" ;; esac
+    done
+}
+
+# Download user URL sources. awg_geo_custom_urls = base64 of a newline-joined URL list; each URL
+# is fetched (via the same mirror/proxy helper as the built-in lists) and classified into
+# domains/userurl_<key>.txt + geoip/userurl_<key>.cidr, where key = first 16 hex of sha256(URL).
+download_custom_urls(){
+    local urls
+    urls=$(get_setting awg_geo_custom_urls | base64 -d 2>/dev/null)
+    if [ -z "$urls" ]; then
+        prune_custom_urls ""
+        return 0
+    fi
+    mkdir -p "$GEO_DIR/domains" "$GEO_DIR/geoip"
+    local url key tmp
+    set -f
+    for url in $urls; do
+        url=$(echo "$url" | tr -d ' \r')
+        [ -z "$url" ] && continue
+        case "$url" in http://*|https://*) ;; *) continue ;; esac
+        key=$(echo "$url" | sha256sum | awk '{print $1}' | cut -c1-16)
+        tmp="$GEO_DIR/.url_${key}.tmp"
+        if fetch_with_mirrors "$url" "$tmp" 60 && [ -s "$tmp" ]; then
+            rm -f "$GEO_DIR/domains/userurl_${key}.txt" "$GEO_DIR/geoip/userurl_${key}.cidr"
+            classify_user_list "$tmp" "$GEO_DIR/domains/userurl_${key}.txt" "$GEO_DIR/geoip/userurl_${key}.cidr"
+            log_msg "Custom URL: $url ($key)"
+        else
+            log_msg "Custom URL download failed: $url"
+        fi
+        rm -f "$tmp"
+    done
+    set +f
+    prune_custom_urls "$urls"
+}
+
 download_all_geo(){
     mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains"
     log_msg "Downloading all geo databases..."
@@ -512,6 +562,9 @@ download_all_geo(){
         download_antifilter_list "$af_key" || log_msg "WARNING: Antifilter $af_key failed"
         update_status
     done
+
+    # GeoCustom URL sources (user-supplied downloadable lists)
+    download_custom_urls
 
     # Save timestamp
     date +%s > "$GEO_DIR/.last_update"
@@ -559,6 +612,59 @@ ipset_load_file(){
             if ($0 != "") print "add " s " " $0 " timeout 0"
         }
     ' "$file" | ipset restore -! 2>/dev/null
+}
+
+# Split a user-supplied list (GeoCustom pasted file or downloaded URL) into a domains file and
+# a CIDR file, auto-detecting each line: IPv4/CIDR or IPv6 -> cidr_out; a bare domain -> dom_out;
+# blank lines, #comments and anything else are dropped. A bare IPv4 (no slash) goes to cidr_out,
+# so it never lands in dnsmasq as a useless pseudo-domain.
+classify_user_list(){
+    local infile="$1" dom_out="$2" cidr_out="$3"
+    [ -f "$infile" ] || return 0
+    awk -v dout="$dom_out" -v cout="$cidr_out" '
+        { gsub(/[ \t\r]/, "") }
+        $0 == "" { next }
+        /^#/ { next }
+        /:/ { print > cout; next }
+        /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/[0-9]+)?$/ { print > cout; next }
+        /^\.?[a-zA-Z0-9._-]+$/ { sub(/^\./, ""); print > dout; next }
+    ' "$infile"
+}
+
+# Regenerate GeoCustom pasted-file lists from awg_geo_custom_files (format:
+# name,base64(content);name,base64(content)) into domains/usercustom_<name>.txt and
+# geoip/usercustom_<name>.cidr. Cleared + rebuilt on every setup_firewall, so a file renamed
+# or removed in the UI drops its old output automatically.
+apply_custom_geo(){
+    rm -f "$GEO_DIR"/domains/usercustom_*.txt "$GEO_DIR"/geoip/usercustom_*.cidr 2>/dev/null
+    local blob
+    blob=$(get_setting awg_geo_custom_files)
+    [ -z "$blob" ] && return 0
+    mkdir -p "$GEO_DIR/domains" "$GEO_DIR/geoip"
+    local oldifs="$IFS" entry name b64 tmp base n seen=" "
+    IFS=';'
+    set -f
+    for entry in $blob; do
+        [ -z "$entry" ] && continue
+        case "$entry" in *,*) ;; *) continue ;; esac   # need a name,content pair
+        name=${entry%%,*}
+        b64=${entry#*,}
+        name=$(echo "$name" | sed 's/[^a-zA-Z0-9]/_/g')
+        [ -z "$name" ] && continue
+        # Uniquify on sanitized-name collision (e.g. "my.list" and "my-list" both -> "my_list"),
+        # else the second file's classify output would truncate/overwrite the first's — data loss.
+        base="$name"; n=1
+        while case "$seen" in *" $name "*) true ;; *) false ;; esac; do
+            n=$((n + 1)); name="${base}_${n}"
+        done
+        seen="$seen$name "
+        tmp="$GEO_DIR/.uc_${name}.tmp"
+        echo "$b64" | base64 -d 2>/dev/null > "$tmp"
+        [ -s "$tmp" ] && classify_user_list "$tmp" "$GEO_DIR/domains/usercustom_${name}.txt" "$GEO_DIR/geoip/usercustom_${name}.cidr"
+        rm -f "$tmp"
+    done
+    set +f
+    IFS="$oldifs"
 }
 
 # --- Unified firewall setup ---
@@ -921,6 +1027,17 @@ setup_firewall(){
         done
     fi
 
+    # --- GeoCustom: regenerate pasted-file lists, then load all user CIDR files into the ipset.
+    # Pasted files (usercustom_*) are rebuilt here; URL sources (userurl_*) are produced by the
+    # geo download. Their domain files (domains/*.txt) are picked up by the dnsmasq loop below.
+    apply_custom_geo
+    local ucf
+    for ucf in "$GEO_DIR"/geoip/usercustom_*.cidr "$GEO_DIR"/geoip/userurl_*.cidr; do
+        [ -f "$ucf" ] || continue
+        ipset_load_file "$ucf" "$IPSET_NAME"
+        ip_count=$((ip_count + $(wc -l < "$ucf")))
+    done
+
     # --- Build dnsmasq config for domain-based routing ---
     local domain_count=0
     local block_ipv6=$(get_setting awg_block_ipv6_dns)
@@ -1187,7 +1304,7 @@ update_geo_lists(){
 geo_in_use(){
     case "$(get_setting awg_default_policy)" in *geo*) return 0 ;; esac
     case "$(get_setting awg_clients)" in *vpn_geo*) return 0 ;; esac
-    [ -n "$(get_setting awg_geo_v2fly)$(get_setting awg_geo_v2fly_ip)$(get_setting awg_geo_custom_domains)$(get_setting awg_geo_custom_ips)$(get_setting awg_antifilter_lists)" ] && return 0
+    [ -n "$(get_setting awg_geo_v2fly)$(get_setting awg_geo_v2fly_ip)$(get_setting awg_geo_custom_domains)$(get_setting awg_geo_custom_ips)$(get_setting awg_geo_custom_files)$(get_setting awg_geo_custom_urls)$(get_setting awg_antifilter_lists)" ] && return 0
     return 1
 }
 
@@ -1198,6 +1315,7 @@ geo_in_use(){
 ensure_geo(){
     prune_geoip   # delete .cidr of services removed from the field (sync on Apply/update)
     prune_antifilter   # likewise for de-selected antifilter lists
+    prune_custom_urls "$(get_setting awg_geo_custom_urls | base64 -d 2>/dev/null)"   # drop removed URL sources
     geo_in_use || return 0
     # Collect ONLY what's missing — don't re-download lists that are already present
     # (adding one GeoIP service shouldn't re-fetch the others or the big v2fly DB).
@@ -1215,7 +1333,21 @@ ensure_geo(){
             [ -f "$GEO_DIR/antifilter/af_${af_key}.cidr" ] || need_af="$need_af $af_key"
         fi
     done
-    [ -z "$need_svcs" ] && [ "$need_yml" = 0 ] && [ -z "$need_af" ] && return 0
+    # GeoCustom URL sources: need a download if any configured URL has neither output file yet.
+    local need_urls=0 cu_urls cu_url cu_key
+    cu_urls=$(get_setting awg_geo_custom_urls | base64 -d 2>/dev/null)
+    if [ -n "$cu_urls" ]; then
+        set -f
+        for cu_url in $cu_urls; do
+            cu_url=$(echo "$cu_url" | tr -d ' \r')
+            [ -z "$cu_url" ] && continue
+            case "$cu_url" in http://*|https://*) ;; *) continue ;; esac
+            cu_key=$(echo "$cu_url" | sha256sum | awk '{print $1}' | cut -c1-16)
+            [ ! -f "$GEO_DIR/domains/userurl_${cu_key}.txt" ] && [ ! -f "$GEO_DIR/geoip/userurl_${cu_key}.cidr" ] && need_urls=1
+        done
+        set +f
+    fi
+    [ -z "$need_svcs" ] && [ "$need_yml" = 0 ] && [ -z "$need_af" ] && [ "$need_urls" = 0 ] && return 0
     # Single-flight: only one background geo download at a time. Without this, a double
     # Apply/SaveConf (or Apply + update) fired ensure_geo twice and the old lockless "( ) &"
     # ran two download loops in lockstep — minutes of duplicate failing fetches plus two
@@ -1249,6 +1381,7 @@ ensure_geo(){
             download_antifilter_list "$af_key" || log_msg "WARNING: Antifilter $af_key failed"
             update_status
         done
+        [ "$need_urls" = 1 ] && download_custom_urls
         # Re-apply under the operation lock so this background rebuild can't race
         # do_start/do_stop/do_firewall_restart (all of which hold LOCKDIR). A full
         # setup_firewall is required here (not the cheap do_firewall_restart fast-path) so
