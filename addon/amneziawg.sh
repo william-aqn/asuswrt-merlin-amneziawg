@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.2"
+AWG_VERSION="1.2.3"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -183,6 +183,32 @@ geo_ipset(){
     [ "$1" = 1 ] && echo "$IPSET_NAME" || echo "${IPSET_NAME}$1"
 }
 
+# Routing mode of a policy: "vpn" (include, default — route the policy's lists via VPN) or
+# "direct" (exclude — route everything EXCEPT the lists via VPN; the lists go direct).
+geo_mode(){
+    [ "$(get_setting "$(geo_key "$1" mode)")" = direct ] && echo direct || echo vpn
+}
+
+# Exclusion ipset name for a policy (pointwise exceptions): the main set name + "_x". Owned via
+# the registry (exact-name teardown), so the suffix can never collide-destroy a foreign set.
+geo_exc_ipset(){
+    echo "$(geo_ipset "$1")_x"
+}
+
+# Does policy <id> have any exclusion entries (domains/IPs/files/URLs)? Gates EXC-set creation.
+policy_has_exc(){
+    local id="$1"
+    [ -n "$(get_setting "$(geo_key "$id" exc_domains)")$(get_setting "$(geo_key "$id" exc_ips)")$(get_setting "$(geo_key "$id" exc_files)")$(get_setting "$(geo_key "$id" exc_urls)")" ]
+}
+
+# True if any active geo policy is in exclude mode — it routes everything-except-its-list via
+# VPN (like vpn_all), so it shares vpn_all's coexistence caveat with a co-resident DPI/proxy tool.
+any_exclude_mode(){
+    local id
+    for id in $(geo_ids); do [ "$(geo_mode "$id")" = direct ] && return 0; done
+    return 1
+}
+
 # Geo files are stored ONCE in a shared pool ($GEO_DIR/{geoip,antifilter,domains}); a file is
 # identified by its natural key (service name / list key / GeoSite category / sha256 of a URL),
 # so two policies selecting the same list share a single download + on-disk copy. The per-policy
@@ -197,12 +223,22 @@ geo_union_geoip(){ local id; for id in $(geo_ids); do selected_geoip "$id"; done
 geo_union_antifilter(){ local id; for id in $(geo_ids); do selected_antifilter "$id"; done | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' '; }
 # Union of GeoSite categories across all policies.
 geo_union_geosite(){ local id; for id in $(geo_ids); do get_setting "$(geo_key "$id" v2fly)" | tr ',' ' '; done | tr ' ' '\n' | sed 's/[^A-Za-z0-9_.-]//g' | grep -v '^$' | sort -u | tr '\n' ' '; }
-# Union of custom URLs across all policies (decoded), one valid http(s) URL per line, deduped.
-geo_union_urls(){ local id; for id in $(geo_ids); do get_setting "$(geo_key "$id" custom_urls)" | base64 -d 2>/dev/null; printf '\n'; done | tr ' \t\r' '\n\n\n' | grep -E '^https?://' | sort -u; }
-# sha256[:16] keys of policy <id>'s OWN custom URLs (one per line) — for per-policy load/dnsmasq.
+# Union of ALL policies' URLs across both channels (custom_urls + exc_urls), decoded, one valid
+# http(s) URL per line, deduped — every URL (include or exclusion) is fetched once into the
+# shared userurl_<hash> pool.
+geo_union_urls(){
+    local id
+    for id in $(geo_ids); do
+        get_setting "$(geo_key "$id" custom_urls)" | base64 -d 2>/dev/null; printf '\n'
+        get_setting "$(geo_key "$id" exc_urls)" | base64 -d 2>/dev/null; printf '\n'
+    done | tr ' \t\r' '\n\n\n' | grep -E '^https?://' | sort -u
+}
+# sha256[:16] keys of policy <id>'s URLs for channel <kind> (inc=custom_urls, exc=exc_urls), one
+# per line — for per-policy/per-channel load + dnsmasq enumeration.
 policy_url_keys(){
-    local id="$1" u
-    get_setting "$(geo_key "$id" custom_urls)" | base64 -d 2>/dev/null | tr ' \t\r' '\n\n\n' | grep -E '^https?://' | while read -r u; do
+    local id="$1" kind="${2:-inc}" key u
+    [ "$kind" = exc ] && key=exc_urls || key=custom_urls
+    get_setting "$(geo_key "$id" "$key")" | base64 -d 2>/dev/null | tr ' \t\r' '\n\n\n' | grep -E '^https?://' | while read -r u; do
         echo "$u" | sha256sum | awk '{print $1}' | cut -c1-16
     done
 }
@@ -264,14 +300,26 @@ geo_maxelem(){
 # (cleanup_firewall destroys + recreates each build), so this never touches ipsets.
 prune_orphan_policies(){
     local active=" $(geo_ids) " id f
+    # custom-domains files: custom_p<id>.txt (include) + custom_exc_p<id>.txt (exclusions)
     for f in "$GEO_DIR"/domains/custom_p*.txt; do
         [ -f "$f" ] || continue
         id=$(basename "$f" .txt); id=${id#custom_p}
         case "$active" in *" $id "*) ;; *) rm -f "$f" ;; esac
     done
+    for f in "$GEO_DIR"/domains/custom_exc_p*.txt; do
+        [ -f "$f" ] || continue
+        id=$(basename "$f" .txt); id=${id#custom_exc_p}
+        case "$active" in *" $id "*) ;; *) rm -f "$f" ;; esac
+    done
+    # pasted-file outputs: usercustom_p<id>_* (include) + excustom_p<id>_* (exclusions)
     for f in "$GEO_DIR"/domains/usercustom_p*.txt "$GEO_DIR"/geoip/usercustom_p*.cidr; do
         [ -f "$f" ] || continue
         id=$(basename "$f"); id=${id#usercustom_p}; id=${id%%_*}
+        case "$active" in *" $id "*) ;; *) rm -f "$f" ;; esac
+    done
+    for f in "$GEO_DIR"/domains/excustom_p*.txt "$GEO_DIR"/geoip/excustom_p*.cidr; do
+        [ -f "$f" ] || continue
+        id=$(basename "$f"); id=${id#excustom_p}; id=${id%%_*}
         case "$active" in *" $id "*) ;; *) rm -f "$f" ;; esac
     done
 }
@@ -755,15 +803,17 @@ classify_user_list(){
     ' "$infile"
 }
 
-# Regenerate policy <id>'s GeoCustom pasted-file lists from its custom_files key (format:
-# name,base64(content);name,base64(content)) into the SHARED pool but namespaced per policy:
-# domains/usercustom_p<id>_<name>.txt and geoip/usercustom_p<id>_<name>.cidr (pasted content can
-# differ between same-named tabs). Cleared + rebuilt each setup_firewall. $1 = policy id.
+# Regenerate policy <id>'s pasted-file lists for channel <kind> (inc=custom_files [include],
+# exc=exc_files [exclusions]) from the matching key (format name,base64(content);...) into the
+# SHARED pool, namespaced per policy+channel: domains/<pfx><name>.txt + geoip/<pfx><name>.cidr
+# where <pfx> = usercustom_p<id>_ (inc) or excustom_p<id>_ (exc). Cleared + rebuilt each
+# setup_firewall. $1 = policy id, $2 = kind (default inc).
 apply_custom_geo(){
-    local id="${1:-1}"
-    rm -f "$GEO_DIR"/domains/usercustom_p${id}_*.txt "$GEO_DIR"/geoip/usercustom_p${id}_*.cidr 2>/dev/null
+    local id="${1:-1}" kind="${2:-inc}" key pfx
+    if [ "$kind" = exc ]; then key=exc_files; pfx="excustom_p${id}_"; else key=custom_files; pfx="usercustom_p${id}_"; fi
+    rm -f "$GEO_DIR"/domains/${pfx}*.txt "$GEO_DIR"/geoip/${pfx}*.cidr 2>/dev/null
     local blob
-    blob=$(get_setting "$(geo_key "$id" custom_files)")
+    blob=$(get_setting "$(geo_key "$id" "$key")")
     [ -z "$blob" ] && return 0
     mkdir -p "$GEO_DIR/domains" "$GEO_DIR/geoip"
     local oldifs="$IFS" entry name b64 tmp base n seen=" "
@@ -783,9 +833,9 @@ apply_custom_geo(){
             n=$((n + 1)); name="${base}_${n}"
         done
         seen="$seen$name "
-        tmp="$GEO_DIR/.uc_p${id}_${name}.tmp"
+        tmp="$GEO_DIR/.uc_${pfx}${name}.tmp"
         echo "$b64" | base64 -d 2>/dev/null > "$tmp"
-        [ -s "$tmp" ] && classify_user_list "$tmp" "$GEO_DIR/domains/usercustom_p${id}_${name}.txt" "$GEO_DIR/geoip/usercustom_p${id}_${name}.cidr"
+        [ -s "$tmp" ] && classify_user_list "$tmp" "$GEO_DIR/domains/${pfx}${name}.txt" "$GEO_DIR/geoip/${pfx}${name}.cidr"
         rm -f "$tmp"
     done
     set +f
@@ -830,14 +880,16 @@ migrate_geocustom_layout(){
     touch "$GEO_DIR/.geocustom_migrated"
 }
 
-# (Re)write policy <id>'s own custom-domains file (per-policy content). $1 = policy id.
+# (Re)write policy <id>'s own custom-domains file for channel <kind> (inc=custom_domains,
+# exc=exc_domains). Output: custom_p<id>.txt (inc) / custom_exc_p<id>.txt (exc). $1=id $2=kind.
 build_custom_domains(){
-    local id="${1:-1}" cd
-    cd=$(get_setting "$(geo_key "$id" custom_domains)")
-    rm -f "$GEO_DIR/domains/custom_p${id}.txt"   # clear stale file when the field is emptied
+    local id="${1:-1}" kind="${2:-inc}" key out cd
+    if [ "$kind" = exc ]; then key=exc_domains; out="$GEO_DIR/domains/custom_exc_p${id}.txt"; else key=custom_domains; out="$GEO_DIR/domains/custom_p${id}.txt"; fi
+    cd=$(get_setting "$(geo_key "$id" "$key")")
+    rm -f "$out"   # clear stale file when the field is emptied
     if [ -n "$cd" ]; then
         mkdir -p "$GEO_DIR/domains"
-        echo "$cd" | tr ',' '\n' > "$GEO_DIR/domains/custom_p${id}.txt"
+        echo "$cd" | tr ',' '\n' > "$out"
     fi
 }
 
@@ -1142,6 +1194,31 @@ reload_dnsmasq(){
     ) </dev/null >/dev/null 2>&1 &
 }
 
+# Append a geo policy's mangle marking rules to AWG_CHAIN, honoring its mode (include/exclude)
+# and exclusion set. $1 = geo policy id; $2.. = the iptables match tokens that scope the rule to
+# one device (e.g. "-m mac --mac-source AA:BB" or "-s 1.2.3.4"), or NOTHING for the default
+# policy (applies to all not-yet-returned traffic). All marking is 0x100 -> RT_TABLE (one tunnel).
+# Verdict per the design table:
+#   include (mode=vpn):   EXC -> direct (RETURN); INC -> VPN (MARK); rest -> falls through
+#   exclude (mode=direct): EXC -> VPN (MARK); INC -> direct (RETURN); rest -> VPN (MARK)
+# Returns 1 (emits nothing) if the policy's main set is missing/foreign.
+emit_geo_rules(){
+    local pgid="$1"; shift
+    local incset excset mode have_exc=0
+    incset=$(geo_ipset "$pgid"); excset=$(geo_exc_ipset "$pgid"); mode=$(geo_mode "$pgid")
+    ipset list "$incset" >/dev/null 2>&1 && geo_set_ours "$pgid" "$incset" || return 1
+    ipset list "$excset" >/dev/null 2>&1 && geo_set_ours "$pgid" "$excset" && have_exc=1
+    if [ "$mode" = direct ]; then
+        [ "$have_exc" = 1 ] && iptables -t mangle -A "$AWG_CHAIN" "$@" -m set --match-set "$excset" dst -j MARK --set-mark "$FWMARK"
+        iptables -t mangle -A "$AWG_CHAIN" "$@" -m set --match-set "$incset" dst -j RETURN
+        iptables -t mangle -A "$AWG_CHAIN" "$@" -j MARK --set-mark "$FWMARK"
+    else
+        [ "$have_exc" = 1 ] && iptables -t mangle -A "$AWG_CHAIN" "$@" -m set --match-set "$excset" dst -j RETURN
+        iptables -t mangle -A "$AWG_CHAIN" "$@" -m set --match-set "$incset" dst -j MARK --set-mark "$FWMARK"
+    fi
+    return 0
+}
+
 setup_firewall(){
     cleanup_firewall
 
@@ -1238,6 +1315,35 @@ setup_firewall(){
         done
         # This policy's own custom-domains file (consumed by the dnsmasq builder below).
         build_custom_domains "$gid"
+
+        # --- Exclusions channel (pointwise exceptions) ---
+        # Always (re)generate this policy's exclusion content files (self-clean when empty), so a
+        # cleared exclusions block leaves nothing behind. Only build the EXC ipset when used: it's
+        # small (pointwise) and gets a fixed cap, so it never erodes the divided main budget.
+        apply_custom_geo "$gid" exc
+        build_custom_domains "$gid" exc
+        if policy_has_exc "$gid"; then
+            local _exset _ecrc
+            _exset=$(geo_exc_ipset "$gid")
+            ipset create "$_exset" hash:net family inet hashsize 1024 maxelem 8192 timeout 86400 2>/dev/null
+            _ecrc=$?
+            [ "$_ecrc" -eq 0 ] && register_owned_set "$_exset"
+            # Ownership guard mirrors the main set: never load OUR entries into a foreign set that
+            # happens to use the derived "<base><id>_x" name (id 1's shared base proceeds).
+            if ipset list "$_exset" >/dev/null 2>&1 && geo_set_ours "$gid" "$_exset"; then
+                for _cip in $(get_setting "$(geo_key "$gid" exc_ips)" | tr ',' ' '); do
+                    _cip=$(echo "$_cip" | tr -d ' \r')
+                    [ -n "$_cip" ] && ipset add "$_exset" "$_cip" timeout 0 2>/dev/null
+                done
+                for _f in "$GEO_DIR"/geoip/excustom_p${gid}_*.cidr; do
+                    [ -f "$_f" ] && ipset_load_file "$_f" "$_exset"
+                done
+                for _uk in $(policy_url_keys "$gid" exc); do
+                    _f="$GEO_DIR/geoip/userurl_${_uk}.cidr"; [ -f "$_f" ] && ipset_load_file "$_f" "$_exset"
+                done
+            fi
+        fi
+
         # Fill-level warning (per set).
         local _ent
         _ent=$(ipset list "$gset" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
@@ -1264,10 +1370,10 @@ setup_firewall(){
     # files a policy uses are enumerated from its selection (NOT a dir glob), since the pool is
     # shared. Domain->ipset rules only work if the set exists, so re-check `ipset list` per
     # policy (mirrors the per-device mangle vpn_geo guard).
-    local dgid dgset f chunk_line chunk_count domain _cat _uk _dfiles
+    local dgid dgset f chunk_line chunk_count domain _cat _uk _dfiles _efiles _chan _cset _cfiles
     for dgid in $(geo_ids); do
         dgset=$(geo_ipset "$dgid")
-        # Build the explicit list of this policy's domain files in the shared pool.
+        # INC domain files for this policy (route via its main set).
         _dfiles=""
         for _cat in $(get_setting "$(geo_key "$dgid" v2fly)" | tr ',' ' '); do
             _cat=$(echo "$_cat" | sed 's/[^A-Za-z0-9_.-]//g'); [ -z "$_cat" ] && continue
@@ -1277,31 +1383,40 @@ setup_firewall(){
         case " $(selected_antifilter "$dgid") " in *" community_domains "*) _dfiles="$_dfiles $GEO_DIR/domains/antifilter_community_domains.lst" ;; esac
         for _uk in $(policy_url_keys "$dgid"); do _dfiles="$_dfiles $GEO_DIR/domains/userurl_${_uk}.txt"; done
         for f in "$GEO_DIR"/domains/usercustom_p${dgid}_*.txt; do [ -f "$f" ] && _dfiles="$_dfiles $f"; done
+        # EXC domain files for this policy (the exclusions block -> its EXC set).
+        _efiles="$GEO_DIR/domains/custom_exc_p${dgid}.txt"
+        for _uk in $(policy_url_keys "$dgid" exc); do _efiles="$_efiles $GEO_DIR/domains/userurl_${_uk}.txt"; done
+        for f in "$GEO_DIR"/domains/excustom_p${dgid}_*.txt; do [ -f "$f" ] && _efiles="$_efiles $f"; done
 
-        if ! ipset list "$dgset" >/dev/null 2>&1 || ! geo_set_ours "$dgid" "$dgset"; then
-            for f in $_dfiles; do [ -f "$f" ] && { log_msg "domain-geo disabled for policy $dgid: ipset $dgset unavailable (domains configured but not routable)"; break; }; done
-            continue
-        fi
-        for f in $_dfiles; do
-            [ -f "$f" ] || continue
-            chunk_line="ipset=/"
-            chunk_count=0
-            while read -r domain; do
-                domain=$(echo "$domain" | tr -d ' \r')
-                [ -z "$domain" ] && continue
-                echo "$domain" | grep -q '^#' && continue
-                domain=$(echo "$domain" | sed 's/^\.//;s/:@[^ ]*$//')
-                echo "$domain" | grep -q '[^a-zA-Z0-9._-]' && continue
-                chunk_line="${chunk_line}${domain}/"
-                chunk_count=$((chunk_count + 1))
-                domain_count=$((domain_count + 1))
-                if [ $chunk_count -ge 20 ]; then
-                    echo "${chunk_line}${dgset}" >> "$DNSMASQ_AWG_CONF"
-                    chunk_line="ipset=/"
-                    chunk_count=0
-                fi
-            done < "$f"
-            [ $chunk_count -gt 0 ] && echo "${chunk_line}${dgset}" >> "$DNSMASQ_AWG_CONF"
+        # Emit each channel's domains into its OWN set (INC -> main, EXC -> exclusion set), so a
+        # domain only ever lands in the set its policy/channel routes it through.
+        for _chan in inc exc; do
+            if [ "$_chan" = exc ]; then _cset="$(geo_exc_ipset "$dgid")"; _cfiles="$_efiles"; else _cset="$dgset"; _cfiles="$_dfiles"; fi
+            if ! ipset list "$_cset" >/dev/null 2>&1 || ! geo_set_ours "$dgid" "$_cset"; then
+                for f in $_cfiles; do [ -f "$f" ] && { log_msg "domain-geo disabled for policy $dgid ($_chan): ipset $_cset unavailable (domains configured but not routable)"; break; }; done
+                continue
+            fi
+            for f in $_cfiles; do
+                [ -f "$f" ] || continue
+                chunk_line="ipset=/"
+                chunk_count=0
+                while read -r domain; do
+                    domain=$(echo "$domain" | tr -d ' \r')
+                    [ -z "$domain" ] && continue
+                    echo "$domain" | grep -q '^#' && continue
+                    domain=$(echo "$domain" | sed 's/^\.//;s/:@[^ ]*$//')
+                    echo "$domain" | grep -q '[^a-zA-Z0-9._-]' && continue
+                    chunk_line="${chunk_line}${domain}/"
+                    chunk_count=$((chunk_count + 1))
+                    domain_count=$((domain_count + 1))
+                    if [ $chunk_count -ge 20 ]; then
+                        echo "${chunk_line}${_cset}" >> "$DNSMASQ_AWG_CONF"
+                        chunk_line="ipset=/"
+                        chunk_count=0
+                    fi
+                done < "$f"
+                [ $chunk_count -gt 0 ] && echo "${chunk_line}${_cset}" >> "$DNSMASQ_AWG_CONF"
+            done
         done
     done
 
@@ -1368,23 +1483,21 @@ setup_firewall(){
                     log_msg "Route: $dev_id ($name) -> VPN (all)"
                     ;;
                 vpn_geo|vpn_geo_*)
-                    # Match against THIS device's geo policy ipset; still mark 0x100 -> table
-                    # RT_TABLE (same tunnel for every policy). vpn_geo -> id 1, vpn_geo_<id> -> id.
-                    local pgid pgset
+                    # Per-device geo: include or exclude mode + optional exclusions (emit_geo_rules).
+                    # Still marks 0x100 -> RT_TABLE (one tunnel). vpn_geo -> id 1, vpn_geo_<id> -> id.
+                    local pgid _grc
                     pgid=$(geo_policy_of_ref "$policy")
-                    pgset=$(geo_ipset "$pgid")
-                    if ipset list "$pgset" >/dev/null 2>&1 && geo_set_ours "$pgid" "$pgset"; then
-                        if [ -n "$mac" ]; then
-                            iptables -t mangle -A "$AWG_CHAIN" -m mac --mac-source "$mac" \
-                                -m set --match-set "$pgset" dst -j MARK --set-mark "$FWMARK"
-                        else
-                            iptables -t mangle -A "$AWG_CHAIN" -s "$dev_id" \
-                                -m set --match-set "$pgset" dst -j MARK --set-mark "$FWMARK"
-                        fi
-                        has_geo=true
-                        log_msg "Route: $dev_id ($name) -> VPN (geo $pgid)"
+                    if [ -n "$mac" ]; then
+                        emit_geo_rules "$pgid" -m mac --mac-source "$mac"
                     else
-                        log_msg "WARNING: ipset $pgset missing, skipping geo policy $pgid for $dev_id ($name)"
+                        emit_geo_rules "$pgid" -s "$dev_id"
+                    fi
+                    _grc=$?
+                    if [ "$_grc" -eq 0 ]; then
+                        has_geo=true
+                        log_msg "Route: $dev_id ($name) -> VPN (geo $pgid, $(geo_mode "$pgid"))"
+                    else
+                        log_msg "WARNING: ipset $(geo_ipset "$pgid") missing/foreign, skipping geo policy $pgid for $dev_id ($name)"
                     fi
                     ;;
             esac
@@ -1398,16 +1511,13 @@ setup_firewall(){
             log_msg "Default: all -> VPN"
             ;;
         vpn_geo|vpn_geo_*)
-            local dpgid dpgset
+            local dpgid
             dpgid=$(geo_policy_of_ref "$default_policy")
-            dpgset=$(geo_ipset "$dpgid")
-            if ipset list "$dpgset" >/dev/null 2>&1 && geo_set_ours "$dpgid" "$dpgset"; then
-                iptables -t mangle -A "$AWG_CHAIN" \
-                    -m set --match-set "$dpgset" dst -j MARK --set-mark "$FWMARK"
+            if emit_geo_rules "$dpgid"; then
                 has_geo=true
-                log_msg "Default: geo $dpgid -> VPN"
+                log_msg "Default: geo $dpgid -> VPN ($(geo_mode "$dpgid"))"
             else
-                log_msg "WARNING: ipset $dpgset missing, geo default policy not applied"
+                log_msg "WARNING: ipset $(geo_ipset "$dpgid") missing, geo default policy not applied"
             fi
             ;;
         direct|*)
@@ -1457,8 +1567,8 @@ setup_firewall(){
     _dpi=$(detect_dpi_tool)
     if [ -n "$_dpi" ]; then
         log_msg "NOTE: co-resident DPI/proxy tool ($_dpi) shares router CPU/RAM with AWG geo ipset/dnsmasq — on low-RAM routers (<512MB) running both can exhaust memory (OOM) and hang the router"
-        if [ "$default_policy" = "vpn_all" ] || get_setting awg_clients | grep -q vpn_all; then
-            log_msg "WARNING: $_dpi co-resident with an all->VPN policy — the tunnel will capture LAN traffic; use Direct or Geo-Only default policy to coexist"
+        if [ "$default_policy" = "vpn_all" ] || get_setting awg_clients | grep -q vpn_all || any_exclude_mode; then
+            log_msg "WARNING: $_dpi co-resident with an all->VPN / exclude-mode policy — the tunnel will capture most LAN traffic; use Direct or include-mode Geo to coexist"
         fi
     fi
 
@@ -2193,7 +2303,7 @@ EOF
     # Coexistence alarm: a DPI/proxy tool present AND an all->VPN policy that pulls LAN
     # traffic into the tunnel. Surfaced so the page can render a blocking banner.
     local coexist_warn=false
-    [ -n "$dpi_tool" ] && [ "$default_policy" = "vpn_all" ] && coexist_warn=true
+    [ -n "$dpi_tool" ] && { [ "$default_policy" = "vpn_all" ] || any_exclude_mode; } && coexist_warn=true
 
     # Firmware UI language (preferred_lang nvram) so the page/widget can localize without a
     # round-trip. The frontend maps RU -> Russian, everything else -> English. Empty -> EN.
@@ -2231,16 +2341,46 @@ analyze_device_policy(){
     echo "$pol"
 }
 
-# Routing verdict for one destination IP under a policy: vpn | geo | direct.
-# vpn_geo[_<id>] asks the SAME per-policy ipset the mangle rule matches on, reproducing
-# the kernel's choice for THAT device's geo policy.
-analyze_verdict(){
+# Base per-policy verdict for one dst IP (vpn | geo | direct), WITHOUT default-policy
+# fall-through. Reproduces emit_geo_rules exactly: it tests the SAME EXC + INC sets the mangle
+# rules match on, honoring the policy's mode. EXC wins over INC (evaluated first in the chain).
+#   include (mode=vpn):   EXC -> direct; INC -> geo;    else direct
+#   exclude (mode=direct): EXC -> vpn;    INC -> direct; else vpn
+geo_base_verdict(){
     case "$1" in
         vpn_all) echo "vpn" ;;
         vpn_geo|vpn_geo_*)
-            if ipset test "$(geo_ipset "$(geo_policy_of_ref "$1")")" "$2" >/dev/null 2>&1; then echo "geo"; else echo "direct"; fi ;;
+            local id incset excset
+            id=$(geo_policy_of_ref "$1"); incset=$(geo_ipset "$id"); excset=$(geo_exc_ipset "$id")
+            if [ "$(geo_mode "$id")" = direct ]; then
+                if ipset test "$excset" "$2" >/dev/null 2>&1; then echo "vpn"
+                elif ipset test "$incset" "$2" >/dev/null 2>&1; then echo "direct"
+                else echo "vpn"; fi
+            else
+                if ipset test "$excset" "$2" >/dev/null 2>&1; then echo "direct"
+                elif ipset test "$incset" "$2" >/dev/null 2>&1; then echo "geo"
+                else echo "direct"; fi
+            fi ;;
         *)       echo "direct" ;;
     esac
+}
+# Effective verdict for a DEVICE's policy, composing the kernel chain. Only an INCLUDE-mode geo
+# policy's "neither" case has no terminal RETURN, so it FALLS THROUGH to the default policy's
+# catch-all marking — fold that in so the live analyzer agrees with the kernel (an exclude-mode
+# or vpn_all default tunnels that fall-through traffic). All other "direct" verdicts (an EXC
+# carve-out RETURN, or an exclude-mode INC RETURN) already exited the chain — no fall-through.
+analyze_verdict(){
+    local v; v=$(geo_base_verdict "$1" "$2")
+    if [ "$v" = direct ]; then
+        case "$1" in
+            vpn_geo|vpn_geo_*)
+                local id; id=$(geo_policy_of_ref "$1")
+                if [ "$(geo_mode "$id")" != direct ] && ! ipset test "$(geo_exc_ipset "$id")" "$2" >/dev/null 2>&1; then
+                    v=$(geo_base_verdict "$(get_setting awg_default_policy)" "$2")
+                fi ;;
+        esac
+    fi
+    echo "$v"
 }
 
 # Turn dnsmasq query logging ON (only while a capture runs) via a dedicated conf snippet,
@@ -2374,16 +2514,19 @@ analyze_loop(){
             dkey="dns:$dom"
             grep -qxF "$dkey" "$ANALYZE_SEEN" 2>/dev/null && continue
             firstip=$(printf '%s' "$ipscsv" | cut -d, -f1)
-            case "$policy" in
-                vpn_all) verdict="vpn" ;;
-                vpn_geo|vpn_geo_*)
-                    [ -z "$ipscsv" ] && continue   # not resolved yet — retry next poll
-                    verdict="direct"
-                    for one in $(printf '%s' "$ipscsv" | tr ',' ' '); do
-                        if ipset test "$(geo_ipset "$(geo_policy_of_ref "$policy")")" "$one" >/dev/null 2>&1; then verdict="geo"; break; fi
-                    done ;;
-                *) verdict="direct" ;;
-            esac
+            verdict="direct"
+            if [ "$policy" = vpn_all ]; then
+                verdict="vpn"
+            elif [ -n "$ipscsv" ]; then
+                # Per resolved IP, the mode/exclusion/default-aware verdict; first non-direct wins.
+                for one in $(printf '%s' "$ipscsv" | tr ',' ' '); do
+                    [ -z "$one" ] && continue
+                    verdict=$(analyze_verdict "$policy" "$one")
+                    [ "$verdict" != direct ] && break
+                done
+            else
+                case "$policy" in vpn_geo|vpn_geo_*) continue ;; esac   # geo: not resolved yet — retry
+            fi
             echo "$dkey" >> "$ANALYZE_SEEN"
             echo "{\"t\":\"$(date '+%H:%M:%S')\",\"name\":\"$dom\",\"ip\":\"$firstip\",\"proto\":\"dns\",\"port\":\"\",\"verdict\":\"$verdict\"}" >> "$ANALYZE_ENTRIES"
         done

@@ -500,6 +500,14 @@ en: {
     HINT_GEO_CUSTOM_FORMAT: "One entry per line. A domain (<code>example.com</code>) is routed via DNS; an IP or CIDR subnet (<code>1.2.3.0/24</code>) is added to the ipset. Lines starting with <code>#</code> are comments. A URL must return a plain-text list in this format.",
     TH_GEO_FILES: "Custom files",
     TH_GEO_URLS: "URL sources",
+    TBL_GEO_MODE: "How the lists work",
+    TH_GEO_MODE: "Mode",
+    OPT_GEO_MODE_VPN: "Route the lists via VPN (include)",
+    OPT_GEO_MODE_DIRECT: "Lists go direct, everything else via VPN (exclude)",
+    GEO_MODE_HINT_VPN: "Matched destinations route via VPN; everything else goes direct.",
+    GEO_MODE_HINT_DIRECT: "Matched destinations go direct; everything else routes via VPN. Note: this pulls most of the device's traffic into the tunnel.",
+    TBL_GEO_EXCLUDE: "Exclusions (exceptions)",
+    HINT_GEO_EXCLUDE: "Pointwise exceptions to this policy. In include mode they go DIRECT (carved out of the VPN); in exclude mode they go via VPN (carved back in). Same format as GeoCustom.",
     BTN_ADD_GEO_FILE: "+ Add file",
     BTN_ADD_GEO_URL: "+ Add URL",
     BTN_LOAD_FROM_FILE: "Load from file",
@@ -807,6 +815,14 @@ ru: {
     HINT_GEO_CUSTOM_FORMAT: "Один элемент в строке. Домен (<code>example.com</code>) маршрутизируется через DNS; IP или подсеть CIDR (<code>1.2.3.0/24</code>) добавляется в ipset. Строки, начинающиеся с <code>#</code>, — комментарии. Файл по ссылке должен возвращать простой текстовый список в этом формате.",
     TH_GEO_FILES: "Свои файлы",
     TH_GEO_URLS: "URL-источники",
+    TBL_GEO_MODE: "Как работают списки",
+    TH_GEO_MODE: "Режим",
+    OPT_GEO_MODE_VPN: "Списки — в VPN (включение)",
+    OPT_GEO_MODE_DIRECT: "Списки — напрямую, остальное в VPN (исключение)",
+    GEO_MODE_HINT_VPN: "Совпавшее со списками идёт в VPN; всё остальное — напрямую.",
+    GEO_MODE_HINT_DIRECT: "Совпавшее со списками идёт напрямую; всё остальное — в VPN. Внимание: это тянет почти весь трафик устройства в туннель.",
+    TBL_GEO_EXCLUDE: "Исключения",
+    HINT_GEO_EXCLUDE: "Точечные исключения для этой политики. В режиме «включение» идут НАПРЯМУЮ (вырезаются из VPN); в режиме «исключение» — наоборот в VPN. Формат как у GeoCustom.",
     BTN_ADD_GEO_FILE: "+ Добавить файл",
     BTN_ADD_GEO_URL: "+ Добавить ссылку",
     BTN_LOAD_FROM_FILE: "Загрузить из файла",
@@ -1862,6 +1878,13 @@ function geoCaptureActive(){
     var af = [], boxes = document.querySelectorAll('.af_list');
     for(var i=0;i<boxes.length;i++) if(boxes[i].checked) af.push(boxes[i].value);
     p.antifilter = af.join(',');
+    // Mode (include/exclude) + exclusions block.
+    var mr = document.querySelector('input[name="geo_mode"]:checked');
+    p.mode = (mr && mr.value === 'direct') ? 'direct' : 'vpn';
+    p.excDomains = awgCsv('geo_exc_domains');
+    p.excIps = awgCsv('geo_exc_ips');
+    p.excFiles = serializeGeoFiles('exc');
+    p.excUrls = serializeGeoUrls('exc');
 }
 // Render the active policy object into the visible panel fields.
 function geoRenderActive(){
@@ -1876,6 +1899,21 @@ function geoRenderActive(){
     loadGeoUrls(p.urls);
     var sel = (p.antifilter || '').split(','), boxes = document.querySelectorAll('.af_list');
     for(var i=0;i<boxes.length;i++) boxes[i].checked = sel.indexOf(boxes[i].value) !== -1;
+    // Mode (include/exclude) + exclusions block.
+    var mode = (p.mode === 'direct') ? 'direct' : 'vpn';
+    var mr = document.querySelector('input[name="geo_mode"][value="' + mode + '"]');
+    if(mr) mr.checked = true;
+    set('geo_exc_domains', p.excDomains);
+    set('geo_exc_ips', p.excIps);
+    loadGeoFiles(p.excFiles, 'exc');
+    loadGeoUrls(p.excUrls, 'exc');
+    updateGeoModeHint();
+}
+// Swap the mode hint text to match the selected include/exclude radio.
+function updateGeoModeHint(){
+    var mr = document.querySelector('input[name="geo_mode"]:checked');
+    var el = document.getElementById('geo_mode_hint');
+    if(el) el.textContent = T((mr && mr.value === 'direct') ? 'GEO_MODE_HINT_DIRECT' : 'GEO_MODE_HINT_VPN');
 }
 function geoRenderTabs(){
     var bar = document.getElementById('geo_tabs');
@@ -1908,7 +1946,8 @@ function geoAddPolicy(){
     if(geoPolicies.length >= GEO_MAX_POLICIES){ alert(T('GEO_MAX_REACHED', GEO_MAX_POLICIES)); return; }
     var id = geoNextId();
     geoPolicies.push({ id:id, name:encodeURIComponent(T('GEO_TAB_DEFAULT_NAME', id)),
-        v2fly:'', v2flyIp:'', customDomains:'', customIps:'', files:'', urls:'', antifilter:'' });
+        v2fly:'', v2flyIp:'', customDomains:'', customIps:'', files:'', urls:'', antifilter:'',
+        mode:'vpn', excDomains:'', excIps:'', excFiles:'', excUrls:'' });
     geoActiveIdx = geoPolicies.length - 1;
     geoRenderActive();
     geoRenderTabs();
@@ -1967,7 +2006,12 @@ function geoHydratePolicies(){
             customIps: custom_settings[geoKeyJs(pid,'custom_ips')] || '',
             files: custom_settings[geoKeyJs(pid,'custom_files')] || '',
             urls: custom_settings[geoKeyJs(pid,'custom_urls')] || '',
-            antifilter: custom_settings[geoKeyJs(pid,'antifilter_lists')] || ''
+            antifilter: custom_settings[geoKeyJs(pid,'antifilter_lists')] || '',
+            mode: (custom_settings[geoKeyJs(pid,'mode')] === 'direct') ? 'direct' : 'vpn',
+            excDomains: custom_settings[geoKeyJs(pid,'exc_domains')] || '',
+            excIps: custom_settings[geoKeyJs(pid,'exc_ips')] || '',
+            excFiles: custom_settings[geoKeyJs(pid,'exc_files')] || '',
+            excUrls: custom_settings[geoKeyJs(pid,'exc_urls')] || ''
         });
     }
     geoActiveIdx = 0;
@@ -1976,10 +2020,11 @@ function geoHydratePolicies(){
 function geoSerializePolicies(){
     geoCaptureActive();
     var totalFiles = 0, gp, p, suf, si;
-    var sufs = ['v2fly','v2fly_ip','custom_domains','custom_ips','custom_files','custom_urls','antifilter_lists'];
+    var sufs = ['v2fly','v2fly_ip','custom_domains','custom_ips','custom_files','custom_urls','antifilter_lists',
+                'mode','exc_domains','exc_ips','exc_files','exc_urls'];
     for(gp=0; gp<geoPolicies.length; gp++){
         p = geoPolicies[gp];
-        totalFiles += (p.files || '').length;
+        totalFiles += (p.files || '').length + (p.excFiles || '').length;
         custom_settings[geoKeyJs(p.id,'v2fly')] = p.v2fly || '';
         custom_settings[geoKeyJs(p.id,'v2fly_ip')] = p.v2flyIp || '';
         custom_settings[geoKeyJs(p.id,'custom_domains')] = p.customDomains || '';
@@ -1987,6 +2032,11 @@ function geoSerializePolicies(){
         custom_settings[geoKeyJs(p.id,'custom_files')] = p.files || '';
         custom_settings[geoKeyJs(p.id,'custom_urls')] = p.urls || '';
         custom_settings[geoKeyJs(p.id,'antifilter_lists')] = p.antifilter || '';
+        custom_settings[geoKeyJs(p.id,'mode')] = (p.mode === 'direct') ? 'direct' : 'vpn';
+        custom_settings[geoKeyJs(p.id,'exc_domains')] = p.excDomains || '';
+        custom_settings[geoKeyJs(p.id,'exc_ips')] = p.excIps || '';
+        custom_settings[geoKeyJs(p.id,'exc_files')] = p.excFiles || '';
+        custom_settings[geoKeyJs(p.id,'exc_urls')] = p.excUrls || '';
     }
     custom_settings.awg_geo_policies = geoPolicies.map(function(x){ return x.id + ':' + x.name; }).join(';');
     // Free the settings budget: blank keys of policies that existed at load but were removed.
@@ -3081,8 +3131,8 @@ function awgCsv(id){
     return el ? String(el.value || '').replace(/[\s,]+/g, ',').replace(/^,+|,+$/g, '') : '';
 }
 
-function addGeoFileRow(name, content){
-    var tbody = document.getElementById('awg_geo_files_rows');
+function addGeoFileRow(name, content, kind){
+    var tbody = document.getElementById(kind === 'exc' ? 'awg_exc_files_rows' : 'awg_geo_files_rows');
     if(!tbody) return;
     var tr = document.createElement('tr');
     tr.innerHTML =
@@ -3099,8 +3149,8 @@ function addGeoFileRow(name, content){
     if(ta) ta.value = content || '';   // set via .value so content isn't HTML-parsed
 }
 
-function addGeoUrlRow(url){
-    var tbody = document.getElementById('awg_geo_url_rows');
+function addGeoUrlRow(url, kind){
+    var tbody = document.getElementById(kind === 'exc' ? 'awg_exc_url_rows' : 'awg_geo_url_rows');
     if(!tbody) return;
     var tr = document.createElement('tr');
     tr.innerHTML =
@@ -3145,8 +3195,8 @@ function geoFileLoad(btn){
     fi.click();
 }
 
-function serializeGeoFiles(){
-    var rows = document.querySelectorAll('#awg_geo_files_rows tr');
+function serializeGeoFiles(kind){
+    var rows = document.querySelectorAll('#' + (kind === 'exc' ? 'awg_exc_files_rows' : 'awg_geo_files_rows') + ' tr');
     var parts = [];
     for(var i = 0; i < rows.length; i++){
         var nmEl = rows[i].querySelector('.geo_file_name');
@@ -3162,8 +3212,8 @@ function serializeGeoFiles(){
     return parts.join(';');
 }
 
-function serializeGeoUrls(){
-    var inputs = document.querySelectorAll('#awg_geo_url_rows .geo_url');
+function serializeGeoUrls(kind){
+    var inputs = document.querySelectorAll('#' + (kind === 'exc' ? 'awg_exc_url_rows' : 'awg_geo_url_rows') + ' .geo_url');
     var urls = [];
     for(var i = 0; i < inputs.length; i++){
         var u = String(inputs[i].value || '').replace(/\s+/g, '');
@@ -3173,8 +3223,8 @@ function serializeGeoUrls(){
     try { return btoa(unescape(encodeURIComponent(urls.join('\n')))); } catch(e){ return ''; }
 }
 
-function loadGeoFiles(data){
-    var tbody = document.getElementById('awg_geo_files_rows');
+function loadGeoFiles(data, kind){
+    var tbody = document.getElementById(kind === 'exc' ? 'awg_exc_files_rows' : 'awg_geo_files_rows');
     if(!tbody) return;
     tbody.innerHTML = '';
     if(data == null) data = custom_settings.awg_geo_custom_files || '';
@@ -3187,12 +3237,12 @@ function loadGeoFiles(data){
         var name = entries[i].slice(0, ci);
         var content = '';
         try { content = decodeURIComponent(escape(atob(entries[i].slice(ci + 1)))); } catch(e){ content = ''; }
-        addGeoFileRow(name, content);
+        addGeoFileRow(name, content, kind);
     }
 }
 
-function loadGeoUrls(data){
-    var tbody = document.getElementById('awg_geo_url_rows');
+function loadGeoUrls(data, kind){
+    var tbody = document.getElementById(kind === 'exc' ? 'awg_exc_url_rows' : 'awg_geo_url_rows');
     if(!tbody) return;
     tbody.innerHTML = '';
     if(data == null) data = custom_settings.awg_geo_custom_urls || '';
@@ -3202,7 +3252,7 @@ function loadGeoUrls(data){
     var urls = txt.split('\n');
     for(var i = 0; i < urls.length; i++){
         var u = urls[i].replace(/\s+/g, '');
-        if(u) addGeoUrlRow(u);
+        if(u) addGeoUrlRow(u, kind);
     }
 }
 
@@ -3652,6 +3702,19 @@ function initAutocompleteIp(){
                 <div id="geo_policy_panel">
                 <div class="awg-hint" style="margin:4px 2px 8px;" data-i18n="GEO_TABS_RAM_HINT"></div>
 
+                <!-- Policy mode: lists route TO the VPN (include) or AWAY from it (exclude) -->
+                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
+                <thead><tr><td colspan="2" data-i18n="TBL_GEO_MODE">How the lists work</td></tr></thead>
+                <tr>
+                    <th width="35%" data-i18n="TH_GEO_MODE">Mode</th>
+                    <td>
+                        <label style="display:block; margin:2px 0;"><input type="radio" name="geo_mode" value="vpn" onchange="updateGeoModeHint();" checked> <span data-i18n="OPT_GEO_MODE_VPN">Route lists via VPN (include)</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="radio" name="geo_mode" value="direct" onchange="updateGeoModeHint();"> <span data-i18n="OPT_GEO_MODE_DIRECT">Lists go direct, everything else via VPN (exclude)</span></label>
+                        <div id="geo_mode_hint" class="awg-hint" data-i18n="GEO_MODE_HINT_VPN">Matched destinations route via VPN; everything else goes direct.</div>
+                    </td>
+                </tr>
+                </table>
+
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
                 <thead><tr><td colspan="2" data-i18n="TBL_GEOIP">GeoIP — route by service IPs</td></tr></thead>
                 <tr>
@@ -3739,6 +3802,44 @@ function initAutocompleteIp(){
                     </td>
                 </tr>
                 </table>
+
+                <!-- ==================== EXCLUSIONS (pointwise exceptions) ==================== -->
+                <details style="margin-top:8px;">
+                    <summary style="cursor:pointer; padding:7px 10px; background:#2b3338; border:1px solid #455055; border-radius:4px; font-size:13px; font-weight:bold; color:#e7ebee;" data-i18n="TBL_GEO_EXCLUDE">Exclusions (exceptions)</summary>
+                    <div style="border:1px solid #455055; border-top:none; border-radius:0 0 4px 4px; padding:8px 10px;">
+                        <div class="awg-hint" style="margin-top:0;" data-i18n="HINT_GEO_EXCLUDE">Pointwise exceptions: in include mode these go DIRECT (carved out of the VPN); in exclude mode they go via VPN (carved back in). Same format as GeoCustom.</div>
+                        <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:6px;">
+                        <tr>
+                            <th width="35%" data-i18n="TH_CUSTOM_DOMAINS">Custom domains</th>
+                            <td>
+                                <textarea class="input_32_table awg-geo-ta" id="geo_exc_domains" rows="3" maxlength="2000"
+                                       placeholder="example.com,another.org,service.net" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+                                <div class="awg-hint" data-i18n="HINT_CUSTOM_DOMAINS">Comma- or newline-separated. Resolved via DNS.</div>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th data-i18n="TH_CUSTOM_IPS">Custom IPs / subnets</th>
+                            <td>
+                                <textarea class="input_32_table awg-geo-ta" id="geo_exc_ips" rows="3" maxlength="2000"
+                                       placeholder="8.8.8.8,1.1.1.0/24,203.0.113.0/24" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+                                <div class="awg-hint" data-i18n="HINT_CUSTOM_IPS">Comma- or newline-separated: individual IPs or CIDR subnets.</div>
+                            </td>
+                        </tr>
+                        <tr><td colspan="2">
+                            <div style="margin-top:4px; font-weight:bold; font-size:12px;" data-i18n="TH_GEO_FILES">Custom files</div>
+                            <table width="100%" border="0" cellpadding="0" cellspacing="0" style="table-layout:fixed;"><tbody id="awg_exc_files_rows"></tbody></table>
+                            <div style="margin-top:5px;">
+                                <input type="button" class="button_gen" value="+ Add file" data-i18n-val="BTN_ADD_GEO_FILE" onclick="addGeoFileRow('','','exc');">
+                            </div>
+                            <div style="margin-top:12px; font-weight:bold; font-size:12px;" data-i18n="TH_GEO_URLS">URL sources</div>
+                            <table width="100%" border="0" cellpadding="0" cellspacing="0" style="table-layout:fixed;"><tbody id="awg_exc_url_rows"></tbody></table>
+                            <div style="margin-top:5px;">
+                                <input type="button" class="button_gen" value="+ Add URL" data-i18n-val="BTN_ADD_GEO_URL" onclick="addGeoUrlRow('','exc');">
+                            </div>
+                        </td></tr>
+                        </table>
+                    </div>
+                </details>
 
                 </div><!-- /geo_policy_panel -->
 
