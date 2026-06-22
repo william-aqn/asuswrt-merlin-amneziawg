@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.8"
+AWG_VERSION="1.2.9"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -49,6 +49,7 @@ IPSET_MAXELEM=262144
 FWMARK="0x100"
 DNSMASQ_AWG_CONF="$AWG_DIR/dnsmasq_awg.conf"
 DNSMASQ_INCLUDE="/jffs/configs/dnsmasq.conf.add"
+DNSRELOAD_SIG="/tmp/.awg_dnsmasq_sig"   # md5 of the geo conf last loaded into dnsmasq (skip needless restarts); tmpfs = reboot-volatile like dnsmasq's own state
 SCRIPT_NAME="amneziawg"
 RT_TABLE=300
 AWG_CHAIN="AWG"
@@ -345,7 +346,9 @@ flush_conntrack(){
     # through the tunnel. Never fall back to a full 'conntrack -F': a zero-match
     # targeted delete returns 1, which used to wipe the whole table (killing every
     # LAN connection) on any Apply that had no currently-marked flows.
-    command -v conntrack >/dev/null 2>&1 || return 0
+    # NB: `command -v` is NOT available on Asuswrt-Merlin's trimmed busybox (no CONFIG_ASH_CMDCMD)
+    # — it returns 127, so a `command -v X` guard silently disables the code it gates. Use `which`.
+    which conntrack >/dev/null 2>&1 || return 0
     conntrack -D --mark "$FWMARK"/"$FWMARK" 2>/dev/null
     return 0
 }
@@ -1145,34 +1148,94 @@ reload_dnsmasq(){
             sleep 1
         done
         trap 'rmdir /tmp/.awg_dnsreload 2>/dev/null' EXIT INT TERM
-        oldpid=$(pidof dnsmasq 2>/dev/null)
-        i=0
-        while [ $i -lt 30 ]; do
-            service restart_dnsmasq >/dev/null 2>&1
-            sleep 2
-            newpid=$(pidof dnsmasq 2>/dev/null)
-            if [ -n "$newpid" ] && [ "$newpid" != "$oldpid" ]; then
-                log_msg "dnsmasq reloaded (geo rules active)"
-                break
-            fi
-            i=$((i + 1))
-            sleep 1
-        done
-        [ $i -ge 30 ] && log_msg "WARNING: dnsmasq reload was skipped by rc; geo domains may need a manual restart"
-        # Self-heal: if dnsmasq is NOT running at all now, our generated config most likely
-        # broke it (bad/oversized rules) and the LAN just lost DHCP/DNS. Drop our include
-        # and restart clean so the router stays reachable — degraded geo beats a dead LAN.
-        if ! pidof dnsmasq >/dev/null 2>&1; then
-            log_msg "ERROR: dnsmasq down after reload — removing AWG dnsmasq rules + restarting to restore DNS/DHCP"
-            rm -f "$DNSMASQ_AWG_CONF"
-            [ -f "$DNSMASQ_INCLUDE" ] && grep -vF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.tmp" 2>/dev/null && mv "${DNSMASQ_INCLUDE}.tmp" "$DNSMASQ_INCLUDE"
-            _j=0
-            while [ $_j -lt 15 ]; do
+        # Order-independent PID snapshot (sorted): dnsmasq runs as main + a --log-async child, so
+        # pidof returns two PIDs — sort them so a mere change in listing order can't masquerade as
+        # (or mask) a real restart in the comparison below.
+        oldpid=$(pidof dnsmasq 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ')
+        # Skip a pointless restart when the on-disk geo conf is byte-identical to the one we last
+        # loaded AND dnsmasq is still the SAME process that loaded it — common on an Apply that
+        # changed only a device->policy assignment, not the geo lists. A needless restart only widens
+        # the :53-bind/OOM race window on contended boxes (co-resident Xray/b4). The conf is generated
+        # deterministically, so an unchanged selection md5s the same. We store "<pid>|<md5>": pinning
+        # the PID means an external dnsmasq restart (PID changed) forces a real reload, and the
+        # cleanup_firewall strip/re-add of our include between Applies (which does NOT restart
+        # dnsmasq) can't trick us into skipping while dnsmasq lacks the rules.
+        _sig=$(md5sum "$DNSMASQ_AWG_CONF" 2>/dev/null | awk '{print $1}')
+        if [ -n "$_sig" ] && [ -n "$oldpid" ] && [ "$(cat "$DNSRELOAD_SIG" 2>/dev/null)" = "${oldpid}|${_sig}" ]; then
+            log_msg "dnsmasq geo conf unchanged and same resolver instance — skipping restart"
+        else
+            # Low-RAM backoff: restarting dnsmasq repeatedly under memory pressure can OOM-kill it,
+            # so on a starved box lengthen the inter-try sleep instead of hammering restart_dnsmasq.
+            _step=1
+            _memav=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+            [ -n "$_memav" ] && [ "$_memav" -lt 81920 ] && _step=4
+            i=0
+            while [ $i -lt 30 ]; do
                 service restart_dnsmasq >/dev/null 2>&1
                 sleep 2
-                pidof dnsmasq >/dev/null 2>&1 && { log_msg "dnsmasq recovered (AWG dnsmasq rules removed)"; break; }
-                _j=$((_j + 1)); sleep 1
+                newpid=$(pidof dnsmasq 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ')
+                if [ -n "$newpid" ] && [ "$newpid" != "$oldpid" ]; then
+                    log_msg "dnsmasq reloaded (geo rules active)"
+                    [ -n "$_sig" ] && echo "${newpid}|${_sig}" > "$DNSRELOAD_SIG"
+                    break
+                fi
+                i=$((i + 1))
+                sleep "$_step"
             done
+            [ $i -ge 30 ] && log_msg "WARNING: dnsmasq reload was skipped by rc; geo domains may need a manual restart"
+        fi
+        # Self-heal: if dnsmasq is NOT running at all now, the LAN just lost DHCP/DNS. But DON'T
+        # assume our config is to blame and nuke geo routing — on a box with a co-resident resolver
+        # (Xray/b4) the usual cause is a transient :53 bind race or an OOM blip, NOT our rules
+        # (which were already gate-validated by `dnsmasq --test` before activation). Blindly
+        # removing our conf on a transient failure permanently disables geo routing until the next
+        # full Apply. So: diagnose first, retry the SAME conf if it's valid, and only as a LAST
+        # resort drop our include to guarantee the resolver comes back.
+        if ! pidof dnsmasq >/dev/null 2>&1; then
+            # Diagnostic snapshot (so the next report pinpoints the cause instead of guessing):
+            # memory, who owns :53, the live dnsmasq instances, and recent dnsmasq/OOM syslog lines.
+            _mem=$(awk '/^Mem(Total|Free|Available):/{printf "%s=%s ",$1,$2}' /proc/meminfo 2>/dev/null)
+            _p53=$(netstat -lnp 2>/dev/null | awk '$4 ~ /[:.]53$/{print $NF; exit}')
+            _dmlog=$(logread 2>/dev/null | grep -iE 'dnsmasq|out of memory|oom' | tail -3 | tr '\n' '|')
+            # Does the FULL effective conf Merlin just regenerated (it conf-file-includes our
+            # snippet) actually PARSE? Our snippet was already validated in isolation, so a parse
+            # FAILURE here is a combination conflict and our conf is the only lever we have; a parse
+            # PASS means the death is runtime (race/OOM) and our valid conf must NOT be thrown away.
+            if which dnsmasq >/dev/null 2>&1; then
+                _dmtest=$(dnsmasq --test --conf-file=/etc/dnsmasq.conf 2>&1); _dmrc=$?
+            else
+                _dmtest="(dnsmasq not found)"; _dmrc=0
+            fi
+            cp "$DNSMASQ_AWG_CONF" "${DNSMASQ_AWG_CONF}.bad" 2>/dev/null
+            log_msg "dnsmasq down after reload — diag: ${_mem}port53=${_p53:-?} test_rc=${_dmrc} test='$(echo "$_dmtest" | tr '\n' ' ')' recent='${_dmlog}'"
+            _recovered=0
+            if [ "$_dmrc" -eq 0 ]; then
+                # Config is valid → transient failure suspected. Retry a few times WITHOUT touching
+                # our conf, so geo routing survives a passing :53/OOM blip.
+                log_msg "config parses clean — retrying dnsmasq with geo rules INTACT (transient failure suspected)"
+                _r=0
+                while [ $_r -lt 5 ]; do
+                    service restart_dnsmasq >/dev/null 2>&1
+                    sleep 2
+                    if pidof dnsmasq >/dev/null 2>&1; then _recovered=1; log_msg "dnsmasq recovered WITH geo rules intact"; break; fi
+                    _r=$((_r + 1)); sleep 1
+                done
+            fi
+            if [ "$_recovered" = 0 ]; then
+                # Still down (or the conf genuinely failed --test) — LAST RESORT: drop our include
+                # so the LAN gets its resolver back. Degraded geo beats a dead LAN; conf kept as .bad.
+                log_msg "ERROR: dnsmasq still down — removing AWG dnsmasq rules + restarting to restore DNS/DHCP (conf kept as ${DNSMASQ_AWG_CONF}.bad)"
+                rm -f "$DNSMASQ_AWG_CONF"
+                rm -f "$DNSRELOAD_SIG"   # conf unloaded — force a real restart on the next reload
+                [ -f "$DNSMASQ_INCLUDE" ] && grep -vF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.tmp" 2>/dev/null && mv "${DNSMASQ_INCLUDE}.tmp" "$DNSMASQ_INCLUDE"
+                _j=0
+                while [ $_j -lt 15 ]; do
+                    service restart_dnsmasq >/dev/null 2>&1
+                    sleep 2
+                    pidof dnsmasq >/dev/null 2>&1 && { log_msg "dnsmasq recovered (AWG dnsmasq rules removed)"; break; }
+                    _j=$((_j + 1)); sleep 1
+                done
+            fi
         fi
         wait_for_dns 10
         # Install the LAN :53 DNAT ONLY now that dnsmasq is confirmed answering. Doing it
@@ -1430,9 +1493,12 @@ setup_firewall(){
     # Aggregate domain -> unique set list across ALL policies/channels, then emit each domain once
     # as `ipset=/dom/setA,setB` (chunked 20 domains/line, grouped by identical set list so lines
     # stay compact). This collision-free form is what dnsmasq actually honors for shared domains.
+    # DETERMINISTIC: the input is sorted (so each domain's set list is built in a stable order) and
+    # the emitted lines are sorted, so an unchanged selection produces a byte-identical conf — that
+    # lets reload_dnsmasq md5-compare and SKIP a pointless dnsmasq restart (see reload_dnsmasq).
     if [ -s "$_ds_tmp" ]; then
         domain_count=$(cut -f1 "$_ds_tmp" | sort -u | wc -l | tr -d ' ')
-        awk -F'\t' '
+        sort "$_ds_tmp" | awk -F'\t' '
             { dom=$1; set=$2
               if (!(dom in S)) { S[dom]=set; next }
               cur=S[dom]; n=split(cur,a,","); found=0
@@ -1450,9 +1516,27 @@ setup_firewall(){
                 }
                 if(cnt>0) print line sig
               }
-            }' "$_ds_tmp" >> "$DNSMASQ_AWG_CONF"
+            }' | sort >> "$DNSMASQ_AWG_CONF"
     fi
     rm -f "$_ds_tmp"
+
+    # SAFETY GATE: validate our generated geo conf in ISOLATION before dnsmasq is ever asked to
+    # load it. A single directive dnsmasq rejects would make `service restart_dnsmasq` fail to
+    # bring dnsmasq up at all — taking DNS/DHCP down for the whole LAN until the self-heal notices.
+    # If invalid, log the exact dnsmasq error, keep the offending file as .bad for diagnosis, and
+    # replace the live conf with a minimal valid one (filter-AAAA only) so domain routing is
+    # dropped for this round while the resolver stays healthy. (Static GeoIP/CIDR routing via the
+    # mangle ipsets is unaffected — it doesn't go through dnsmasq.)
+    local _dconf_err
+    if which dnsmasq >/dev/null 2>&1 && [ -s "$DNSMASQ_AWG_CONF" ]; then
+        _dconf_err=$(dnsmasq --test --conf-file="$DNSMASQ_AWG_CONF" 2>&1)
+        if [ $? -ne 0 ]; then
+            log_msg "ERROR: generated geo dnsmasq config rejected by dnsmasq --test — domain routing disabled this round (DNS/DHCP preserved): $(echo "$_dconf_err" | tr '\n' ' ')"
+            cp "$DNSMASQ_AWG_CONF" "${DNSMASQ_AWG_CONF}.bad" 2>/dev/null
+            { echo "# AmneziaWG domain routing - DISABLED (config failed dnsmasq --test; kept as ${DNSMASQ_AWG_CONF}.bad)"
+              [ "$want_aaaa" = 1 ] && echo "filter-AAAA"; } > "$DNSMASQ_AWG_CONF"
+        fi
+    fi
 
     # Add conf-file include to dnsmasq (idempotent) — also when only filter-AAAA is set
     if [ $domain_count -gt 0 ] || [ "$want_aaaa" = 1 ]; then
