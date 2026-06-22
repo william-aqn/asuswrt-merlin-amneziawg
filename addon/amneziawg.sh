@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.6"
+AWG_VERSION="1.2.7"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1197,10 +1197,13 @@ reload_dnsmasq(){
 # Append a geo policy's mangle marking rules to AWG_CHAIN, honoring its mode (include/exclude)
 # and exclusion set. $1 = geo policy id; $2.. = the iptables match tokens that scope the rule to
 # one device (e.g. "-m mac --mac-source AA:BB" or "-s 1.2.3.4"), or NOTHING for the default
-# policy (applies to all not-yet-returned traffic). All marking is 0x100 -> RT_TABLE (one tunnel).
-# Verdict per the design table:
-#   include (mode=vpn):   EXC -> direct (RETURN); INC -> VPN (MARK); rest -> falls through
+# policy. All marking is 0x100 -> RT_TABLE (one tunnel). Verdict per the design table:
+#   include (mode=vpn):   EXC -> direct (RETURN); INC -> VPN (MARK); rest -> direct
 #   exclude (mode=direct): EXC -> VPN (MARK); INC -> direct (RETURN); rest -> VPN (MARK)
+# A PER-DEVICE call (a selector is present) is TERMINAL: include mode ends with a RETURN so the
+# device's non-matched traffic does NOT fall through to the default-policy rule (which would
+# also route it by the "common" default set). The default-policy call (no selector) is the
+# chain's last block and needs no terminal RETURN; it still applies to UNLISTED devices.
 # Returns 1 (emits nothing) if the policy's main set is missing/foreign.
 emit_geo_rules(){
     local pgid="$1"; shift
@@ -1209,12 +1212,17 @@ emit_geo_rules(){
     ipset list "$incset" >/dev/null 2>&1 && geo_set_ours "$pgid" "$incset" || return 1
     ipset list "$excset" >/dev/null 2>&1 && geo_set_ours "$pgid" "$excset" && have_exc=1
     if [ "$mode" = direct ]; then
+        # exclude: EXC -> VPN; INC -> direct (terminal RETURN); rest -> VPN (the trailing MARK
+        # fully decides the device, so no extra terminal RETURN is needed).
         [ "$have_exc" = 1 ] && iptables -t mangle -A "$AWG_CHAIN" "$@" -m set --match-set "$excset" dst -j MARK --set-mark "$FWMARK"
         iptables -t mangle -A "$AWG_CHAIN" "$@" -m set --match-set "$incset" dst -j RETURN
         iptables -t mangle -A "$AWG_CHAIN" "$@" -j MARK --set-mark "$FWMARK"
     else
+        # include: EXC -> direct; INC -> VPN; then (per-device only) RETURN so the rest stays
+        # direct instead of inheriting the default policy.
         [ "$have_exc" = 1 ] && iptables -t mangle -A "$AWG_CHAIN" "$@" -m set --match-set "$excset" dst -j RETURN
         iptables -t mangle -A "$AWG_CHAIN" "$@" -m set --match-set "$incset" dst -j MARK --set-mark "$FWMARK"
+        [ "$#" -gt 0 ] && iptables -t mangle -A "$AWG_CHAIN" "$@" -j RETURN
     fi
     return 0
 }
@@ -2354,12 +2362,13 @@ analyze_device_policy(){
     echo "$pol"
 }
 
-# Base per-policy verdict for one dst IP (vpn | geo | direct), WITHOUT default-policy
-# fall-through. Reproduces emit_geo_rules exactly: it tests the SAME EXC + INC sets the mangle
-# rules match on, honoring the policy's mode. EXC wins over INC (evaluated first in the chain).
+# Routing verdict for one destination IP under a policy: vpn | geo | direct. Reproduces
+# emit_geo_rules exactly — per-device rules are TERMINAL, so a listed device's verdict is decided
+# solely by its OWN policy (no default fall-through); an unlisted device is analyzed with the
+# default policy (analyze_device_policy returns that). EXC wins over INC (evaluated first).
 #   include (mode=vpn):   EXC -> direct; INC -> geo;    else direct
 #   exclude (mode=direct): EXC -> vpn;    INC -> direct; else vpn
-geo_base_verdict(){
+analyze_verdict(){
     case "$1" in
         vpn_all) echo "vpn" ;;
         vpn_geo|vpn_geo_*)
@@ -2376,24 +2385,6 @@ geo_base_verdict(){
             fi ;;
         *)       echo "direct" ;;
     esac
-}
-# Effective verdict for a DEVICE's policy, composing the kernel chain. Only an INCLUDE-mode geo
-# policy's "neither" case has no terminal RETURN, so it FALLS THROUGH to the default policy's
-# catch-all marking — fold that in so the live analyzer agrees with the kernel (an exclude-mode
-# or vpn_all default tunnels that fall-through traffic). All other "direct" verdicts (an EXC
-# carve-out RETURN, or an exclude-mode INC RETURN) already exited the chain — no fall-through.
-analyze_verdict(){
-    local v; v=$(geo_base_verdict "$1" "$2")
-    if [ "$v" = direct ]; then
-        case "$1" in
-            vpn_geo|vpn_geo_*)
-                local id; id=$(geo_policy_of_ref "$1")
-                if [ "$(geo_mode "$id")" != direct ] && ! ipset test "$(geo_exc_ipset "$id")" "$2" >/dev/null 2>&1; then
-                    v=$(geo_base_verdict "$(get_setting awg_default_policy)" "$2")
-                fi ;;
-        esac
-    fi
-    echo "$v"
 }
 
 # Turn dnsmasq query logging ON (only while a capture runs) via a dedicated conf snippet,
