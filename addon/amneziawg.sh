@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.4"
+AWG_VERSION="1.2.5"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2282,6 +2282,19 @@ EOF
     [ -f "$DNSMASQ_AWG_CONF" ] && geo_domains=$(awk -F/ '/^ipset=/{c+=NF-2} END{print c+0}' "$DNSMASQ_AWG_CONF" 2>/dev/null)
     [ -z "$geo_domains" ] && geo_domains=0
 
+    # Per-policy geo stats {"<id>":{"ip":N,"dom":M},...} for the UI's per-tab breakdown:
+    # ip = entries in the policy's main set; dom = domains dnsmasq routes into that set.
+    local geo_stats="" _gsid _gsset _gsip _gsdom _gssep=""
+    for _gsid in $(geo_ids); do
+        _gsset=$(geo_ipset "$_gsid")
+        _gsip=$(ipset list "$_gsset" -t 2>/dev/null | awk '/Number of entries/{print $NF}'); [ -z "$_gsip" ] && _gsip=0
+        _gsdom=0
+        [ -f "$DNSMASQ_AWG_CONF" ] && _gsdom=$(awk -F/ -v s="$_gsset" '/^ipset=/ && $NF==s {c+=NF-2} END{print c+0}' "$DNSMASQ_AWG_CONF" 2>/dev/null)
+        [ -z "$_gsdom" ] && _gsdom=0
+        geo_stats="${geo_stats}${_gssep}\"${_gsid}\":{\"ip\":${_gsip},\"dom\":${_gsdom}}"
+        _gssep=","
+    done
+
     local geo_downloaded=false
     geo_available && geo_downloaded=true
     local geo_busy=false
@@ -2318,7 +2331,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }

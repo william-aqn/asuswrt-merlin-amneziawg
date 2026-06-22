@@ -1933,6 +1933,23 @@ function geoRenderTabs(){
     if(geoPolicies.length < GEO_MAX_POLICIES)
         h += '<button type="button" class="awg-geo-tab-add" onclick="geoAddPolicy()">' + escHtml(T('GEO_TAB_ADD')) + '</button>';
     bar.innerHTML = h;
+    geoRenderStats();
+}
+// Per-tab stats line (echoes the "Активно: …" route-info format), one row per policy:
+// "<name>: X диапазонов IP · Y доменов". Numbers come from the status poll (awgGeoStats,
+// keyed by policy id); names come from the client-side model.
+var awgGeoStats = {};
+function geoRenderStats(){
+    var box = document.getElementById('geo_stats');
+    if(!box) return;
+    var h = '';
+    for(var i=0;i<geoPolicies.length;i++){
+        var p = geoPolicies[i];
+        var st = awgGeoStats[String(p.id)] || {};
+        var line = T('RULES_IPRANGES', st.ip || 0) + ' · ' + T('RULES_DOMAINS', st.dom || 0);
+        h += '<div><b>' + escHtml(geoDecodeName(p.name)) + ':</b> ' + escHtml(line) + '</div>';
+    }
+    box.innerHTML = h;
 }
 function geoSwitchTo(idx){
     if(idx === geoActiveIdx || idx < 0 || idx >= geoPolicies.length) return;
@@ -2949,6 +2966,9 @@ function updateStatusUI(s){
     } else {
         rulesEl.innerHTML = '';
     }
+    // Per-tab geo stats (from the backend's per-policy breakdown).
+    awgGeoStats = (s && s.geo_stats) || {};
+    geoRenderStats();
 
     // Update geo button text based on database availability — unless a geo download is in
     // flight (then awgSetGeoBusy owns the button). Only clear once we've actually observed
@@ -3700,7 +3720,8 @@ function initAutocompleteIp(){
                 <!-- Geo-policy tabs: each tab is an independent GeoIP/GeoSite/GeoCustom/Antifilter combination -->
                 <div id="geo_tabs" class="awg-geo-tabs"></div>
                 <div id="geo_policy_panel">
-                <div class="awg-hint" style="margin:4px 2px 8px;" data-i18n="GEO_TABS_RAM_HINT"></div>
+                <div class="awg-hint" style="margin:4px 2px 4px;" data-i18n="GEO_TABS_RAM_HINT"></div>
+                <div id="geo_stats" style="margin:0 2px 8px; font-size:11px; color:#93E7FF; line-height:1.7;"></div>
 
                 <!-- Policy mode: lists route TO the VPN (include) or AWAY from it (exclude) -->
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
