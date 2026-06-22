@@ -506,8 +506,8 @@ en: {
     OPT_GEO_MODE_DIRECT: "Lists go direct, everything else via VPN (exclude)",
     GEO_MODE_HINT_VPN: "Matched destinations route via VPN; everything else goes direct.",
     GEO_MODE_HINT_DIRECT: "Matched destinations go direct; everything else routes via VPN. Note: this pulls most of the device's traffic into the tunnel.",
-    TBL_GEO_EXCLUDE: "Exclusions (exceptions)",
-    HINT_GEO_EXCLUDE: "Pointwise exceptions to this policy. In include mode they go DIRECT (carved out of the VPN); in exclude mode they go via VPN (carved back in). Same format as GeoCustom.",
+    TBL_GEO_EXCLUDE: "Pointwise exclusions for this policy",
+    HINT_GEO_EXCLUDE: "In include mode they go DIRECT (carved out of the VPN); in exclude mode they go via VPN (carved back in). Same format as GeoCustom.",
     BTN_ADD_GEO_FILE: "+ Add file",
     BTN_ADD_GEO_URL: "+ Add URL",
     BTN_LOAD_FROM_FILE: "Load from file",
@@ -821,8 +821,8 @@ ru: {
     OPT_GEO_MODE_DIRECT: "Списки — напрямую, остальное в VPN (исключение)",
     GEO_MODE_HINT_VPN: "Совпавшее со списками идёт в VPN; всё остальное — напрямую.",
     GEO_MODE_HINT_DIRECT: "Совпавшее со списками идёт напрямую; всё остальное — в VPN. Внимание: это тянет почти весь трафик устройства в туннель.",
-    TBL_GEO_EXCLUDE: "Исключения",
-    HINT_GEO_EXCLUDE: "Точечные исключения для этой политики. В режиме «включение» идут НАПРЯМУЮ (вырезаются из VPN); в режиме «исключение» — наоборот в VPN. Формат как у GeoCustom.",
+    TBL_GEO_EXCLUDE: "Точечные исключения для этой политики",
+    HINT_GEO_EXCLUDE: "В режиме «включение» идут НАПРЯМУЮ (вырезаются из VPN); в режиме «исключение» — наоборот в VPN. Формат как у GeoCustom.",
     BTN_ADD_GEO_FILE: "+ Добавить файл",
     BTN_ADD_GEO_URL: "+ Добавить ссылку",
     BTN_LOAD_FROM_FILE: "Загрузить из файла",
@@ -3742,6 +3742,29 @@ function initAutocompleteIp(){
                 </tr>
                 </table>
 
+                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
+                <thead><tr><td colspan="2" data-i18n="TBL_ANTIFILTER">Geo Antifilter — RKN lists (antifilter.download)</td></tr></thead>
+                <tr>
+                    <th width="35%"><span data-i18n="TH_ANTIFILTER_IP">Antifilter IP lists</span><br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">antifilter.download</span></th>
+                    <td>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="allyouneed"><span data-i18n="AF_ALLYOUNEED"> allyouneed — all the needed subnets (~15K) </span><span style="color:#5bd75b;" data-i18n="AF_RECOMMENDED">recommended</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community"><span data-i18n="AF_COMMUNITY"> community — community subnets (~900)</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipsum"><span data-i18n="AF_IPSUM"> ipsum — IPs compressed to /24 (~15K)</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="subnet"><span data-i18n="AF_SUBNET"> subnet — large subnets (~78)</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ip"><span data-i18n="AF_IP"> ip — individual IPs (~48K)</span></label>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipresolve"><span data-i18n="AF_IPRESOLVE"> ipresolve — IPs from DNS resolution (~154K) </span><span style="color:#f0ad4e;" data-i18n="AF_IPRESOLVE_WARN">⚠ very large</span></label>
+                        <div class="awg-hint" data-i18n="HINT_ANTIFILTER_IP">Added to the GeoIP lists and routed through the VPN. allyouneed = ipsum + subnet; ip/ipresolve overlap heavily with allyouneed — allyouneed is usually enough.</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th data-i18n="TH_ANTIFILTER_DOMAINS">Antifilter domains</th>
+                    <td>
+                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community_domains"><span data-i18n="AF_COMMUNITY_DOMAINS"> community domains (~485) → dnsmasq</span></label>
+                        <div class="awg-hint" data-i18n="HINT_ANTIFILTER_DOMAINS">The full domains.lst (1.4M domains / 27 MB) isn't supported — too large for dnsmasq on the router.</div>
+                    </td>
+                </tr>
+                </table>
+
                 <!-- ==================== GEOCUSTOM — own domains / IPs / files + URL sources ==================== -->
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
                 <thead><tr><td colspan="2" data-i18n="TBL_GEO_CUSTOM">GeoCustom — your own domains / IPs / files</td></tr></thead>
@@ -3778,29 +3801,6 @@ function initAutocompleteIp(){
                         <input type="button" class="button_gen" value="+ Add URL" data-i18n-val="BTN_ADD_GEO_URL" onclick="addGeoUrlRow('');">
                     </div>
                 </td></tr>
-                </table>
-
-                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2" data-i18n="TBL_ANTIFILTER">Geo Antifilter — RKN lists (antifilter.download)</td></tr></thead>
-                <tr>
-                    <th width="35%"><span data-i18n="TH_ANTIFILTER_IP">Antifilter IP lists</span><br><span style="font-weight:normal; font-size:11px; color:#b6bdc7;">antifilter.download</span></th>
-                    <td>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="allyouneed"><span data-i18n="AF_ALLYOUNEED"> allyouneed — all the needed subnets (~15K) </span><span style="color:#5bd75b;" data-i18n="AF_RECOMMENDED">recommended</span></label>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community"><span data-i18n="AF_COMMUNITY"> community — community subnets (~900)</span></label>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipsum"><span data-i18n="AF_IPSUM"> ipsum — IPs compressed to /24 (~15K)</span></label>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="subnet"><span data-i18n="AF_SUBNET"> subnet — large subnets (~78)</span></label>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ip"><span data-i18n="AF_IP"> ip — individual IPs (~48K)</span></label>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="ipresolve"><span data-i18n="AF_IPRESOLVE"> ipresolve — IPs from DNS resolution (~154K) </span><span style="color:#f0ad4e;" data-i18n="AF_IPRESOLVE_WARN">⚠ very large</span></label>
-                        <div class="awg-hint" data-i18n="HINT_ANTIFILTER_IP">Added to the GeoIP lists and routed through the VPN. allyouneed = ipsum + subnet; ip/ipresolve overlap heavily with allyouneed — allyouneed is usually enough.</div>
-                    </td>
-                </tr>
-                <tr>
-                    <th data-i18n="TH_ANTIFILTER_DOMAINS">Antifilter domains</th>
-                    <td>
-                        <label style="display:block; margin:2px 0;"><input type="checkbox" class="af_list" value="community_domains"><span data-i18n="AF_COMMUNITY_DOMAINS"> community domains (~485) → dnsmasq</span></label>
-                        <div class="awg-hint" data-i18n="HINT_ANTIFILTER_DOMAINS">The full domains.lst (1.4M domains / 27 MB) isn't supported — too large for dnsmasq on the router.</div>
-                    </td>
-                </tr>
                 </table>
 
                 <!-- ==================== EXCLUSIONS (pointwise exceptions) ==================== -->
