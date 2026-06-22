@@ -223,18 +223,20 @@ textarea.awg-geo-ta {
 .awg-modal-input { padding:2px 6px; background:#1c2226; color:#e0e0e0; border:1px solid #5a6b70; border-radius:4px; }
 /* DHCP picker: highlight the whole row when its checkbox is ticked. */
 .awg-dhcp-row.sel { background: rgba(93,176,255,0.16); }
-/* Geo-policy tabs */
-.awg-geo-tabs { display:flex; flex-wrap:wrap; align-items:center; gap:4px; margin:10px 0 0; }
-.awg-geo-tab { display:inline-flex; align-items:center; gap:5px; padding:5px 10px; background:#222a2e; color:#b6bdc7; border:1px solid #3a4548; border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer; font-size:12px; line-height:1.4; }
+/* Geo-policy tabs — the strip's bottom border is the panel's top edge; the active tab
+   "opens" into the panel (its bottom border = panel bg, overlapping the line by 1px), so the
+   tab and panel read as one connected unit instead of floating. */
+.awg-geo-tabs { display:flex; flex-wrap:wrap; align-items:flex-end; gap:3px; margin:10px 0 0; padding:0 2px; border-bottom:1px solid #5db0ff; }
+.awg-geo-tab { display:inline-flex; align-items:center; gap:5px; padding:6px 11px; margin-bottom:-1px; background:#222a2e; color:#b6bdc7; border:1px solid #3a4548; border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer; font-size:12px; line-height:1.4; }
 .awg-geo-tab:hover { background:#2b3338; color:#e0e0e0; }
-.awg-geo-tab.active { background:#2b3338; color:#fff; border-color:#5db0ff; font-weight:bold; }
+.awg-geo-tab.active { background:#2b3338; color:#fff; border-color:#5db0ff; border-bottom:1px solid #2b3338; font-weight:bold; }
 .awg-geo-tab-name { white-space:nowrap; max-width:160px; overflow:hidden; text-overflow:ellipsis; }
-.awg-geo-tab-edit, .awg-geo-tab-del { background:transparent; border:none; color:inherit; cursor:pointer; padding:0 2px; font-size:12px; line-height:1; opacity:0.7; }
+.awg-geo-tab-edit, .awg-geo-tab-del { background:transparent; border:none; color:inherit; cursor:pointer; padding:0 2px; font-size:13px; line-height:1; opacity:0.7; }
 .awg-geo-tab-edit:hover { opacity:1; color:#5db0ff; }
 .awg-geo-tab-del:hover { opacity:1; color:#ff6b6b; }
-.awg-geo-tab-add { background:transparent; border:1px dashed #5a6b70; color:#9aa3ad; border-radius:6px; cursor:pointer; padding:5px 10px; font-size:12px; }
+.awg-geo-tab-add { background:transparent; border:1px dashed #5a6b70; color:#9aa3ad; border-radius:6px; cursor:pointer; padding:5px 10px; margin-bottom:3px; font-size:12px; }
 .awg-geo-tab-add:hover { color:#5db0ff; border-color:#5db0ff; }
-#geo_policy_panel { border:1px solid #5db0ff; border-radius:0 6px 6px 6px; padding:2px 8px 8px; }
+#geo_policy_panel { border:1px solid #5db0ff; border-top:none; border-radius:0 0 6px 6px; padding:4px 8px 8px; }
 </style>
 <script>
 var custom_settings = <% get_custom_settings(); %>;
@@ -493,7 +495,7 @@ en: {
     HINT_CUSTOM_DOMAINS: "Comma- or newline-separated. Resolved via DNS → routed into the VPN.",
     TH_CUSTOM_IPS: "Custom IPs / subnets",
     HINT_CUSTOM_IPS: "Comma- or newline-separated: individual IPs or CIDR subnets.",
-    TBL_GEO_CUSTOM: "GeoCustom — your own files",
+    TBL_GEO_CUSTOM: "GeoCustom — your own domains / IPs / files",
     HINT_GEO_CUSTOM_FORMAT: "One entry per line. A domain (<code>example.com</code>) is routed via DNS; an IP or CIDR subnet (<code>1.2.3.0/24</code>) is added to the ipset. Lines starting with <code>#</code> are comments. A URL must return a plain-text list in this format.",
     TH_GEO_FILES: "Custom files",
     TH_GEO_URLS: "URL sources",
@@ -799,7 +801,7 @@ ru: {
     HINT_CUSTOM_DOMAINS: "Через запятую или с новой строки. Резолвятся через DNS → маршрутизируются в VPN.",
     TH_CUSTOM_IPS: "Свои IP / подсети",
     HINT_CUSTOM_IPS: "Через запятую или с новой строки: отдельные IP или подсети CIDR.",
-    TBL_GEO_CUSTOM: "GeoCustom — собственные файлы",
+    TBL_GEO_CUSTOM: "GeoCustom — свои домены / IP / файлы",
     HINT_GEO_CUSTOM_FORMAT: "Один элемент в строке. Домен (<code>example.com</code>) маршрутизируется через DNS; IP или подсеть CIDR (<code>1.2.3.0/24</code>) добавляется в ipset. Строки, начинающиеся с <code>#</code>, — комментарии. Файл по ссылке должен возвращать простой текстовый список в этом формате.",
     TH_GEO_FILES: "Свои файлы",
     TH_GEO_URLS: "URL-источники",
@@ -3645,8 +3647,8 @@ function initAutocompleteIp(){
 
                 <!-- Geo-policy tabs: each tab is an independent GeoIP/GeoSite/GeoCustom/Antifilter combination -->
                 <div id="geo_tabs" class="awg-geo-tabs"></div>
-                <div class="awg-hint" style="margin:2px 0 0;" data-i18n="GEO_TABS_RAM_HINT"></div>
                 <div id="geo_policy_panel">
+                <div class="awg-hint" style="margin:4px 2px 8px;" data-i18n="GEO_TABS_RAM_HINT"></div>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
                 <thead><tr><td colspan="2" data-i18n="TBL_GEOIP">GeoIP — route by service IPs</td></tr></thead>
@@ -3673,8 +3675,13 @@ function initAutocompleteIp(){
                         <div class="awg-hint" data-i18n="HINT_GEOSITE">Comma-separated. 1500+ lists: youtube, google, discord, netflix, telegram, twitter, instagram, facebook, tiktok, spotify, steam, apple, microsoft, amazon, openai, github, whatsapp, category-media, category-games, category-dev …</div>
                     </td>
                 </tr>
+                </table>
+
+                <!-- ==================== GEOCUSTOM — own domains / IPs / files + URL sources ==================== -->
+                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
+                <thead><tr><td colspan="2" data-i18n="TBL_GEO_CUSTOM">GeoCustom — your own domains / IPs / files</td></tr></thead>
                 <tr>
-                    <th data-i18n="TH_CUSTOM_DOMAINS">Custom domains</th>
+                    <th width="35%" data-i18n="TH_CUSTOM_DOMAINS">Custom domains</th>
                     <td>
                         <textarea class="input_32_table awg-geo-ta" id="geo_custom_domains" rows="3"
                                maxlength="2000" placeholder="example.com,another.org,service.net"
@@ -3691,11 +3698,6 @@ function initAutocompleteIp(){
                         <div class="awg-hint" data-i18n="HINT_CUSTOM_IPS">Comma-separated: individual IPs or CIDR subnets.</div>
                     </td>
                 </tr>
-                </table>
-
-                <!-- ==================== GEOCUSTOM — own files + URL sources ==================== -->
-                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
-                <thead><tr><td colspan="2" data-i18n="TBL_GEO_CUSTOM">GeoCustom — custom files</td></tr></thead>
                 <tr><td colspan="2">
                     <div class="awg-hint" data-i18n-html="HINT_GEO_CUSTOM_FORMAT">One entry per line. A domain (<code>example.com</code>) is routed via DNS; an IP or CIDR subnet (<code>1.2.3.0/24</code>) is added to the ipset. Lines starting with <code>#</code> are comments. A URL must return a plain-text list in this format.</div>
 
