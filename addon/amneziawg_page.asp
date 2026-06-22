@@ -373,6 +373,7 @@ en: {
     VERDICT_GEO: "VPN (Geo)",
     VERDICT_DIRECT: "Direct",
     VERDICT_PENDING: "resolving…",
+    ANALYZE_NOTE_SUMMARY: "What does this analysis show?",
     ANALYZE_NOTE: "Diagnostic. Shows the device's DNS requests (tagged DNS — what it's trying to reach) and its actual connections, each labeled Direct or VPN/Geo. Starting briefly restarts DNS to capture queries; only devices that use the router as DNS are visible. Verdict reflects the device's applied policy and the current geo lists.",
     ANALYZE_ADD_SELECTED: "+ To custom domains/IPs",
     ANALYZE_ADDED_ACK: "Added: {0} domains, {1} IPs (don't forget to Apply)",
@@ -679,6 +680,7 @@ ru: {
     VERDICT_GEO: "VPN (Geo)",
     VERDICT_DIRECT: "Напрямую",
     VERDICT_PENDING: "резолв…",
+    ANALYZE_NOTE_SUMMARY: "Что показывает этот анализ?",
     ANALYZE_NOTE: "Диагностика. Показывает DNS-запросы устройства (метка DNS — что оно пытается вызвать) и его реальные соединения, у каждого — вердикт «напрямую» или «VPN/Geo». При старте кратко перезапускается DNS для захвата запросов; видны только устройства, использующие роутер как DNS. Вердикт отражает применённую политику устройства и текущие гео-списки.",
     ANALYZE_ADD_SELECTED: "+ В свои домены/IP",
     ANALYZE_ADDED_ACK: "Добавлено: {0} доменов, {1} IP (не забудьте «Применить»)",
@@ -3909,13 +3911,18 @@ function initAutocompleteIp(){
             </table>
             <div id="awg_analyze_empty" style="padding:20px 4px; color:#9aa3ad; font-size:12px;"></div>
         </div>
-        <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
-            <span id="awg_analyze_note" class="awg-hint" style="flex:1; min-width:160px; margin-top:0;" data-i18n="ANALYZE_NOTE">Diagnostic.</span>
-            <span id="awg_an_ack" class="awg-ack" style="margin-left:0;"></span>
-            <label style="font-size:12px; color:#b6bdc7;" data-i18n="ANALYZE_TARGET_POLICY">Add to:</label>
-            <select id="awg_an_policy" class="awg-modal-input" aria-label="Geo policy" data-i18n-aria="ANALYZE_TARGET_POLICY"></select>
-            <input type="button" class="button_gen" id="awg_an_add" value="+ To custom domains/IPs" data-i18n-val="ANALYZE_ADD_SELECTED" onclick="awgAnalyzeAddSelected();">
-            <input type="button" class="button_gen" value="Close" data-i18n-val="BTN_CLOSE" onclick="awgCloseAnalyze();">
+        <div style="padding:10px 18px; border-top:1px solid #444;">
+            <details id="awg_analyze_note" class="awg-hint" style="margin:0 0 8px;">
+                <summary style="cursor:pointer;" data-i18n="ANALYZE_NOTE_SUMMARY">What does this analysis show?</summary>
+                <div style="margin-top:5px;" data-i18n="ANALYZE_NOTE">Diagnostic.</div>
+            </details>
+            <div style="display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
+                <span id="awg_an_ack" class="awg-ack" style="margin-left:0;"></span>
+                <label style="font-size:12px; color:#b6bdc7; margin-left:auto;" data-i18n="ANALYZE_TARGET_POLICY">Add to:</label>
+                <select id="awg_an_policy" class="awg-modal-input" aria-label="Geo policy" data-i18n-aria="ANALYZE_TARGET_POLICY"></select>
+                <input type="button" class="button_gen" id="awg_an_add" value="+ To custom domains/IPs" data-i18n-val="ANALYZE_ADD_SELECTED" onclick="awgAnalyzeAddSelected();">
+                <input type="button" class="button_gen" value="Close" data-i18n-val="BTN_CLOSE" onclick="awgCloseAnalyze();">
+            </div>
         </div>
     </div>
 </div>
