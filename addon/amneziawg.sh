@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.7"
+AWG_VERSION="1.2.8"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1373,12 +1373,21 @@ setup_firewall(){
     [ "$block_ipv6" = "1" ] && { [ "$default_policy" != "direct" ] || geo_in_use; } && want_aaaa=1
     echo "# AmneziaWG domain routing - auto-generated" > "$DNSMASQ_AWG_CONF"
     [ "$want_aaaa" = 1 ] && echo "filter-AAAA" >> "$DNSMASQ_AWG_CONF"
-    # Per policy: emit ITS selected domains (from the shared pool) into ITS OWN ipset
-    # (ipset=/dom.../awg_dst<id>), so a domain only routes for devices on that policy. The exact
-    # files a policy uses are enumerated from its selection (NOT a dir glob), since the pool is
-    # shared. Domain->ipset rules only work if the set exists, so re-check `ipset list` per
-    # policy (mirrors the per-device mangle vpn_geo guard).
-    local dgid dgset f chunk_line chunk_count domain _cat _uk _dfiles _efiles _chan _cset _cfiles
+    # Per policy: route ITS selected domains into ITS OWN ipset (INC -> main set, EXC -> exclusion
+    # set). The exact files a policy uses are enumerated from its selection (NOT a dir glob), since
+    # the pool is shared. Domain->ipset rules only work if the set exists, so re-check `ipset list`
+    # per policy (mirrors the per-device mangle vpn_geo guard).
+    #
+    # CRITICAL (the multi-policy domain bug): dnsmasq honors only the FIRST `ipset=` directive that
+    # matches a given domain — a second `ipset=/dom/otherset` line for the same domain is silently
+    # ignored (verified on dnsmasq 2.93). So we must NOT emit one line per policy: a domain shared
+    # by two policies (the common case — youtube/netflix/etc. in several tabs) would populate only
+    # the first policy's set and starve every other policy's device of that destination. Instead we
+    # collect (domain -> target set) pairs across ALL policies/channels and emit each domain ONCE
+    # as `ipset=/dom/setA,setB,...` — a comma-set line fans the resolved IP to EVERY listed set.
+    local dgid dgset f _cat _uk _dfiles _efiles _chan _cset _cfiles
+    local _ds_tmp="$GEO_DIR/.dnsmasq_ds.$$"
+    : > "$_ds_tmp"
     for dgid in $(geo_ids); do
         dgset=$(geo_ipset "$dgid")
         # INC domain files for this policy (route via its main set).
@@ -1396,8 +1405,7 @@ setup_firewall(){
         for _uk in $(policy_url_keys "$dgid" exc); do _efiles="$_efiles $GEO_DIR/domains/userurl_${_uk}.txt"; done
         for f in "$GEO_DIR"/domains/excustom_p${dgid}_*.txt; do [ -f "$f" ] && _efiles="$_efiles $f"; done
 
-        # Emit each channel's domains into its OWN set (INC -> main, EXC -> exclusion set), so a
-        # domain only ever lands in the set its policy/channel routes it through.
+        # Collect each channel's (domain -> target set) pairs into the shared stream.
         for _chan in inc exc; do
             if [ "$_chan" = exc ]; then _cset="$(geo_exc_ipset "$dgid")"; _cfiles="$_efiles"; else _cset="$dgset"; _cfiles="$_dfiles"; fi
             if ! ipset list "$_cset" >/dev/null 2>&1 || ! geo_set_ours "$dgid" "$_cset"; then
@@ -1406,27 +1414,45 @@ setup_firewall(){
             fi
             for f in $_cfiles; do
                 [ -f "$f" ] || continue
-                chunk_line="ipset=/"
-                chunk_count=0
-                while read -r domain; do
-                    domain=$(echo "$domain" | tr -d ' \r')
-                    [ -z "$domain" ] && continue
-                    echo "$domain" | grep -q '^#' && continue
-                    domain=$(echo "$domain" | sed 's/^\.//;s/:@[^ ]*$//')
-                    echo "$domain" | grep -q '[^a-zA-Z0-9._-]' && continue
-                    chunk_line="${chunk_line}${domain}/"
-                    chunk_count=$((chunk_count + 1))
-                    domain_count=$((domain_count + 1))
-                    if [ $chunk_count -ge 20 ]; then
-                        echo "${chunk_line}${_cset}" >> "$DNSMASQ_AWG_CONF"
-                        chunk_line="ipset=/"
-                        chunk_count=0
-                    fi
-                done < "$f"
-                [ $chunk_count -gt 0 ] && echo "${chunk_line}${_cset}" >> "$DNSMASQ_AWG_CONF"
+                # Normalize in one awk pass per file (no per-domain shell fork): strip spaces/CR,
+                # drop blanks/comments, strip a leading dot and any trailing ":@attr" v2fly tag,
+                # reject domains with invalid chars. Emit "<domain>\t<set>".
+                awk -v set="$_cset" '
+                    { d=$0; gsub(/[ \r]/,"",d)
+                      if (d=="" || substr(d,1,1)=="#") next
+                      sub(/^\./,"",d); sub(/:@[^ ]*$/,"",d)
+                      if (d=="" || d ~ /[^a-zA-Z0-9._-]/) next
+                      print d "\t" set }' "$f" >> "$_ds_tmp"
             done
         done
     done
+
+    # Aggregate domain -> unique set list across ALL policies/channels, then emit each domain once
+    # as `ipset=/dom/setA,setB` (chunked 20 domains/line, grouped by identical set list so lines
+    # stay compact). This collision-free form is what dnsmasq actually honors for shared domains.
+    if [ -s "$_ds_tmp" ]; then
+        domain_count=$(cut -f1 "$_ds_tmp" | sort -u | wc -l | tr -d ' ')
+        awk -F'\t' '
+            { dom=$1; set=$2
+              if (!(dom in S)) { S[dom]=set; next }
+              cur=S[dom]; n=split(cur,a,","); found=0
+              for(i=1;i<=n;i++) if(a[i]==set){found=1;break}
+              if(!found) S[dom]=cur","set }
+            END {
+              for (dom in S) { sig=S[dom]; G[sig]=G[sig] " " dom }
+              for (sig in G) {
+                cnt=0; line="ipset=/"
+                m=split(G[sig], dd, " ")
+                for(i=1;i<=m;i++){
+                  if(dd[i]=="") continue
+                  line=line dd[i] "/"; cnt++
+                  if(cnt>=20){ print line sig; line="ipset=/"; cnt=0 }
+                }
+                if(cnt>0) print line sig
+              }
+            }' "$_ds_tmp" >> "$DNSMASQ_AWG_CONF"
+    fi
+    rm -f "$_ds_tmp"
 
     # Add conf-file include to dnsmasq (idempotent) — also when only filter-AAAA is set
     if [ $domain_count -gt 0 ] || [ "$want_aaaa" = 1 ]; then
@@ -2285,9 +2311,11 @@ EOF
 
     local geo_domains=0
     # Count actual domains, NOT ipset= lines — dnsmasq packs ~18 domains per
-    # "ipset=/d1/d2/.../awg_dst" line, so grep -c (lines) under-reported ~18x. Per line the
-    # domains are the slash-separated fields minus "ipset=" and the trailing set name → NF-2.
-    [ -f "$DNSMASQ_AWG_CONF" ] && geo_domains=$(awk -F/ '/^ipset=/{c+=NF-2} END{print c+0}' "$DNSMASQ_AWG_CONF" 2>/dev/null)
+    # "ipset=/d1/d2/.../setA,setB" line, so grep -c (lines) under-reported ~18x. Per line the
+    # domains are the slash-separated fields minus "ipset=" and the trailing set-list (NF-2); the
+    # last field may now list several comma-joined sets (one domain routed to N policies), so the
+    # aggregate counts it once per set (NF-2)*n to stay equal to the sum of the per-tab counts.
+    [ -f "$DNSMASQ_AWG_CONF" ] && geo_domains=$(awk -F/ '/^ipset=/{n=split($NF,ss,",");c+=(NF-2)*n} END{print c+0}' "$DNSMASQ_AWG_CONF" 2>/dev/null)
     [ -z "$geo_domains" ] && geo_domains=0
 
     # Per-policy geo stats {"<id>":{"ip":N,"dom":M},...} for the UI's per-tab breakdown:
@@ -2297,7 +2325,7 @@ EOF
         _gsset=$(geo_ipset "$_gsid")
         _gsip=$(ipset list "$_gsset" -t 2>/dev/null | awk '/Number of entries/{print $NF}'); [ -z "$_gsip" ] && _gsip=0
         _gsdom=0
-        [ -f "$DNSMASQ_AWG_CONF" ] && _gsdom=$(awk -F/ -v s="$_gsset" '/^ipset=/ && $NF==s {c+=NF-2} END{print c+0}' "$DNSMASQ_AWG_CONF" 2>/dev/null)
+        [ -f "$DNSMASQ_AWG_CONF" ] && _gsdom=$(awk -F/ -v s="$_gsset" '/^ipset=/{n=split($NF,ss,",");for(i=1;i<=n;i++)if(ss[i]==s){c+=NF-2;break}} END{print c+0}' "$DNSMASQ_AWG_CONF" 2>/dev/null)
         [ -z "$_gsdom" ] && _gsdom=0
         geo_stats="${geo_stats}${_gssep}\"${_gsid}\":{\"ip\":${_gsip},\"dom\":${_gsdom}}"
         _gssep=","
