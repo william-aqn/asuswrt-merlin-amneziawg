@@ -223,6 +223,18 @@ textarea.awg-geo-ta {
 .awg-modal-input { padding:2px 6px; background:#1c2226; color:#e0e0e0; border:1px solid #5a6b70; border-radius:4px; }
 /* DHCP picker: highlight the whole row when its checkbox is ticked. */
 .awg-dhcp-row.sel { background: rgba(93,176,255,0.16); }
+/* Geo-policy tabs */
+.awg-geo-tabs { display:flex; flex-wrap:wrap; align-items:center; gap:4px; margin:10px 0 0; }
+.awg-geo-tab { display:inline-flex; align-items:center; gap:5px; padding:5px 10px; background:#222a2e; color:#b6bdc7; border:1px solid #3a4548; border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer; font-size:12px; line-height:1.4; }
+.awg-geo-tab:hover { background:#2b3338; color:#e0e0e0; }
+.awg-geo-tab.active { background:#2b3338; color:#fff; border-color:#5db0ff; font-weight:bold; }
+.awg-geo-tab-name { white-space:nowrap; max-width:160px; overflow:hidden; text-overflow:ellipsis; }
+.awg-geo-tab-edit, .awg-geo-tab-del { background:transparent; border:none; color:inherit; cursor:pointer; padding:0 2px; font-size:12px; line-height:1; opacity:0.7; }
+.awg-geo-tab-edit:hover { opacity:1; color:#5db0ff; }
+.awg-geo-tab-del:hover { opacity:1; color:#ff6b6b; }
+.awg-geo-tab-add { background:transparent; border:1px dashed #5a6b70; color:#9aa3ad; border-radius:6px; cursor:pointer; padding:5px 10px; font-size:12px; }
+.awg-geo-tab-add:hover { color:#5db0ff; border-color:#5db0ff; }
+#geo_policy_panel { border:1px solid #5db0ff; border-radius:0 6px 6px 6px; padding:2px 8px 8px; }
 </style>
 <script>
 var custom_settings = <% get_custom_settings(); %>;
@@ -320,7 +332,21 @@ en: {
     // ---- routing policy options (shared static + JS) ----
     OPT_VPN_ALL: "VPN: all traffic",
     OPT_VPN_GEO: "VPN: Geo only",
+    OPT_VPN_GEO_PREFIX: "VPN: ",
     OPT_DIRECT: "Direct",
+    // ---- geo policies (tabs) ----
+    GEO_TAB_DEFAULT: "Geo",
+    GEO_TAB_DEFAULT_NAME: "Geo {0}",
+    GEO_TAB_ADD: "+ Add geo policy",
+    GEO_TAB_RENAME: "Rename",
+    GEO_TAB_RENAME_PROMPT: "Geo policy name:",
+    GEO_TAB_REMOVE: "Remove geo policy",
+    GEO_TAB_REMOVE_CONFIRM: "Remove geo policy «{0}»? Devices using it will switch to Direct.",
+    GEO_MAX_REACHED: "Maximum {0} geo policies.",
+    GEO_TABS_RAM_HINT: "Each policy is a separate ipset combining only its own GeoIP / GeoSite / GeoCustom / Antifilter lists. Many large lists across several policies can exhaust RAM on low-memory routers.",
+    ANALYZE_TARGET_POLICY: "Add to:",
+    ANALYZE_PICK_POLICY: "— choose geo policy —",
+    ANALYZE_NEED_POLICY: "Choose a geo policy to add to.",
     // ---- client rows ----
     ARIA_DEVICE_IP: "Device IP address",
     ARIA_DEVICE_NAME: "Device name",
@@ -612,7 +638,21 @@ ru: {
     // ---- routing policy options (shared static + JS) ----
     OPT_VPN_ALL: "VPN: весь трафик",
     OPT_VPN_GEO: "VPN: только Geo",
+    OPT_VPN_GEO_PREFIX: "VPN: ",
     OPT_DIRECT: "Напрямую",
+    // ---- гео политики (вкладки) ----
+    GEO_TAB_DEFAULT: "Гео",
+    GEO_TAB_DEFAULT_NAME: "Гео {0}",
+    GEO_TAB_ADD: "+ Добавить гео политику",
+    GEO_TAB_RENAME: "Переименовать",
+    GEO_TAB_RENAME_PROMPT: "Название гео-политики:",
+    GEO_TAB_REMOVE: "Удалить гео политику",
+    GEO_TAB_REMOVE_CONFIRM: "Удалить гео политику «{0}»? Устройства с ней переключатся на «Напрямую».",
+    GEO_MAX_REACHED: "Максимум {0} гео-политик.",
+    GEO_TABS_RAM_HINT: "Каждая политика — отдельный ipset, объединяющий только свои списки GeoIP / GeoSite / GeoCustom / Antifilter. Много больших списков в нескольких политиках могут исчерпать память на слабых роутерах.",
+    ANALYZE_TARGET_POLICY: "Добавить в:",
+    ANALYZE_PICK_POLICY: "— выберите гео-политику —",
+    ANALYZE_NEED_POLICY: "Выберите гео-политику для добавления.",
     // ---- client rows ----
     ARIA_DEVICE_IP: "IP-адрес устройства",
     ARIA_DEVICE_NAME: "Имя устройства",
@@ -1488,13 +1528,15 @@ function loadSettings(){
             }
         } catch(e){}
     }
-    // Load default policy
-    var defPolicy = document.getElementById('default_policy');
-    defPolicy.value = custom_settings.awg_default_policy || 'direct';
-    // Load clients list
-    loadClients();
-    // Load geo settings
+    // Load geo settings FIRST: builds geoPolicies + rebuilds every policy dropdown so the
+    // default-policy value and per-device rows below have their vpn_geo_<id> options present.
     loadGeoSettings();
+    // Load default policy (now that the dropdown carries every geo policy option)
+    var defPolicy = document.getElementById('default_policy');
+    var dpv = custom_settings.awg_default_policy || 'direct';
+    defPolicy.value = geoValidRef(dpv) ? dpv : 'direct';
+    // Load clients list (rows get the full per-policy dropdown)
+    loadClients();
     updateGeoVisibility();
     updateFirstRun();
 }
@@ -1592,19 +1634,11 @@ function applyConfig(actionScript){
         return;
     }
 
-    // Save geo settings. These four are textareas now, so normalize whitespace/newlines to
-    // commas: Merlin truncates custom_settings values at the first whitespace, so stored values
-    // must be whitespace-free comma-separated tokens (awgCsv).
-    custom_settings.awg_geo_v2fly = awgCsv('awg_geo_v2fly');
-    custom_settings.awg_geo_v2fly_ip = awgCsv('awg_geo_v2fly_ip');
-    custom_settings.awg_geo_custom_domains = awgCsv('geo_custom_domains');
-    custom_settings.awg_geo_custom_ips = awgCsv('geo_custom_ips');
-    // GeoCustom — own files (base64'd content, settings-stored) + URL sources. Files share the
-    // ~52 KB custom_settings budget, so cap pasted content and steer big lists to URLs.
-    var geoFilesSer = serializeGeoFiles();
-    if(geoFilesSer.length > 30000){ alert(T('MSG_GEO_FILES_TOO_BIG')); return; }
-    custom_settings.awg_geo_custom_files = geoFilesSer;
-    custom_settings.awg_geo_custom_urls = serializeGeoUrls();
+    // Save geo settings PER POLICY (GeoIP/GeoSite/GeoCustom/Antifilter for each tab) into the
+    // legacy unsuffixed keys (id 1) / id-suffixed keys (id>=2), plus the awg_geo_policies
+    // registry. geoSerializePolicies captures the visible tab first and validates the files
+    // budget; bail (no submit) if it's exceeded.
+    if(!geoSerializePolicies()) return;
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
     custom_settings.awg_no_dns_intercept = document.getElementById('awg_no_dns_intercept').checked ? '1' : '0';
@@ -1617,11 +1651,7 @@ function applyConfig(actionScript){
     // Download-via-VPN toggles (route geo / program-update downloads through the tunnel)
     custom_settings.awg_geo_via_awg = document.getElementById('awg_geo_via_awg').checked ? '1' : '0';
     custom_settings.awg_update_via_awg = document.getElementById('awg_update_via_awg').checked ? '1' : '0';
-    // Antifilter lists: collect checked checkboxes -> comma-separated registry keys
-    var afChecked = [];
-    var afB = document.querySelectorAll('.af_list');
-    for(var aj = 0; aj < afB.length; aj++){ if(afB[aj].checked) afChecked.push(afB[aj].value); }
-    custom_settings.awg_antifilter_lists = afChecked.join(',');
+    // (Antifilter lists are saved per-policy by geoSerializePolicies above.)
 
     // Basic validation
     var pk = document.getElementById('awg_iface_p1').value;
@@ -1680,9 +1710,7 @@ function addClientRow(ip, name, policy){
         '<td><input type="text" class="client_ip input_25_table" style="width:100%;" value="' + escHtml(ip) + '" placeholder="192.168.1.100" aria-label="' + escHtml(T('ARIA_DEVICE_IP')) + '"></td>' +
         '<td><input type="text" class="client_name input_25_table" style="width:100%;" value="' + escHtml(name) + '" placeholder="iPhone, PS5, TV..." aria-label="' + escHtml(T('ARIA_DEVICE_NAME')) + '"></td>' +
         '<td><select class="client_policy input_option" onchange="updateGeoVisibility();" style="width:100%;" aria-label="' + escHtml(T('ARIA_DEVICE_POLICY')) + '">' +
-            '<option value="vpn_all"' + (policy==='vpn_all'?' selected':'') + '>' + escHtml(T('OPT_VPN_ALL')) + '</option>' +
-            '<option value="vpn_geo"' + (policy==='vpn_geo'?' selected':'') + '>' + escHtml(T('OPT_VPN_GEO')) + '</option>' +
-            '<option value="direct"' + (policy==='direct'?' selected':'') + '>' + escHtml(T('OPT_DIRECT')) + '</option>' +
+            geoPolicyOptionsHtml(geoValidRef(policy) ? policy : 'direct') +
         '</select></td>' +
         '<td><div class="awg-cell-actions">' +
             '<button type="button" class="awg-analyze-btn" aria-label="' + escHtml(T('ARIA_ANALYZE')) + '" title="' + escHtml(T('TITLE_ANALYZE')) + '" onclick="awgOpenAnalyze(this);"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 17 9 11 13 15 21 7"></polyline><polyline points="15 7 21 7 21 13"></polyline></svg></button>' +
@@ -1752,33 +1780,279 @@ function serializeClients(){
 }
 
 function updateGeoVisibility(){
-    // Show geo settings if ANY device uses vpn_geo or default policy is vpn_geo
+    // Show geo settings if ANY device uses a geo policy or the default policy is a geo policy
+    // (vpn_geo or vpn_geo_<id>).
     var defPolicy = document.getElementById('default_policy').value;
-    var hasGeo = (defPolicy === 'vpn_geo');
+    var hasGeo = (defPolicy.indexOf('vpn_geo') === 0);
     if(!hasGeo){
         var selects = document.querySelectorAll('.client_policy');
         for(var i = 0; i < selects.length; i++){
-            if(selects[i].value === 'vpn_geo'){ hasGeo = true; break; }
+            if(selects[i].value.indexOf('vpn_geo') === 0){ hasGeo = true; break; }
         }
     }
     document.getElementById('geo_section').style.display = hasGeo ? '' : 'none';
 }
 
+// === Geo policies (tabbed multi-policy manager) =========================================
+// Each policy holds its config as the SAME serialized strings the backend stores (so capture/
+// restore is just (de)serialize). One visible panel swaps data per active tab — no per-tab DOM
+// duplication. Policy id 1 = legacy/default (unsuffixed keys); ids >=2 use suffixed keys.
+var GEO_MAX_POLICIES = 8;
+var geoPolicies = [];     // [{id,name(uri-enc),v2fly,v2flyIp,customDomains,customIps,files,urls,antifilter}]
+var geoActiveIdx = 0;
+var geoLoadedIds = [];    // ids present at load — used to clear keys of policies removed before Apply
+
+function geoRef(id){ return id === 1 ? 'vpn_geo' : 'vpn_geo_' + id; }
+function geoRefId(ref){
+    if(ref === 'vpn_geo') return 1;
+    var m = /^vpn_geo_(\d+)$/.exec(ref || '');
+    return m ? parseInt(m[1], 10) : 0;
+}
+function geoKeyJs(id, suf){
+    if(suf === 'antifilter_lists') return id === 1 ? 'awg_antifilter_lists' : 'awg_antifilter_' + id + '_lists';
+    return id === 1 ? 'awg_geo_' + suf : 'awg_geo_' + id + '_' + suf;
+}
+function geoNextId(){ var mx = 0; for(var i=0;i<geoPolicies.length;i++) if(geoPolicies[i].id > mx) mx = geoPolicies[i].id; return mx + 1; }
+function geoPolicyIndexById(id){ for(var i=0;i<geoPolicies.length;i++) if(geoPolicies[i].id === id) return i; return -1; }
+function geoDecodeName(n){ try { return decodeURIComponent(n); } catch(e){ return n || ''; } }
+function geoValidRef(ref){
+    if(ref === 'vpn_all' || ref === 'direct') return true;
+    return ref && ref.indexOf('vpn_geo') === 0 && geoPolicyIndexById(geoRefId(ref)) !== -1;
+}
+
+// Build the <option> list for a policy dropdown: VPN-all + one option per geo policy + Direct.
+function geoPolicyOptionsHtml(selectedRef){
+    var h = '<option value="vpn_all"' + (selectedRef==='vpn_all'?' selected':'') + '>' + escHtml(T('OPT_VPN_ALL')) + '</option>';
+    for(var i=0;i<geoPolicies.length;i++){
+        var ref = geoRef(geoPolicies[i].id);
+        h += '<option value="' + ref + '"' + (selectedRef===ref?' selected':'') + '>' + escHtml(T('OPT_VPN_GEO_PREFIX') + geoDecodeName(geoPolicies[i].name)) + '</option>';
+    }
+    h += '<option value="direct"' + (selectedRef==='direct'?' selected':'') + '>' + escHtml(T('OPT_DIRECT')) + '</option>';
+    return h;
+}
+// Rebuild every policy dropdown (device rows, default policy, DHCP + analyzer pickers).
+// A select whose current ref points at a now-deleted policy falls back to Direct.
+function refreshPolicyDropdowns(){
+    var sels = document.querySelectorAll('.client_policy'), i, cur;
+    for(i=0;i<sels.length;i++){
+        cur = sels[i].value; if(!geoValidRef(cur)) cur = 'direct';
+        sels[i].innerHTML = geoPolicyOptionsHtml(cur); sels[i].value = cur;
+    }
+    var defSel = document.getElementById('default_policy');
+    if(defSel){ cur = defSel.value; if(!geoValidRef(cur)) cur = 'direct'; defSel.innerHTML = geoPolicyOptionsHtml(cur); defSel.value = cur; }
+    var dhcp = document.getElementById('awg_dhcp_policy');
+    if(dhcp){ cur = dhcp.value; if(!geoValidRef(cur)) cur = 'vpn_all'; dhcp.innerHTML = geoPolicyOptionsHtml(cur); dhcp.value = cur; }
+    geoFillAnalyzePicker();
+}
+
+// Read the visible panel back into the active policy object.
+function geoCaptureActive(){
+    if(geoActiveIdx < 0 || geoActiveIdx >= geoPolicies.length) return;
+    var p = geoPolicies[geoActiveIdx];
+    p.v2flyIp = awgCsv('awg_geo_v2fly_ip');
+    p.v2fly = awgCsv('awg_geo_v2fly');
+    p.customDomains = awgCsv('geo_custom_domains');
+    p.customIps = awgCsv('geo_custom_ips');
+    p.files = serializeGeoFiles();
+    p.urls = serializeGeoUrls();
+    var af = [], boxes = document.querySelectorAll('.af_list');
+    for(var i=0;i<boxes.length;i++) if(boxes[i].checked) af.push(boxes[i].value);
+    p.antifilter = af.join(',');
+}
+// Render the active policy object into the visible panel fields.
+function geoRenderActive(){
+    if(geoActiveIdx < 0 || geoActiveIdx >= geoPolicies.length) return;
+    var p = geoPolicies[geoActiveIdx];
+    var set = function(id, v){ var e = document.getElementById(id); if(e) e.value = v || ''; };
+    set('awg_geo_v2fly_ip', p.v2flyIp);
+    set('awg_geo_v2fly', p.v2fly);
+    set('geo_custom_domains', p.customDomains);
+    set('geo_custom_ips', p.customIps);
+    loadGeoFiles(p.files);
+    loadGeoUrls(p.urls);
+    var sel = (p.antifilter || '').split(','), boxes = document.querySelectorAll('.af_list');
+    for(var i=0;i<boxes.length;i++) boxes[i].checked = sel.indexOf(boxes[i].value) !== -1;
+}
+function geoRenderTabs(){
+    var bar = document.getElementById('geo_tabs');
+    if(!bar) return;
+    var h = '';
+    for(var i=0;i<geoPolicies.length;i++){
+        var active = (i === geoActiveIdx);
+        h += '<div class="awg-geo-tab' + (active?' active':'') + '" onclick="geoSwitchTo(' + i + ')">' +
+                 '<span class="awg-geo-tab-name">' + escHtml(geoDecodeName(geoPolicies[i].name)) + '</span>';
+        if(active){
+            h += '<button type="button" class="awg-geo-tab-edit" title="' + escHtml(T('GEO_TAB_RENAME')) + '" aria-label="' + escHtml(T('GEO_TAB_RENAME')) + '" onclick="event.stopPropagation();geoRenamePolicy(' + i + ')">&#9998;</button>';
+            if(geoPolicies.length > 1)
+                h += '<button type="button" class="awg-geo-tab-del" title="' + escHtml(T('GEO_TAB_REMOVE')) + '" aria-label="' + escHtml(T('GEO_TAB_REMOVE')) + '" onclick="event.stopPropagation();geoRemovePolicy(' + i + ')">&#10005;</button>';
+        }
+        h += '</div>';
+    }
+    if(geoPolicies.length < GEO_MAX_POLICIES)
+        h += '<button type="button" class="awg-geo-tab-add" onclick="geoAddPolicy()">' + escHtml(T('GEO_TAB_ADD')) + '</button>';
+    bar.innerHTML = h;
+}
+function geoSwitchTo(idx){
+    if(idx === geoActiveIdx || idx < 0 || idx >= geoPolicies.length) return;
+    geoCaptureActive();
+    geoActiveIdx = idx;
+    geoRenderActive();
+    geoRenderTabs();
+}
+function geoAddPolicy(){
+    geoCaptureActive();
+    if(geoPolicies.length >= GEO_MAX_POLICIES){ alert(T('GEO_MAX_REACHED', GEO_MAX_POLICIES)); return; }
+    var id = geoNextId();
+    geoPolicies.push({ id:id, name:encodeURIComponent(T('GEO_TAB_DEFAULT_NAME', id)),
+        v2fly:'', v2flyIp:'', customDomains:'', customIps:'', files:'', urls:'', antifilter:'' });
+    geoActiveIdx = geoPolicies.length - 1;
+    geoRenderActive();
+    geoRenderTabs();
+    refreshPolicyDropdowns();
+}
+function geoRemovePolicy(idx){
+    if(geoPolicies.length <= 1 || idx < 0 || idx >= geoPolicies.length) return;
+    var p = geoPolicies[idx];
+    if(!confirm(T('GEO_TAB_REMOVE_CONFIRM', geoDecodeName(p.name)))) return;
+    geoCaptureActive();
+    geoPolicies.splice(idx, 1);
+    if(geoActiveIdx >= geoPolicies.length) geoActiveIdx = geoPolicies.length - 1;
+    if(geoActiveIdx < 0) geoActiveIdx = 0;
+    geoRenderActive();
+    geoRenderTabs();
+    refreshPolicyDropdowns();   // selects pointing at the removed ref fall back to Direct
+    updateGeoVisibility();
+}
+function geoRenamePolicy(idx){
+    if(idx < 0 || idx >= geoPolicies.length) return;
+    var nn = prompt(T('GEO_TAB_RENAME_PROMPT'), geoDecodeName(geoPolicies[idx].name));
+    if(nn === null) return;
+    nn = nn.replace(/\s+/g, ' ').trim().slice(0, 24);
+    if(!nn) return;
+    geoPolicies[idx].name = encodeURIComponent(nn);
+    geoRenderTabs();
+    refreshPolicyDropdowns();
+}
+// Build geoPolicies[] from custom_settings (registry + per-policy keys). Default = one "Geo" tab.
+function geoHydratePolicies(){
+    geoPolicies = [];
+    geoLoadedIds = [];
+    var reg = custom_settings.awg_geo_policies || '', list = [];
+    if(reg){
+        var ents = reg.split(';');
+        for(var i=0;i<ents.length;i++){
+            if(!ents[i]) continue;
+            var ci = ents[i].indexOf(':');
+            var id = parseInt(ci < 0 ? ents[i] : ents[i].slice(0, ci), 10);
+            var nm = ci < 0 ? '' : ents[i].slice(ci + 1);
+            if(!isNaN(id)) list.push({ id:id, name:nm });
+        }
+    }
+    if(!list.length) list.push({ id:1, name:encodeURIComponent(T('GEO_TAB_DEFAULT')) });
+    for(var k=0;k<list.length;k++){
+        var pid = list[k].id;
+        geoLoadedIds.push(pid);
+        var vip = custom_settings[geoKeyJs(pid,'v2fly_ip')] || '';
+        if(!vip && pid === 1) vip = v2flyIpList.join(',');   // legacy default-display for policy 1
+        geoPolicies.push({
+            id: pid,
+            name: list[k].name || encodeURIComponent(pid === 1 ? T('GEO_TAB_DEFAULT') : T('GEO_TAB_DEFAULT_NAME', pid)),
+            v2fly: custom_settings[geoKeyJs(pid,'v2fly')] || '',
+            v2flyIp: vip,
+            customDomains: custom_settings[geoKeyJs(pid,'custom_domains')] || '',
+            customIps: custom_settings[geoKeyJs(pid,'custom_ips')] || '',
+            files: custom_settings[geoKeyJs(pid,'custom_files')] || '',
+            urls: custom_settings[geoKeyJs(pid,'custom_urls')] || '',
+            antifilter: custom_settings[geoKeyJs(pid,'antifilter_lists')] || ''
+        });
+    }
+    geoActiveIdx = 0;
+}
+// Serialize geoPolicies[] back into custom_settings; returns false if the files budget is blown.
+function geoSerializePolicies(){
+    geoCaptureActive();
+    var totalFiles = 0, gp, p, suf, si;
+    var sufs = ['v2fly','v2fly_ip','custom_domains','custom_ips','custom_files','custom_urls','antifilter_lists'];
+    for(gp=0; gp<geoPolicies.length; gp++){
+        p = geoPolicies[gp];
+        totalFiles += (p.files || '').length;
+        custom_settings[geoKeyJs(p.id,'v2fly')] = p.v2fly || '';
+        custom_settings[geoKeyJs(p.id,'v2fly_ip')] = p.v2flyIp || '';
+        custom_settings[geoKeyJs(p.id,'custom_domains')] = p.customDomains || '';
+        custom_settings[geoKeyJs(p.id,'custom_ips')] = p.customIps || '';
+        custom_settings[geoKeyJs(p.id,'custom_files')] = p.files || '';
+        custom_settings[geoKeyJs(p.id,'custom_urls')] = p.urls || '';
+        custom_settings[geoKeyJs(p.id,'antifilter_lists')] = p.antifilter || '';
+    }
+    custom_settings.awg_geo_policies = geoPolicies.map(function(x){ return x.id + ':' + x.name; }).join(';');
+    // Free the settings budget: blank keys of policies that existed at load but were removed.
+    for(var li=0; li<geoLoadedIds.length; li++){
+        var oid = geoLoadedIds[li];
+        if(geoPolicyIndexById(oid) === -1){
+            for(si=0; si<sufs.length; si++) custom_settings[geoKeyJs(oid,sufs[si])] = '';
+        }
+    }
+    // Budget guard: across N policies the per-policy keys (domains/IPs/URLs/files/antifilter)
+    // add up, and Merlin silently truncates a POST body over ~64 KB. Check the WHOLE serialized
+    // store (not just files) against the same ~52000-char cap the upload path uses, so a stack
+    // of large lists across tabs can't corrupt settings on Apply. (Files keep their own message.)
+    if(totalFiles > 40000){ alert(T('MSG_GEO_FILES_TOO_BIG')); return false; }
+    try {
+        if(encodeURIComponent(JSON.stringify(custom_settings)).length > 50000){
+            alert(T('MSG_GEO_FILES_TOO_BIG')); return false;
+        }
+    } catch(e){}
+    return true;
+}
+
+// Populate the analyzer modal's "add to geo policy" picker (placeholder + one per policy),
+// preserving the current selection if it still exists.
+function geoFillAnalyzePicker(){
+    var sel = document.getElementById('awg_an_policy');
+    if(!sel) return;
+    var prev = sel.value;
+    var h = '<option value="">' + escHtml(T('ANALYZE_PICK_POLICY')) + '</option>';
+    for(var i=0;i<geoPolicies.length;i++){
+        h += '<option value="' + geoPolicies[i].id + '">' + escHtml(T('OPT_VPN_GEO_PREFIX') + geoDecodeName(geoPolicies[i].name)) + '</option>';
+    }
+    sel.innerHTML = h;
+    if(prev && geoPolicyIndexById(parseInt(prev, 10)) !== -1) sel.value = prev; else sel.value = '';
+}
+// Merge comma-separated items into an existing CSV string (case-insensitive dedup).
+function geoMergeCsv(existing, items){
+    var have = {}, out = [], added = 0, i;
+    var cur = String(existing || '').split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s; });
+    for(i=0;i<cur.length;i++){ have[cur[i].toLowerCase()] = true; out.push(cur[i]); }
+    for(i=0;i<items.length;i++){
+        var it = String(items[i]).trim(); if(!it) continue;
+        var lk = it.toLowerCase(); if(have[lk]) continue;
+        have[lk] = true; out.push(it); added++;
+    }
+    return { value: out.join(','), added: added };
+}
+// Add captured domains/IPs into one policy's custom-domains/IPs (used by the analyzer).
+function geoAddToPolicy(pidx, domains, ips){
+    if(pidx < 0 || pidx >= geoPolicies.length) return { nDom:0, nIp:0 };
+    geoCaptureActive();   // don't lose unsaved edits in the visible tab
+    var p = geoPolicies[pidx];
+    var rd = geoMergeCsv(p.customDomains, domains);
+    var ri = geoMergeCsv(p.customIps, ips);
+    p.customDomains = rd.value;
+    p.customIps = ri.value;
+    if(pidx === geoActiveIdx) geoRenderActive();   // reflect into the visible fields
+    return { nDom: rd.added, nIp: ri.added };
+}
+
 // === GeoIP / GeoSite ===
 
 function loadGeoSettings(){
-    var v2fly = document.getElementById('awg_geo_v2fly');
-    if(v2fly) v2fly.value = custom_settings.awg_geo_v2fly || '';
-    var v2flyIp = document.getElementById('awg_geo_v2fly_ip');
-    if(v2flyIp) v2flyIp.value = custom_settings.awg_geo_v2fly_ip || v2flyIpList.join(',');
-    // Custom
-    var cd = document.getElementById('geo_custom_domains');
-    if(cd) cd.value = custom_settings.awg_geo_custom_domains || '';
-    var ci = document.getElementById('geo_custom_ips');
-    if(ci) ci.value = custom_settings.awg_geo_custom_ips || '';
-    // GeoCustom — own files + URL sources
-    loadGeoFiles();
-    loadGeoUrls();
+    // Geo policies (tabs): build the model from settings, then render the active tab,
+    // the tab bar and every policy dropdown. Per-policy fields (GeoIP/GeoSite/GeoCustom/
+    // Antifilter) are filled by geoRenderActive for the active tab.
+    geoHydratePolicies();
+    geoRenderActive();
+    geoRenderTabs();
+    refreshPolicyDropdowns();
     // Auto-update
     var au = document.getElementById('geo_autoupdate');
     if(au) au.checked = (custom_settings.awg_geo_autoupdate === '1');
@@ -1806,12 +2080,7 @@ function loadGeoSettings(){
     if(gva) gva.checked = (custom_settings.awg_geo_via_awg === '1');
     var uva = document.getElementById('awg_update_via_awg');
     if(uva) uva.checked = (custom_settings.awg_update_via_awg === '1');
-    // Antifilter lists (checkboxes) — value attr holds the registry key
-    var afSel = (custom_settings.awg_antifilter_lists || '').split(',');
-    var afBoxes = document.querySelectorAll('.af_list');
-    for(var ai = 0; ai < afBoxes.length; ai++){
-        afBoxes[ai].checked = afSel.indexOf(afBoxes[ai].value) !== -1;
-    }
+    // (Antifilter checkboxes + GeoIP/GeoSite/GeoCustom fields are set per-policy by geoRenderActive.)
 }
 
 function updateGeoLists(){
@@ -1826,6 +2095,9 @@ function updateGeoLists(){
         msg += T('MSG_WIPE_BEFORE_UPDATE');
     }
     if(!confirm(msg)) return;
+    // Capture the geo policies (incl. a just-added tab + unsaved active-tab edits) into
+    // custom_settings, so the backend downloads the CURRENT matrix, not the last-Applied one.
+    if(!geoSerializePolicies()) return;
     var log = document.getElementById('awg_log');
     if(log) log.textContent = T('MSG_GEO_LOADING_WAIT');
     awgSetGeoBusy(true);
@@ -1930,9 +2202,7 @@ function showClientPicker(clients){
             '<div style="padding:10px 16px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">' +
                 '<span style="font-size:12px;">' + escHtml(T('DHCP_POLICY_LABEL')) + '</span>' +
                 '<select id="awg_dhcp_policy" class="awg-modal-input" aria-label="' + escHtml(T('ARIA_DHCP_POLICY')) + '">' +
-                    '<option value="vpn_all">' + escHtml(T('OPT_VPN_ALL')) + '</option>' +
-                    '<option value="vpn_geo">' + escHtml(T('OPT_VPN_GEO')) + '</option>' +
-                    '<option value="direct">' + escHtml(T('OPT_DIRECT')) + '</option>' +
+                    geoPolicyOptionsHtml('vpn_all') +
                 '</select>' +
                 '<input type="button" class="button_gen" value="' + escHtml(T('DHCP_ADD_SELECTED')) + '" onclick="awgAddDhcpSelected();" style="margin-left:auto;">' +
             '</div>' +
@@ -2120,7 +2390,11 @@ var awgAnalyzeSel = {};   // checked-row map (key -> {dom, ip}); survives the 1.
 
 function awgPolicyLabel(p){
     if(p === 'vpn_all') return T('OPT_VPN_ALL');
-    if(p === 'vpn_geo') return T('OPT_VPN_GEO');
+    if(p && p.indexOf('vpn_geo') === 0){
+        var idx = geoPolicyIndexById(geoRefId(p));
+        if(idx !== -1) return T('OPT_VPN_GEO_PREFIX') + geoDecodeName(geoPolicies[idx].name);
+        return T('OPT_VPN_GEO');
+    }
     if(p === 'direct')  return T('OPT_DIRECT');
     return '—';
 }
@@ -2217,6 +2491,17 @@ function awgOpenAnalyze(btn){
     });
     var polBox = document.getElementById('awg_analyze_policy');
     if(polBox) polBox.textContent = awgPolicyLabel(polEl ? polEl.value : '');
+    // Seed the "add to geo policy" picker: default to the device's OWN geo policy if it's on
+    // one; otherwise leave it on the placeholder so the user must choose before adding.
+    geoFillAnalyzePicker();
+    var devRef = polEl ? polEl.value : '';
+    var anSel = document.getElementById('awg_an_policy');
+    if(anSel){
+        if(devRef && devRef.indexOf('vpn_geo') === 0 && geoPolicyIndexById(geoRefId(devRef)) !== -1)
+            anSel.value = String(geoRefId(devRef));
+        else
+            anSel.value = '';
+    }
     var rows = document.getElementById('awg_analyze_rows');
     if(rows) rows.innerHTML = '';
     awgAnalyzeSel = {};   // fresh selection per modal session
@@ -2416,6 +2701,12 @@ function awgMergeIntoField(id, items){
     return added.length;
 }
 function awgAnalyzeAddSelected(){
+    // Which geo policy do the selected requests go into? Default = the device's own policy
+    // (seeded on open); if none was pre-selected the user must pick a tab here first.
+    var picker = document.getElementById('awg_an_policy');
+    var pid = picker ? parseInt(picker.value, 10) : NaN;
+    var pidx = isNaN(pid) ? -1 : geoPolicyIndexById(pid);
+    if(pidx === -1){ awgAnalyzeShowAck(T('ANALYZE_NEED_POLICY'), false); return; }
     var domains = [], ips = [];
     for(var k in awgAnalyzeSel){
         if(!awgAnalyzeSel.hasOwnProperty(k)) continue;
@@ -2425,9 +2716,8 @@ function awgAnalyzeAddSelected(){
         else { var ip = awgCleanIp(sel.ip); if(ip) ips.push(ip); }
     }
     if(!domains.length && !ips.length){ awgAnalyzeShowAck(T('ANALYZE_NONE_SELECTED'), false); return; }
-    var nDom = awgMergeIntoField('geo_custom_domains', domains);
-    var nIp  = awgMergeIntoField('geo_custom_ips', ips);
-    awgAnalyzeShowAck(T('ANALYZE_ADDED_ACK', nDom, nIp), true);
+    var res = geoAddToPolicy(pidx, domains, ips);
+    awgAnalyzeShowAck(T('ANALYZE_ADDED_ACK', res.nDom, res.nIp), true);
     awgAnalyzeSel = {};
     var cbs = document.querySelectorAll('#awg_analyze_rows .awg-an-cb');
     for(var ci = 0; ci < cbs.length; ci++) cbs[ci].checked = false;
@@ -2879,11 +3169,11 @@ function serializeGeoUrls(){
     try { return btoa(unescape(encodeURIComponent(urls.join('\n')))); } catch(e){ return ''; }
 }
 
-function loadGeoFiles(){
+function loadGeoFiles(data){
     var tbody = document.getElementById('awg_geo_files_rows');
     if(!tbody) return;
     tbody.innerHTML = '';
-    var data = custom_settings.awg_geo_custom_files || '';
+    if(data == null) data = custom_settings.awg_geo_custom_files || '';
     if(!data) return;
     var entries = data.split(';');
     for(var i = 0; i < entries.length; i++){
@@ -2897,11 +3187,11 @@ function loadGeoFiles(){
     }
 }
 
-function loadGeoUrls(){
+function loadGeoUrls(data){
     var tbody = document.getElementById('awg_geo_url_rows');
     if(!tbody) return;
     tbody.innerHTML = '';
-    var data = custom_settings.awg_geo_custom_urls || '';
+    if(data == null) data = custom_settings.awg_geo_custom_urls || '';
     if(!data) return;
     var txt = '';
     try { txt = decodeURIComponent(escape(atob(data))); } catch(e){ txt = ''; }
@@ -3353,6 +3643,11 @@ function initAutocompleteIp(){
                     <input type="button" class="button_gen" value="Download lists" data-i18n-val="BTN_DOWNLOAD_LISTS" onclick="updateGeoLists();" style="font-size:11px; padding:2px 8px; margin-left:6px;">
                 </div>
 
+                <!-- Geo-policy tabs: each tab is an independent GeoIP/GeoSite/GeoCustom/Antifilter combination -->
+                <div id="geo_tabs" class="awg-geo-tabs"></div>
+                <div class="awg-hint" style="margin:2px 0 0;" data-i18n="GEO_TABS_RAM_HINT"></div>
+                <div id="geo_policy_panel">
+
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
                 <thead><tr><td colspan="2" data-i18n="TBL_GEOIP">GeoIP — route by service IPs</td></tr></thead>
                 <tr>
@@ -3440,6 +3735,8 @@ function initAutocompleteIp(){
                     </td>
                 </tr>
                 </table>
+
+                </div><!-- /geo_policy_panel -->
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;">
                 <thead><tr><td colspan="2" data-i18n="TBL_GEO_UPDATE">Geo update settings</td></tr></thead>
@@ -3613,6 +3910,8 @@ function initAutocompleteIp(){
         <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
             <span id="awg_analyze_note" class="awg-hint" style="flex:1; min-width:160px; margin-top:0;" data-i18n="ANALYZE_NOTE">Diagnostic.</span>
             <span id="awg_an_ack" class="awg-ack" style="margin-left:0;"></span>
+            <label style="font-size:12px; color:#b6bdc7;" data-i18n="ANALYZE_TARGET_POLICY">Add to:</label>
+            <select id="awg_an_policy" class="awg-modal-input" aria-label="Geo policy" data-i18n-aria="ANALYZE_TARGET_POLICY"></select>
             <input type="button" class="button_gen" id="awg_an_add" value="+ To custom domains/IPs" data-i18n-val="ANALYZE_ADD_SELECTED" onclick="awgAnalyzeAddSelected();">
             <input type="button" class="button_gen" value="Close" data-i18n-val="BTN_CLOSE" onclick="awgCloseAnalyze();">
         </div>

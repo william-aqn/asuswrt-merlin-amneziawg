@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.1.100"
+AWG_VERSION="1.2.0"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -38,7 +38,7 @@ AWG_UPLOAD_STATUS="/www/user/awg_upload.htm"
 STARTING_FLAG="/tmp/.awg_starting"
 STOPPING_FLAG="/tmp/.awg_stopping"
 GEO_BUSY_FLAG="/tmp/.awg_geo_busy"
-OWNED_IPSET_FLAG="/tmp/.awg_ipset_owned"   # name of the geo ipset WE created (own) — for safe teardown/rename cleanup
+OWNED_SETS="/tmp/.awg_owned_sets"   # registry: one geo ipset name per line that WE created (own). Exact-name teardown — NO fragile name-pattern matching — so custom/shared base names (awg_ipset_name with '.', a trailing digit, or a prefix shared with another tool) and renames are all handled safely. /tmp is tmpfs, so it shares the ipsets' reboot-volatile lifecycle.
 SETTINGS="/jffs/addons/custom_settings.txt"
 CLIENTS_FILE="$AWG_DIR/clients.list"
 GEO_DIR="$AWG_DIR/geo"
@@ -139,6 +139,141 @@ migrate_field_names(){
     _awg_rename_setting awg_privatekey  awg_iface_p1
     _awg_rename_setting awg_peer_pubkey awg_peer_p1
     _awg_rename_setting awg_peer_psk    awg_peer_p2
+}
+
+# =============================================================
+# Multi-policy geo helpers
+# A geo "policy" is an independent combination of GeoIP / GeoSite / GeoCustom / Antifilter,
+# loaded into its OWN ipset and matched per-device at the mangle layer. All policies route
+# into the SAME tunnel (one FWMARK -> one RT_TABLE); only the match-set differs per device.
+# Policy id 1 is the legacy/default policy: it reuses the original unsuffixed settings keys,
+# the flat $GEO_DIR layout and the $IPSET_NAME ipset, so existing installs need ZERO
+# migration. Policies >=2 use id-suffixed keys, $GEO_DIR/p<id>/ dirs and ${IPSET_NAME}<id>
+# ipsets. Registry: awg_geo_policies = "id:uriName;id:uriName;..." (default "1" when absent).
+# =============================================================
+GEO_MAX_POLICIES=8
+
+# Active policy ids (space-separated); always at least "1" (legacy/default).
+geo_ids(){
+    local raw out id
+    raw=$(get_setting awg_geo_policies)
+    [ -z "$raw" ] && { echo 1; return; }
+    out=$(printf '%s\n' "$raw" | tr ';' '\n' | while IFS=: read -r id _; do
+        id=$(printf '%s' "$id" | tr -cd '0-9')
+        [ -n "$id" ] && printf '%s ' "$id"
+    done)
+    out=$(echo $out)
+    [ -z "$out" ] && out=1
+    echo "$out"
+}
+
+# custom_settings key for a policy field. id 1 -> legacy unsuffixed key.
+# suffix: v2fly v2fly_ip custom_domains custom_ips custom_files custom_urls antifilter_lists
+geo_key(){
+    local id="$1" suf="$2"
+    if [ "$suf" = antifilter_lists ]; then
+        [ "$id" = 1 ] && echo "awg_antifilter_lists" || echo "awg_antifilter_${id}_lists"
+    else
+        [ "$id" = 1 ] && echo "awg_geo_${suf}" || echo "awg_geo_${id}_${suf}"
+    fi
+}
+
+# ipset name for a policy. id 1 -> $IPSET_NAME (legacy "awg_dst" or user override).
+geo_ipset(){
+    [ "$1" = 1 ] && echo "$IPSET_NAME" || echo "${IPSET_NAME}$1"
+}
+
+# Geo files are stored ONCE in a shared pool ($GEO_DIR/{geoip,antifilter,domains}); a file is
+# identified by its natural key (service name / list key / GeoSite category / sha256 of a URL),
+# so two policies selecting the same list share a single download + on-disk copy. The per-policy
+# "matrix" lives only in settings (each policy's selection); at firewall-build time each policy's
+# ipset is loaded with just the subset it selected. download/prune operate on the UNION across
+# policies; load/dnsmasq operate per policy. Per-policy CONTENT (pasted GeoCustom files, custom
+# domains) can differ between same-named tabs, so those files are namespaced "_p<id>_".
+
+# Union (dedup, space-separated) of GeoIP services selected across ALL policies.
+geo_union_geoip(){ local id; for id in $(geo_ids); do selected_geoip "$id"; done | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' '; }
+# Union of antifilter list keys across all policies.
+geo_union_antifilter(){ local id; for id in $(geo_ids); do selected_antifilter "$id"; done | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' '; }
+# Union of GeoSite categories across all policies.
+geo_union_geosite(){ local id; for id in $(geo_ids); do get_setting "$(geo_key "$id" v2fly)" | tr ',' ' '; done | tr ' ' '\n' | sed 's/[^A-Za-z0-9_.-]//g' | grep -v '^$' | sort -u | tr '\n' ' '; }
+# Union of custom URLs across all policies (decoded), one valid http(s) URL per line, deduped.
+geo_union_urls(){ local id; for id in $(geo_ids); do get_setting "$(geo_key "$id" custom_urls)" | base64 -d 2>/dev/null; printf '\n'; done | tr ' \t\r' '\n\n\n' | grep -E '^https?://' | sort -u; }
+# sha256[:16] keys of policy <id>'s OWN custom URLs (one per line) — for per-policy load/dnsmasq.
+policy_url_keys(){
+    local id="$1" u
+    get_setting "$(geo_key "$id" custom_urls)" | base64 -d 2>/dev/null | tr ' \t\r' '\n\n\n' | grep -E '^https?://' | while read -r u; do
+        echo "$u" | sha256sum | awk '{print $1}' | cut -c1-16
+    done
+}
+
+# Owned-set registry: record a geo ipset WE created, so teardown destroys it by EXACT name
+# (never a name pattern). A set we did NOT create (a pre-existing/shared base set made by
+# another tool) is never registered, so it's never destroyed.
+register_owned_set(){
+    grep -qxF "$1" "$OWNED_SETS" 2>/dev/null || echo "$1" >> "$OWNED_SETS"
+}
+# Flush + destroy every geo set we created (incl. old names after an awg_ipset_name rename),
+# then clear the registry. Exact names only — foreign sets are untouched.
+destroy_owned_sets(){
+    local s
+    [ -f "$OWNED_SETS" ] || return 0
+    while read -r s; do
+        [ -z "$s" ] && continue
+        ipset flush "$s" 2>/dev/null
+        ipset destroy "$s" 2>/dev/null
+    done < "$OWNED_SETS"
+    rm -f "$OWNED_SETS"
+}
+# May we load into / route via policy <id>'s set ($2)? id 1 = the base set, which MAY be a
+# shared set created by another tool (documented behavior) — allowed. id>=2 names are derived
+# from our base, so one we didn't create (not in the registry) is a foreign collision — never
+# pollute or route into it.
+geo_set_ours(){
+    [ "$1" = 1 ] && return 0
+    grep -qxF "$2" "$OWNED_SETS" 2>/dev/null
+}
+
+# Map a device/default policy ref to a geo policy id: vpn_geo -> 1, vpn_geo_<id> -> <id>.
+geo_policy_of_ref(){
+    case "$1" in
+        vpn_geo)   echo 1 ;;
+        vpn_geo_*) echo "${1#vpn_geo_}" ;;
+        *)         echo 1 ;;
+    esac
+}
+
+# Per-policy ipset maxelem = total RAM budget / active-policy count (floored), so N policies
+# can't sum to N x the cap and OOM a low-RAM router. $1 = total budget for this box.
+geo_maxelem(){
+    local total="$1" n per floor=16384
+    n=$(geo_ids | wc -w | tr -d ' '); [ -z "$n" ] && n=1
+    [ "$n" -lt 1 ] 2>/dev/null && n=1
+    per=$((total / n))
+    # Apply the comfort floor ONLY while it doesn't push the SUM (n*floor) past the budget —
+    # otherwise (many policies on a low-RAM box) it would defeat the OOM cap it sits inside.
+    [ "$per" -lt "$floor" ] && [ $((floor * n)) -le "$total" ] && per=$floor
+    [ "$per" -lt 1 ] && per=1
+    echo "$per"
+}
+
+# Remove per-policy CONTENT files (pasted GeoCustom, custom domains) for policies deleted in
+# the UI (ids no longer active). These filenames carry OUR own "_p<id>_" / "custom_p<id>" tag
+# (id = digits), so id extraction is unambiguous and never collides with a foreign name. Shared
+# files are pruned by union elsewhere; per-policy IPSETS are reclaimed by the owned-set registry
+# (cleanup_firewall destroys + recreates each build), so this never touches ipsets.
+prune_orphan_policies(){
+    local active=" $(geo_ids) " id f
+    for f in "$GEO_DIR"/domains/custom_p*.txt; do
+        [ -f "$f" ] || continue
+        id=$(basename "$f" .txt); id=${id#custom_p}
+        case "$active" in *" $id "*) ;; *) rm -f "$f" ;; esac
+    done
+    for f in "$GEO_DIR"/domains/usercustom_p*.txt "$GEO_DIR"/geoip/usercustom_p*.cidr; do
+        [ -f "$f" ] || continue
+        id=$(basename "$f"); id=${id#usercustom_p}; id=${id%%_*}
+        case "$active" in *" $id "*) ;; *) rm -f "$f" ;; esac
+    done
 }
 
 is_running(){
@@ -346,11 +481,12 @@ fetch_with_mirrors(){
     return 1
 }
 
-# Download a single GeoIP service list (IPv4 only)
+# Download a single GeoIP service list (IPv4 only) into the SHARED pool. $1=svc.
 download_geoip_service(){
     local svc="$1"
     svc=$(echo "$svc" | tr -d ' ' | tr 'A-Z' 'a-z')
     [ -z "$svc" ] && return 1
+    mkdir -p "$GEO_DIR/geoip"
     local tmp="$GEO_DIR/geoip/.dl_${svc}.tmp"
     if fetch_with_mirrors "${V2FLY_GEOIP_BASE}/${svc}.txt" "$tmp" 30 && [ -s "$tmp" ]; then
         grep -v ":" "$tmp" > "$GEO_DIR/geoip/v2fly_${svc}.cidr"
@@ -365,20 +501,20 @@ download_geoip_service(){
     return 1
 }
 
-# Selected GeoIP services: the UI "GeoIP Service Lists" field, or GEOIP_SERVICES default
+# Selected GeoIP services for policy <id> (default id 1). The legacy default GEOIP_SERVICES
+# fallback applies ONLY to id 1 (back-compat for installs with an empty field); additional
+# policies treat an empty field as "nothing selected".
 selected_geoip(){
-    local s
-    s=$(get_setting awg_geo_v2fly_ip | tr ',' ' ' | tr 'A-Z' 'a-z')
+    local id="${1:-1}" s
+    s=$(get_setting "$(geo_key "$id" v2fly_ip)" | tr ',' ' ' | tr 'A-Z' 'a-z')
     s=$(echo $s)
-    [ -z "$s" ] && s="$GEOIP_SERVICES"
+    [ -z "$s" ] && [ "$id" = 1 ] && s="$GEOIP_SERVICES"
     echo "$s"
 }
 
-# Download all geo databases (called at install and update)
-# Remove GeoIP .cidr files for services no longer selected (handles a service removed
-# from the UI field). Selection = the field, or the GEOIP_SERVICES default if empty.
+# Remove shared GeoIP .cidr files no longer selected by ANY policy (prune by union).
 prune_geoip(){
-    local sel=" $(selected_geoip) " f fsvc
+    local sel=" $(geo_union_geoip) " f fsvc
     for f in "$GEO_DIR"/geoip/v2fly_*.cidr; do
         [ -f "$f" ] || continue
         fsvc=$(basename "$f" .cidr); fsvc=${fsvc#v2fly_}
@@ -404,13 +540,14 @@ antifilter_url(){
 # True for keys that are domain lists (fed to dnsmasq), false for IP/CIDR lists.
 antifilter_is_domain(){ [ "$1" = "community_domains" ]; }
 
-# Selected antifilter lists: the UI checkboxes (awg_antifilter_lists, comma-separated)
+# Selected antifilter lists for policy <id> (default id 1) — UI checkboxes, comma-separated.
 selected_antifilter(){
-    echo $(get_setting awg_antifilter_lists | tr ',' ' ' | tr 'A-Z' 'a-z')
+    local id="${1:-1}"
+    echo $(get_setting "$(geo_key "$id" antifilter_lists)" | tr ',' ' ' | tr 'A-Z' 'a-z')
 }
 
-# Download a single antifilter list. IP lists -> antifilter/af_<key>.cidr (IPv4 only,
-# bare IPs/CIDR both valid in hash:net); the domain list -> domains/antifilter_<key>.lst.
+# Download a single antifilter list into the SHARED pool. $1=key.
+# IP lists -> antifilter/af_<key>.cidr; the domain list -> domains/antifilter_<key>.lst.
 # Temp + swap so a failed download keeps the existing list; reject HTML error pages.
 download_antifilter_list(){
     local key="$1" url out tmp
@@ -440,9 +577,9 @@ download_antifilter_list(){
     return 1
 }
 
-# Remove antifilter files for lists no longer selected (mirror of prune_geoip)
+# Remove shared antifilter files no longer selected by ANY policy (prune by union).
 prune_antifilter(){
-    local sel=" $(selected_antifilter) " f fkey
+    local sel=" $(geo_union_antifilter) " f fkey
     for f in "$GEO_DIR"/antifilter/af_*.cidr; do
         [ -f "$f" ] || continue
         fkey=$(basename "$f" .cidr); fkey=${fkey#af_}
@@ -478,17 +615,11 @@ download_geosite(){
     fi
 }
 
-# Remove userurl_* files whose URL key is no longer present in awg_geo_custom_urls (a URL
-# removed or edited in the UI). $1 = the decoded newline/space-separated URL list ("" = none).
+# Remove shared userurl_* files whose URL key is no longer referenced by ANY policy (prune by
+# the union of every policy's custom URLs).
 prune_custom_urls(){
-    local urls="$1" sel=" " url key f fkey
-    set -f
-    for url in $urls; do
-        [ -z "$url" ] && continue
-        key=$(echo "$url" | sha256sum | awk '{print $1}' | cut -c1-16)
-        sel="$sel$key "
-    done
-    set +f
+    local sel f fkey u
+    sel=" $(geo_union_urls | while read -r u; do u=$(echo "$u" | tr -d ' \r'); [ -z "$u" ] && continue; echo "$u" | sha256sum | awk '{print $1}' | cut -c1-16; done | tr '\n' ' ') "
     for f in "$GEO_DIR"/domains/userurl_*.txt "$GEO_DIR"/geoip/userurl_*.cidr; do
         [ -f "$f" ] || continue
         fkey=$(basename "$f"); fkey=${fkey#userurl_}; fkey=${fkey%.txt}; fkey=${fkey%.cidr}
@@ -496,20 +627,18 @@ prune_custom_urls(){
     done
 }
 
-# Download user URL sources. awg_geo_custom_urls = base64 of a newline-joined URL list; each URL
-# is fetched (via the same mirror/proxy helper as the built-in lists) and classified into
-# domains/userurl_<key>.txt + geoip/userurl_<key>.cidr, where key = first 16 hex of sha256(URL).
+# Download the UNION of every policy's URL sources into the shared pool (one fetch per unique
+# URL). Each is classified into domains/userurl_<key>.txt + geoip/userurl_<key>.cidr,
+# key = first 16 hex of sha256(URL). Same URL in two policies => one download/file.
 download_custom_urls(){
-    local urls
-    urls=$(get_setting awg_geo_custom_urls | base64 -d 2>/dev/null)
+    local urls url key tmp
+    urls=$(geo_union_urls)
     if [ -z "$urls" ]; then
-        prune_custom_urls ""
+        prune_custom_urls
         return 0
     fi
     mkdir -p "$GEO_DIR/domains" "$GEO_DIR/geoip"
-    local url key tmp
-    set -f
-    for url in $urls; do
+    printf '%s\n' "$urls" | while read -r url; do
         url=$(echo "$url" | tr -d ' \r')
         [ -z "$url" ] && continue
         case "$url" in http://*|https://*) ;; *) continue ;; esac
@@ -524,46 +653,41 @@ download_custom_urls(){
         fi
         rm -f "$tmp"
     done
-    set +f
-    prune_custom_urls "$urls"
+    prune_custom_urls
 }
 
 download_all_geo(){
-    mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains"
+    mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains" "$GEO_DIR/antifilter"
     log_msg "Downloading all geo databases..."
 
-    # Download GeoIP service CIDR lists (driven by the UI field; default GEOIP_SERVICES)
-    local geoip_list=$(selected_geoip)
-    prune_geoip   # drop lists for services removed from the selection
-    local count=0 total=0 ok=0
-    for svc in $geoip_list; do
-        total=$((total + 1))
-    done
+    # Shared GeoSite domain DB (downloaded once; every policy extracts its categories from it).
+    download_geosite
+
+    # GC sets/files for policies deleted in the UI.
+    prune_orphan_policies
+
+    # GeoIP service lists — the UNION across all policies, one download per unique service.
+    prune_geoip
+    local geoip_list count=0 total=0 ok=0 svc af_key
+    geoip_list=$(geo_union_geoip)
+    for svc in $geoip_list; do total=$((total + 1)); done
     for svc in $geoip_list; do
         count=$((count + 1))
         log_msg "GeoIP: downloading $svc ($count/$total)..."
-        if download_geoip_service "$svc"; then
-            ok=$((ok + 1))
-        else
-            log_msg "WARNING: GeoIP $svc failed"
-        fi
+        if download_geoip_service "$svc"; then ok=$((ok + 1)); else log_msg "WARNING: GeoIP $svc failed"; fi
         update_status
     done
     log_msg "GeoIP: $ok/$total service lists downloaded"
 
-    download_geosite
-
-    # Download selected antifilter.download lists (RKN-blocked subnets/domains)
-    mkdir -p "$GEO_DIR/antifilter"
-    prune_antifilter   # drop files for lists removed from the selection
-    local af_key
-    for af_key in $(selected_antifilter); do
+    # Antifilter lists — the union, one download per unique list.
+    prune_antifilter
+    for af_key in $(geo_union_antifilter); do
         log_msg "Antifilter: downloading $af_key..."
         download_antifilter_list "$af_key" || log_msg "WARNING: Antifilter $af_key failed"
         update_status
     done
 
-    # GeoCustom URL sources (user-supplied downloadable lists)
+    # GeoCustom URL sources — the union, one download per unique URL.
     download_custom_urls
 
     # Save timestamp
@@ -631,14 +755,15 @@ classify_user_list(){
     ' "$infile"
 }
 
-# Regenerate GeoCustom pasted-file lists from awg_geo_custom_files (format:
-# name,base64(content);name,base64(content)) into domains/usercustom_<name>.txt and
-# geoip/usercustom_<name>.cidr. Cleared + rebuilt on every setup_firewall, so a file renamed
-# or removed in the UI drops its old output automatically.
+# Regenerate policy <id>'s GeoCustom pasted-file lists from its custom_files key (format:
+# name,base64(content);name,base64(content)) into the SHARED pool but namespaced per policy:
+# domains/usercustom_p<id>_<name>.txt and geoip/usercustom_p<id>_<name>.cidr (pasted content can
+# differ between same-named tabs). Cleared + rebuilt each setup_firewall. $1 = policy id.
 apply_custom_geo(){
-    rm -f "$GEO_DIR"/domains/usercustom_*.txt "$GEO_DIR"/geoip/usercustom_*.cidr 2>/dev/null
+    local id="${1:-1}"
+    rm -f "$GEO_DIR"/domains/usercustom_p${id}_*.txt "$GEO_DIR"/geoip/usercustom_p${id}_*.cidr 2>/dev/null
     local blob
-    blob=$(get_setting awg_geo_custom_files)
+    blob=$(get_setting "$(geo_key "$id" custom_files)")
     [ -z "$blob" ] && return 0
     mkdir -p "$GEO_DIR/domains" "$GEO_DIR/geoip"
     local oldifs="$IFS" entry name b64 tmp base n seen=" "
@@ -658,13 +783,114 @@ apply_custom_geo(){
             n=$((n + 1)); name="${base}_${n}"
         done
         seen="$seen$name "
-        tmp="$GEO_DIR/.uc_${name}.tmp"
+        tmp="$GEO_DIR/.uc_p${id}_${name}.tmp"
         echo "$b64" | base64 -d 2>/dev/null > "$tmp"
-        [ -s "$tmp" ] && classify_user_list "$tmp" "$GEO_DIR/domains/usercustom_${name}.txt" "$GEO_DIR/geoip/usercustom_${name}.cidr"
+        [ -s "$tmp" ] && classify_user_list "$tmp" "$GEO_DIR/domains/usercustom_p${id}_${name}.txt" "$GEO_DIR/geoip/usercustom_p${id}_${name}.cidr"
         rm -f "$tmp"
     done
     set +f
     IFS="$oldifs"
+}
+
+# Extract the UNION of every policy's GeoSite categories from the shared v2fly DB into shared
+# domains/v2fly_<cat>.txt files (one extraction per unique category; two policies sharing a
+# category share the file). Stale category files no longer selected by anyone are removed.
+build_geosite_domains(){
+    mkdir -p "$GEO_DIR/domains"
+    local union=" $(geo_union_geosite) " f cat
+    for f in "$GEO_DIR"/domains/v2fly_*.txt; do
+        [ -f "$f" ] || continue
+        cat=$(basename "$f" .txt); cat=${cat#v2fly_}
+        case "$union" in *" $cat "*) ;; *) rm -f "$f" ;; esac
+    done
+    [ -f "$GEO_DIR/v2fly_all.yml" ] || return 0
+    for cat in $(geo_union_geosite); do
+        [ -z "$cat" ] && continue
+        awk -v c="$cat" '
+            /^  - name: / { if(found) exit; name=$NF; found=(name==c); next }
+            found && /^      - "domain:/ { sub(/.*"domain:/,""); sub(/".*/,""); print }
+            found && /^      - "full:/ { sub(/.*"full:/,""); sub(/".*/,""); print }
+        ' "$GEO_DIR/v2fly_all.yml" > "$GEO_DIR/domains/v2fly_${cat}.txt"
+    done
+}
+
+# One-time: remove flat GeoCustom outputs from the pre-shared-pool (single-policy) layout.
+# New outputs are namespaced usercustom_p<id>_* / custom_p<id>.txt; the old flat ones (no
+# "_p<id>") are never read anymore and would otherwise linger on /opt forever. Guarded by a
+# flag in $GEO_DIR (persistent), so it runs once per upgrade.
+migrate_geocustom_layout(){
+    [ -f "$GEO_DIR/.geocustom_migrated" ] && return 0
+    local f b
+    for f in "$GEO_DIR"/domains/usercustom_*.txt "$GEO_DIR"/geoip/usercustom_*.cidr; do
+        [ -f "$f" ] || continue
+        b=$(basename "$f")
+        case "$b" in usercustom_p[0-9]*) ;; *) rm -f "$f" ;; esac   # keep new namespaced, drop legacy flat
+    done
+    rm -f "$GEO_DIR/domains/custom.txt"   # legacy single-policy custom-domains file
+    touch "$GEO_DIR/.geocustom_migrated"
+}
+
+# (Re)write policy <id>'s own custom-domains file (per-policy content). $1 = policy id.
+build_custom_domains(){
+    local id="${1:-1}" cd
+    cd=$(get_setting "$(geo_key "$id" custom_domains)")
+    rm -f "$GEO_DIR/domains/custom_p${id}.txt"   # clear stale file when the field is emptied
+    if [ -n "$cd" ]; then
+        mkdir -p "$GEO_DIR/domains"
+        echo "$cd" | tr ',' '\n' > "$GEO_DIR/domains/custom_p${id}.txt"
+    fi
+}
+
+# Does ANY policy have a selected source whose shared file is missing on disk? (union check)
+geo_any_pending(){
+    local svc af_key key
+    for svc in $(geo_union_geoip); do
+        [ -f "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] || return 0
+    done
+    for af_key in $(geo_union_antifilter); do
+        if antifilter_is_domain "$af_key"; then
+            [ -f "$GEO_DIR/domains/antifilter_${af_key}.lst" ] || return 0
+        else
+            [ -f "$GEO_DIR/antifilter/af_${af_key}.cidr" ] || return 0
+        fi
+    done
+    geo_urls_missing && return 0
+    return 1
+}
+
+# Does ANY policy reference a custom URL whose shared output file isn't present yet? (union)
+# geo_union_urls emits one whitespace-free http(s) URL per line, so word-splitting is safe.
+geo_urls_missing(){
+    local u key
+    for u in $(geo_union_urls); do
+        key=$(echo "$u" | sha256sum | awk '{print $1}' | cut -c1-16)
+        { [ ! -f "$GEO_DIR/domains/userurl_${key}.txt" ] && [ ! -f "$GEO_DIR/geoip/userurl_${key}.cidr" ]; } && return 0
+    done
+    return 1
+}
+
+# Download only the MISSING shared geo files (union across policies). Used by ensure_geo's
+# background fetch so adding one service to one tab doesn't re-fetch everything.
+geo_fetch_missing(){
+    mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains" "$GEO_DIR/antifilter"
+    local svc af_key
+    for svc in $(geo_union_geoip); do
+        [ -f "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] && continue
+        log_msg "GeoIP: downloading $svc..."
+        download_geoip_service "$svc" || log_msg "WARNING: GeoIP $svc failed"
+        update_status
+    done
+    for af_key in $(geo_union_antifilter); do
+        if antifilter_is_domain "$af_key"; then
+            [ -f "$GEO_DIR/domains/antifilter_${af_key}.lst" ] && continue
+        else
+            [ -f "$GEO_DIR/antifilter/af_${af_key}.cidr" ] && continue
+        fi
+        log_msg "Antifilter: downloading $af_key..."
+        download_antifilter_list "$af_key" || log_msg "WARNING: Antifilter $af_key failed"
+        update_status
+    done
+    geo_urls_missing && download_custom_urls
 }
 
 # --- Unified firewall setup ---
@@ -827,13 +1053,11 @@ cleanup_firewall(){
     # Remove the global :53 DNS-interception rules (DNAT + DoH/DoT REJECTs)
     cleanup_dns_interception
 
-    # Destroy the geo ipset only if WE created it (own it). A pre-existing/shared set — created
-    # by another connection/tool — is left intact; only our rules above are removed.
-    if [ "$(cat "$OWNED_IPSET_FLAG" 2>/dev/null)" = "$IPSET_NAME" ]; then
-        ipset flush "$IPSET_NAME" 2>/dev/null
-        ipset destroy "$IPSET_NAME" 2>/dev/null
-        rm -f "$OWNED_IPSET_FLAG"
-    fi
+    # Destroy every geo ipset WE created — the registry holds their exact names (base id-1 set
+    # only if we owned it, plus all per-policy ${IPSET_NAME}<id> sets, and any OLD names still
+    # listed after an awg_ipset_name rename). Exact-name teardown means a pre-existing/shared set
+    # or an unrelated tool's set under a colliding base name is never touched.
+    destroy_owned_sets
 
     # Remove dnsmasq config
     rm -f "$DNSMASQ_AWG_CONF"
@@ -925,128 +1149,100 @@ setup_firewall(){
     [ -z "$default_policy" ] && default_policy="direct"
     local has_geo=false
 
-    # --- Create ipset ---
+    # --- Create + populate one ipset PER geo policy ---
     # Old routers (e.g. RT-AC68U) don't autoload the ip_set kernel modules, and the
     # in-kernel auto-load needs modprobe — absent from the httpd/service-event PATH
     # context — so `ipset create` fails there. Load them explicitly (no-op if already
     # loaded or built-in). xt_set backs the `-m set --match-set` mangle rules below.
-    local m ipset_err
+    local m
     for m in ip_set ip_set_hash_net xt_set; do
         modprobe "$m" 2>/dev/null
     done
-    # Set default timeout 24h: governs domain entries added by dnsmasq (GeoSite/custom
-    # domains). They MUST expire — domains (CDNs) rotate IPs; dnsmasq re-adds the
-    # current IP on each resolution (refreshing it), so active domains stay while stale
-    # IPs age out instead of accumulating forever. Static GeoIP/custom-IP entries are
-    # added with an explicit "timeout 0" (permanent), overriding this default.
-    # Capture stderr instead of masking it, so the real kernel error (e.g. "set type not
-    # supported" when ip_set_hash_net is missing) lands in the UI log rather than a bare
-    # "creation failed". The `ipset list` guard keeps a benign "set with the same name
-    # already exists" on re-run from being logged as an error.
-    # RAM-aware cap: on low-memory routers (RT-AC68U etc., 256MB) the big lists (antifilter
-    # ipresolve ~154K) can exhaust kernel memory and hang the router. Scale the set ceiling
-    # to total RAM; adds past it fail harmlessly (ipset restore -!), trading some geo
-    # coverage for not locking up. Logged, not silent.
-    local maxelem="$IPSET_MAXELEM" memkb
+    # Default timeout 24h: governs domain entries added by dnsmasq (GeoSite/custom domains).
+    # They MUST expire — CDNs rotate IPs; dnsmasq re-adds the current IP on each resolution
+    # (refreshing it), so active domains stay while stale IPs age out. Static GeoIP/custom-IP
+    # entries are added with explicit "timeout 0" (permanent), overriding this default.
+    # RAM-aware TOTAL budget: on low-memory routers (RT-AC68U etc., 256MB) the big lists
+    # (antifilter ipresolve ~154K) can exhaust kernel memory and hang the router. With N geo
+    # policies each owning a set, divide the budget by N (geo_maxelem) so they can't sum past
+    # the box's ceiling. Adds past a set's cap fail harmlessly (ipset restore -!).
+    local total_max="$IPSET_MAXELEM" memkb
     memkb=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
     if [ -n "$memkb" ] && [ "$memkb" -lt 393216 ]; then
-        maxelem=98304
-        log_msg "Low RAM (${memkb}KB total): ipset capped at $maxelem (was $IPSET_MAXELEM) to avoid OOM"
+        total_max=98304
+        log_msg "Low RAM (${memkb}KB total): geo ipset budget capped at $total_max (was $IPSET_MAXELEM) to avoid OOM"
     fi
-    # If we previously created a set under a DIFFERENT name (the name was just changed), that
-    # old set is now orphaned in the kernel — destroy it so we don't leak ipsets.
-    local prev_owned; prev_owned=$(cat "$OWNED_IPSET_FLAG" 2>/dev/null)
-    if [ -n "$prev_owned" ] && [ "$prev_owned" != "$IPSET_NAME" ]; then
-        ipset flush "$prev_owned" 2>/dev/null
-        ipset destroy "$prev_owned" 2>/dev/null
-        log_msg "Removed orphaned geo ipset '$prev_owned' (name changed to '$IPSET_NAME')"
-        rm -f "$OWNED_IPSET_FLAG"
-    fi
-    ipset_err=$(ipset create "$IPSET_NAME" hash:net family inet hashsize 4096 maxelem "$maxelem" timeout 86400 2>&1)
-    local create_rc=$?
-    # Record ownership only if WE created it (rc 0). A set that already existed was made by
-    # another tool/connection — it's shared, so we must never destroy it later.
-    [ "$create_rc" -eq 0 ] && echo "$IPSET_NAME" > "$OWNED_IPSET_FLAG"
-    if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
-        log_msg "ERROR: ipset $IPSET_NAME creation failed, geo routing disabled${ipset_err:+: $ipset_err}"
-        has_geo=false
-    fi
-    # Did the set actually come up? Gate both the mangle match-set rules AND the dnsmasq
-    # ipset= rules on this single check so the two never disagree.
-    local has_set=false
-    ipset list "$IPSET_NAME" >/dev/null 2>&1 && has_set=true
+    local maxelem; maxelem=$(geo_maxelem "$total_max")
 
-    # --- Load selected GeoIP subnets into ipset (bulk) ---
-    # Only services in the UI field (default GEOIP_SERVICES) are loaded; prune first so
-    # a service removed from the field also has its .cidr file deleted, not just unrouted.
+    # NOTE: cleanup_firewall (called at the top of setup_firewall) already destroyed every set we
+    # owned via the registry — including the OLD names after an awg_ipset_name rename — so there's
+    # no orphaned "<oldbase>*" family to chase here. We just (re)create + re-register below.
+    # GC per-policy content files for policies deleted in the UI before (re)building active ones.
+    prune_orphan_policies
+
+    # Sync the SHARED pool to the union of all policies' selections (drop de-selected files) and
+    # extract the union of GeoSite categories once. Per-policy loading below picks each subset.
+    migrate_geocustom_layout   # one-time: drop pre-shared-pool flat usercustom_*/custom.txt
     prune_geoip
-    local ip_count=0 gsvc gf
-    for gsvc in $(selected_geoip); do
-        gf="$GEO_DIR/geoip/v2fly_${gsvc}.cidr"
-        [ -f "$gf" ] || continue
-        ipset_load_file "$gf" "$IPSET_NAME"
-        ip_count=$((ip_count + $(wc -l < "$gf")))
-    done
-
-    # --- Load selected antifilter.download IP/CIDR lists into the same ipset (bulk) ---
-    # Domain lists (community_domains) are skipped here; their .lst file lives in
-    # $GEO_DIR/domains/ and is picked up by the dnsmasq builder loop below.
     prune_antifilter
-    local akey af
-    for akey in $(selected_antifilter); do
-        antifilter_is_domain "$akey" && continue
-        af="$GEO_DIR/antifilter/af_${akey}.cidr"
-        [ -f "$af" ] || continue
-        ipset_load_file "$af" "$IPSET_NAME"
-        ip_count=$((ip_count + $(wc -l < "$af")))
-    done
+    prune_custom_urls
+    build_geosite_domains
 
-    # Check ipset fill level
-    local ipset_entries
-    ipset_entries=$(ipset list "$IPSET_NAME" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
-    [ -n "$ipset_entries" ] && [ "$ipset_entries" -ge "$maxelem" ] 2>/dev/null && \
-        log_msg "WARNING: ipset $IPSET_NAME full ($ipset_entries/$maxelem), some geo routes may be missing (raise RAM or trim lists)"
+    local ip_count=0 gid gset
+    for gid in $(geo_ids); do
+        gset=$(geo_ipset "$gid")
+        local _cerr _crc
+        _cerr=$(ipset create "$gset" hash:net family inet hashsize 4096 maxelem "$maxelem" timeout 86400 2>&1)
+        _crc=$?
+        # Register the set as ours ONLY if WE created it (rc 0). cleanup destroyed + cleared the
+        # registry first, so each build re-registers exactly the sets it creates.
+        [ "$_crc" -eq 0 ] && register_owned_set "$gset"
+        if ! ipset list "$gset" >/dev/null 2>&1; then
+            log_msg "ERROR: ipset $gset creation failed, geo policy $gid disabled${_cerr:+: $_cerr}"
+            continue
+        fi
+        # id>=2 names are derived from our base; if one already existed (create rc!=0, so it's
+        # not in our registry) it belongs to another tool — skip the policy rather than load OUR
+        # entries into a foreign set. id 1 keeps the documented shared-base behavior.
+        if ! geo_set_ours "$gid" "$gset"; then
+            log_msg "WARNING: ipset $gset pre-exists and isn't ours — skipping geo policy $gid (foreign-name collision)"
+            continue
+        fi
 
-    # --- Extract v2fly domains from downloaded database ---
-    local geo_v2fly=$(get_setting awg_geo_v2fly)
-    rm -f "$GEO_DIR/domains/v2fly_"*.txt   # always clear stale category files (handles a cleared field)
-    if [ -n "$geo_v2fly" ] && [ -f "$GEO_DIR/v2fly_all.yml" ]; then
-        for svc in $(echo "$geo_v2fly" | tr ',' ' '); do
-            svc=$(echo "$svc" | tr -d ' ')
-            [ -z "$svc" ] && continue
-            awk -v cat="$svc" '
-                /^  - name: / { if(found) exit; name=$NF; found=(name==cat); next }
-                found && /^      - "domain:/ { sub(/.*"domain:/,""); sub(/".*/,""); print }
-                found && /^      - "full:/ { sub(/.*"full:/,""); sub(/".*/,""); print }
-            ' "$GEO_DIR/v2fly_all.yml" > "$GEO_DIR/domains/v2fly_${svc}.txt"
+        # Load THIS policy's selected subset from the shared pool into its own set.
+        local _svc _f _ak _uk _cip
+        for _svc in $(selected_geoip "$gid"); do
+            _f="$GEO_DIR/geoip/v2fly_${_svc}.cidr"; [ -f "$_f" ] || continue
+            ipset_load_file "$_f" "$gset"; ip_count=$((ip_count + $(wc -l < "$_f")))
         done
-    fi
-
-    # --- Save custom domains/IPs ---
-    local custom_domains=$(get_setting awg_geo_custom_domains)
-    rm -f "$GEO_DIR/domains/custom.txt"   # clear stale file when the field is emptied
-    if [ -n "$custom_domains" ]; then
-        mkdir -p "$GEO_DIR/domains"
-        echo "$custom_domains" | tr ',' '\n' > "$GEO_DIR/domains/custom.txt"
-    fi
-    local custom_ips=$(get_setting awg_geo_custom_ips)
-    if [ -n "$custom_ips" ]; then
-        mkdir -p "$GEO_DIR/geoip"
-        echo "$custom_ips" | tr ',' '\n' | while read -r cidr; do
-            cidr=$(echo "$cidr" | tr -d ' \r')
-            [ -n "$cidr" ] && ipset add "$IPSET_NAME" "$cidr" timeout 0 2>/dev/null
+        for _ak in $(selected_antifilter "$gid"); do
+            antifilter_is_domain "$_ak" && continue
+            _f="$GEO_DIR/antifilter/af_${_ak}.cidr"; [ -f "$_f" ] || continue
+            ipset_load_file "$_f" "$gset"; ip_count=$((ip_count + $(wc -l < "$_f")))
         done
-    fi
-
-    # --- GeoCustom: regenerate pasted-file lists, then load all user CIDR files into the ipset.
-    # Pasted files (usercustom_*) are rebuilt here; URL sources (userurl_*) are produced by the
-    # geo download. Their domain files (domains/*.txt) are picked up by the dnsmasq loop below.
-    apply_custom_geo
-    local ucf
-    for ucf in "$GEO_DIR"/geoip/usercustom_*.cidr "$GEO_DIR"/geoip/userurl_*.cidr; do
-        [ -f "$ucf" ] || continue
-        ipset_load_file "$ucf" "$IPSET_NAME"
-        ip_count=$((ip_count + $(wc -l < "$ucf")))
+        # Custom URL CIDRs this policy references (shared files keyed by URL hash).
+        for _uk in $(policy_url_keys "$gid"); do
+            _f="$GEO_DIR/geoip/userurl_${_uk}.cidr"; [ -f "$_f" ] || continue
+            ipset_load_file "$_f" "$gset"; ip_count=$((ip_count + $(wc -l < "$_f")))
+        done
+        # Custom IPs (field) -> permanent entries.
+        for _cip in $(get_setting "$(geo_key "$gid" custom_ips)" | tr ',' ' '); do
+            _cip=$(echo "$_cip" | tr -d ' \r')
+            [ -n "$_cip" ] && ipset add "$gset" "$_cip" timeout 0 2>/dev/null
+        done
+        # GeoCustom pasted files (per-policy content): regenerate, then load this policy's CIDRs.
+        apply_custom_geo "$gid"
+        for _f in "$GEO_DIR"/geoip/usercustom_p${gid}_*.cidr; do
+            [ -f "$_f" ] || continue
+            ipset_load_file "$_f" "$gset"; ip_count=$((ip_count + $(wc -l < "$_f")))
+        done
+        # This policy's own custom-domains file (consumed by the dnsmasq builder below).
+        build_custom_domains "$gid"
+        # Fill-level warning (per set).
+        local _ent
+        _ent=$(ipset list "$gset" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
+        [ -n "$_ent" ] && [ "$_ent" -ge "$maxelem" ] 2>/dev/null && \
+            log_msg "WARNING: ipset $gset full ($_ent/$maxelem) for geo policy $gid — raise RAM or trim its lists"
     done
 
     # --- Build dnsmasq config for domain-based routing ---
@@ -1063,35 +1259,51 @@ setup_firewall(){
     [ "$block_ipv6" = "1" ] && { [ "$default_policy" != "direct" ] || geo_in_use; } && want_aaaa=1
     echo "# AmneziaWG domain routing - auto-generated" > "$DNSMASQ_AWG_CONF"
     [ "$want_aaaa" = 1 ] && echo "filter-AAAA" >> "$DNSMASQ_AWG_CONF"
-    # Domain->ipset rules only work if the set actually exists. Mirror the mangle vpn_geo
-    # guard (which re-checks `ipset list`) so a failed ipset create doesn't leave dnsmasq
-    # emitting ipset=/dom/awg_dst lines that error on every lookup and silently kill geo.
-    if [ "$has_set" = true ]; then
-    for f in "$GEO_DIR"/domains/*.txt "$GEO_DIR"/domains/*.lst; do
-        [ ! -f "$f" ] && continue
-        local chunk_line="ipset=/"
-        local chunk_count=0
-        while read -r domain; do
-            domain=$(echo "$domain" | tr -d ' \r')
-            [ -z "$domain" ] && continue
-            echo "$domain" | grep -q '^#' && continue
-            domain=$(echo "$domain" | sed 's/^\.//;s/:@[^ ]*$//')
-            echo "$domain" | grep -q '[^a-zA-Z0-9._-]' && continue
-            chunk_line="${chunk_line}${domain}/"
-            chunk_count=$((chunk_count + 1))
-            domain_count=$((domain_count + 1))
-            if [ $chunk_count -ge 20 ]; then
-                echo "${chunk_line}${IPSET_NAME}" >> "$DNSMASQ_AWG_CONF"
-                chunk_line="ipset=/"
-                chunk_count=0
-            fi
-        done < "$f"
-        [ $chunk_count -gt 0 ] && echo "${chunk_line}${IPSET_NAME}" >> "$DNSMASQ_AWG_CONF"
+    # Per policy: emit ITS selected domains (from the shared pool) into ITS OWN ipset
+    # (ipset=/dom.../awg_dst<id>), so a domain only routes for devices on that policy. The exact
+    # files a policy uses are enumerated from its selection (NOT a dir glob), since the pool is
+    # shared. Domain->ipset rules only work if the set exists, so re-check `ipset list` per
+    # policy (mirrors the per-device mangle vpn_geo guard).
+    local dgid dgset f chunk_line chunk_count domain _cat _uk _dfiles
+    for dgid in $(geo_ids); do
+        dgset=$(geo_ipset "$dgid")
+        # Build the explicit list of this policy's domain files in the shared pool.
+        _dfiles=""
+        for _cat in $(get_setting "$(geo_key "$dgid" v2fly)" | tr ',' ' '); do
+            _cat=$(echo "$_cat" | sed 's/[^A-Za-z0-9_.-]//g'); [ -z "$_cat" ] && continue
+            _dfiles="$_dfiles $GEO_DIR/domains/v2fly_${_cat}.txt"
+        done
+        _dfiles="$_dfiles $GEO_DIR/domains/custom_p${dgid}.txt"
+        case " $(selected_antifilter "$dgid") " in *" community_domains "*) _dfiles="$_dfiles $GEO_DIR/domains/antifilter_community_domains.lst" ;; esac
+        for _uk in $(policy_url_keys "$dgid"); do _dfiles="$_dfiles $GEO_DIR/domains/userurl_${_uk}.txt"; done
+        for f in "$GEO_DIR"/domains/usercustom_p${dgid}_*.txt; do [ -f "$f" ] && _dfiles="$_dfiles $f"; done
+
+        if ! ipset list "$dgset" >/dev/null 2>&1 || ! geo_set_ours "$dgid" "$dgset"; then
+            for f in $_dfiles; do [ -f "$f" ] && { log_msg "domain-geo disabled for policy $dgid: ipset $dgset unavailable (domains configured but not routable)"; break; }; done
+            continue
+        fi
+        for f in $_dfiles; do
+            [ -f "$f" ] || continue
+            chunk_line="ipset=/"
+            chunk_count=0
+            while read -r domain; do
+                domain=$(echo "$domain" | tr -d ' \r')
+                [ -z "$domain" ] && continue
+                echo "$domain" | grep -q '^#' && continue
+                domain=$(echo "$domain" | sed 's/^\.//;s/:@[^ ]*$//')
+                echo "$domain" | grep -q '[^a-zA-Z0-9._-]' && continue
+                chunk_line="${chunk_line}${domain}/"
+                chunk_count=$((chunk_count + 1))
+                domain_count=$((domain_count + 1))
+                if [ $chunk_count -ge 20 ]; then
+                    echo "${chunk_line}${dgset}" >> "$DNSMASQ_AWG_CONF"
+                    chunk_line="ipset=/"
+                    chunk_count=0
+                fi
+            done < "$f"
+            [ $chunk_count -gt 0 ] && echo "${chunk_line}${dgset}" >> "$DNSMASQ_AWG_CONF"
+        done
     done
-    else
-        ls "$GEO_DIR"/domains/*.txt "$GEO_DIR"/domains/*.lst >/dev/null 2>&1 && \
-            log_msg "domain-geo disabled: ipset $IPSET_NAME unavailable (domains configured but not routable)"
-    fi
 
     # Add conf-file include to dnsmasq (idempotent) — also when only filter-AAAA is set
     if [ $domain_count -gt 0 ] || [ "$want_aaaa" = 1 ]; then
@@ -1155,19 +1367,24 @@ setup_firewall(){
                     fi
                     log_msg "Route: $dev_id ($name) -> VPN (all)"
                     ;;
-                vpn_geo)
-                    if ipset list "$IPSET_NAME" >/dev/null 2>&1; then
+                vpn_geo|vpn_geo_*)
+                    # Match against THIS device's geo policy ipset; still mark 0x100 -> table
+                    # RT_TABLE (same tunnel for every policy). vpn_geo -> id 1, vpn_geo_<id> -> id.
+                    local pgid pgset
+                    pgid=$(geo_policy_of_ref "$policy")
+                    pgset=$(geo_ipset "$pgid")
+                    if ipset list "$pgset" >/dev/null 2>&1 && geo_set_ours "$pgid" "$pgset"; then
                         if [ -n "$mac" ]; then
                             iptables -t mangle -A "$AWG_CHAIN" -m mac --mac-source "$mac" \
-                                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
+                                -m set --match-set "$pgset" dst -j MARK --set-mark "$FWMARK"
                         else
                             iptables -t mangle -A "$AWG_CHAIN" -s "$dev_id" \
-                                -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
+                                -m set --match-set "$pgset" dst -j MARK --set-mark "$FWMARK"
                         fi
                         has_geo=true
-                        log_msg "Route: $dev_id ($name) -> VPN (geo)"
+                        log_msg "Route: $dev_id ($name) -> VPN (geo $pgid)"
                     else
-                        log_msg "WARNING: ipset missing, skipping geo for $dev_id ($name)"
+                        log_msg "WARNING: ipset $pgset missing, skipping geo policy $pgid for $dev_id ($name)"
                     fi
                     ;;
             esac
@@ -1180,14 +1397,17 @@ setup_firewall(){
             iptables -t mangle -A "$AWG_CHAIN" -j MARK --set-mark "$FWMARK"
             log_msg "Default: all -> VPN"
             ;;
-        vpn_geo)
-            if ipset list "$IPSET_NAME" >/dev/null 2>&1; then
+        vpn_geo|vpn_geo_*)
+            local dpgid dpgset
+            dpgid=$(geo_policy_of_ref "$default_policy")
+            dpgset=$(geo_ipset "$dpgid")
+            if ipset list "$dpgset" >/dev/null 2>&1 && geo_set_ours "$dpgid" "$dpgset"; then
                 iptables -t mangle -A "$AWG_CHAIN" \
-                    -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$FWMARK"
+                    -m set --match-set "$dpgset" dst -j MARK --set-mark "$FWMARK"
                 has_geo=true
-                log_msg "Default: geo -> VPN"
+                log_msg "Default: geo $dpgid -> VPN"
             else
-                log_msg "WARNING: ipset missing, geo default policy not applied"
+                log_msg "WARNING: ipset $dpgset missing, geo default policy not applied"
             fi
             ;;
         direct|*)
@@ -1324,11 +1544,14 @@ update_geo_lists(){
     download_all_geo
 }
 
-# Is geo routing actually configured (so geo lists are worth downloading)?
+# Is geo routing actually configured for ANY policy (so geo lists are worth downloading)?
 geo_in_use(){
     case "$(get_setting awg_default_policy)" in *geo*) return 0 ;; esac
     case "$(get_setting awg_clients)" in *vpn_geo*) return 0 ;; esac
-    [ -n "$(get_setting awg_geo_v2fly)$(get_setting awg_geo_v2fly_ip)$(get_setting awg_geo_custom_domains)$(get_setting awg_geo_custom_ips)$(get_setting awg_geo_custom_files)$(get_setting awg_geo_custom_urls)$(get_setting awg_antifilter_lists)" ] && return 0
+    local id
+    for id in $(geo_ids); do
+        [ -n "$(get_setting "$(geo_key "$id" v2fly)")$(get_setting "$(geo_key "$id" v2fly_ip)")$(get_setting "$(geo_key "$id" custom_domains)")$(get_setting "$(geo_key "$id" custom_ips)")$(get_setting "$(geo_key "$id" custom_files)")$(get_setting "$(geo_key "$id" custom_urls)")$(get_setting "$(geo_key "$id" antifilter_lists)")" ] && return 0
+    done
     return 1
 }
 
@@ -1337,41 +1560,19 @@ geo_in_use(){
 # Runs in the background so Apply/Force Apply/update return promptly; the log shows
 # progress and setup_firewall is re-applied afterwards.
 ensure_geo(){
-    prune_geoip   # delete .cidr of services removed from the field (sync on Apply/update)
-    prune_antifilter   # likewise for de-selected antifilter lists
-    prune_custom_urls "$(get_setting awg_geo_custom_urls | base64 -d 2>/dev/null)"   # drop removed URL sources
+    # Sync the shared pool to the UNION of all policies' selections (drop de-selected files),
+    # and GC sets/files of deleted policies.
+    prune_geoip
+    prune_antifilter
+    prune_custom_urls
+    prune_orphan_policies
     geo_in_use || return 0
-    # Collect ONLY what's missing — don't re-download lists that are already present
-    # (adding one GeoIP service shouldn't re-fetch the others or the big v2fly DB).
-    local need_svcs="" svc
-    for svc in $(selected_geoip); do
-        [ -f "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] || need_svcs="$need_svcs $svc"
-    done
-    local need_yml=0
-    [ -n "$(get_setting awg_geo_v2fly)" ] && [ ! -f "$GEO_DIR/v2fly_all.yml" ] && need_yml=1
-    local need_af="" af_key
-    for af_key in $(selected_antifilter); do
-        if antifilter_is_domain "$af_key"; then
-            [ -f "$GEO_DIR/domains/antifilter_${af_key}.lst" ] || need_af="$need_af $af_key"
-        else
-            [ -f "$GEO_DIR/antifilter/af_${af_key}.cidr" ] || need_af="$need_af $af_key"
-        fi
-    done
-    # GeoCustom URL sources: need a download if any configured URL has neither output file yet.
-    local need_urls=0 cu_urls cu_url cu_key
-    cu_urls=$(get_setting awg_geo_custom_urls | base64 -d 2>/dev/null)
-    if [ -n "$cu_urls" ]; then
-        set -f
-        for cu_url in $cu_urls; do
-            cu_url=$(echo "$cu_url" | tr -d ' \r')
-            [ -z "$cu_url" ] && continue
-            case "$cu_url" in http://*|https://*) ;; *) continue ;; esac
-            cu_key=$(echo "$cu_url" | sha256sum | awk '{print $1}' | cut -c1-16)
-            [ ! -f "$GEO_DIR/domains/userurl_${cu_key}.txt" ] && [ ! -f "$GEO_DIR/geoip/userurl_${cu_key}.cidr" ] && need_urls=1
-        done
-        set +f
-    fi
-    [ -z "$need_svcs" ] && [ "$need_yml" = 0 ] && [ -z "$need_af" ] && [ "$need_urls" = 0 ] && return 0
+    # Collect ONLY what's missing across the union — adding one GeoIP service to one tab
+    # shouldn't re-fetch the others or the big shared v2fly DB.
+    local need=0 need_yml=0
+    geo_any_pending && need=1
+    [ -n "$(geo_union_geosite)" ] && [ ! -f "$GEO_DIR/v2fly_all.yml" ] && need_yml=1
+    [ "$need" = 0 ] && [ "$need_yml" = 0 ] && return 0
     # Single-flight: only one background geo download at a time. Without this, a double
     # Apply/SaveConf (or Apply + update) fired ensure_geo twice and the old lockless "( ) &"
     # ran two download loops in lockstep — minutes of duplicate failing fetches plus two
@@ -1393,19 +1594,10 @@ ensure_geo(){
     log_msg "Downloading missing geo lists in background..."
     (
         trap 'rm -rf "$GEOLOCK"' EXIT INT TERM
-        mkdir -p "$GEO_DIR/geoip" "$GEO_DIR/domains" "$GEO_DIR/antifilter"
-        for svc in $need_svcs; do
-            log_msg "GeoIP: downloading $svc..."
-            download_geoip_service "$svc" || log_msg "WARNING: GeoIP $svc failed"
-            update_status
-        done
+        # Shared GeoSite DB first (one download feeds every policy's category extraction),
+        # then the missing shared files across the union of all policies.
         [ "$need_yml" = 1 ] && download_geosite
-        for af_key in $need_af; do
-            log_msg "Antifilter: downloading $af_key..."
-            download_antifilter_list "$af_key" || log_msg "WARNING: Antifilter $af_key failed"
-            update_status
-        done
-        [ "$need_urls" = 1 ] && download_custom_urls
+        geo_fetch_missing
         # Re-apply under the operation lock so this background rebuild can't race
         # do_start/do_stop/do_firewall_restart (all of which hold LOCKDIR). A full
         # setup_firewall is required here (not the cheap do_firewall_restart fast-path) so
@@ -1965,9 +2157,13 @@ EOF
     local clients_data=$(get_setting awg_clients | sed 's/"/\\"/g')
     local active_rules=$(ip rule show 2>/dev/null | grep -c "lookup $RT_TABLE\|fwmark $FWMARK")
 
-    local ipset_count=0
-    ipset list "$IPSET_NAME" -t 2>/dev/null | grep -q "Number of entries" && \
-        ipset_count=$(ipset list "$IPSET_NAME" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
+    # Total entries across every per-policy geo ipset (awg_dst + awg_dst<id>).
+    local ipset_count=0 _gid _gset _n
+    for _gid in $(geo_ids); do
+        _gset=$(geo_ipset "$_gid")
+        _n=$(ipset list "$_gset" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
+        [ -n "$_n" ] && ipset_count=$((ipset_count + _n))
+    done
 
     local geo_domains=0
     # Count actual domains, NOT ipset= lines — dnsmasq packs ~18 domains per
@@ -2036,11 +2232,13 @@ analyze_device_policy(){
 }
 
 # Routing verdict for one destination IP under a policy: vpn | geo | direct.
-# vpn_geo asks the SAME ipset the mangle rule matches on, so this reproduces the kernel's choice.
+# vpn_geo[_<id>] asks the SAME per-policy ipset the mangle rule matches on, reproducing
+# the kernel's choice for THAT device's geo policy.
 analyze_verdict(){
     case "$1" in
         vpn_all) echo "vpn" ;;
-        vpn_geo) if ipset test "$IPSET_NAME" "$2" >/dev/null 2>&1; then echo "geo"; else echo "direct"; fi ;;
+        vpn_geo|vpn_geo_*)
+            if ipset test "$(geo_ipset "$(geo_policy_of_ref "$1")")" "$2" >/dev/null 2>&1; then echo "geo"; else echo "direct"; fi ;;
         *)       echo "direct" ;;
     esac
 }
@@ -2178,11 +2376,11 @@ analyze_loop(){
             firstip=$(printf '%s' "$ipscsv" | cut -d, -f1)
             case "$policy" in
                 vpn_all) verdict="vpn" ;;
-                vpn_geo)
+                vpn_geo|vpn_geo_*)
                     [ -z "$ipscsv" ] && continue   # not resolved yet — retry next poll
                     verdict="direct"
                     for one in $(printf '%s' "$ipscsv" | tr ',' ' '); do
-                        if ipset test "$IPSET_NAME" "$one" >/dev/null 2>&1; then verdict="geo"; break; fi
+                        if ipset test "$(geo_ipset "$(geo_policy_of_ref "$policy")")" "$one" >/dev/null 2>&1; then verdict="geo"; break; fi
                     done ;;
                 *) verdict="direct" ;;
             esac
