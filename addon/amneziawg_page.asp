@@ -422,6 +422,8 @@ en: {
     RULES_DOMAINS: "{0} domains",
     ACTIVE_PREFIX: "Active: ",
     NO_RULES: "no rules",
+    TH_GEO_ACTIVE: "Active (all policies)",
+    HINT_GEO_ACTIVE: "Totals across all geo policies (routing rules, IP ranges, domains).",
     // ---- coexist warning (innerHTML) ----
     COEX_STEP_POLICY: "<li>Change the <b>Default policy</b> from <b>«VPN — all traffic»</b> to <b>«Direct»</b> or <b>«VPN — Geo only»</b> — otherwise routing will take all traffic away from {0}.</li>",
     COEX_STEP_DNS: "<li>Enable <b>«Compatibility mode»</b> — so intercepting :53 doesn't conflict with {0}.</li>",
@@ -737,6 +739,8 @@ ru: {
     RULES_DOMAINS: "{0} доменов",
     ACTIVE_PREFIX: "Активно: ",
     NO_RULES: "нет правил",
+    TH_GEO_ACTIVE: "Активно (все политики)",
+    HINT_GEO_ACTIVE: "Суммарно по всем гео-политикам (правила маршрутизации, диапазоны IP, домены).",
     // ---- coexist warning (innerHTML) ----
     COEX_STEP_POLICY: "<li>Смените <b>Политику по умолчанию</b> с <b>«VPN — весь трафик»</b> на <b>«Напрямую»</b> или <b>«VPN — только Geo»</b> — иначе маршрутизация заберёт у {0} весь трафик.</li>",
     COEX_STEP_DNS: "<li>Включите <b>«Режим совместимости»</b> — чтобы перехват :53 не конфликтовал с {0}.</li>",
@@ -1935,21 +1939,16 @@ function geoRenderTabs(){
     bar.innerHTML = h;
     geoRenderStats();
 }
-// Per-tab stats line (echoes the "Активно: …" route-info format), one row per policy:
-// "<name>: X диапазонов IP · Y доменов". Numbers come from the status poll (awgGeoStats,
-// keyed by policy id); names come from the client-side model.
+// Stats for the ACTIVE tab only (echoes the "Активно: …" route-info format):
+// "X диапазонов IP · Y доменов". Numbers come from the status poll (awgGeoStats, keyed by
+// policy id); switching tabs re-renders this for the newly-active policy.
 var awgGeoStats = {};
 function geoRenderStats(){
     var box = document.getElementById('geo_stats');
     if(!box) return;
-    var h = '';
-    for(var i=0;i<geoPolicies.length;i++){
-        var p = geoPolicies[i];
-        var st = awgGeoStats[String(p.id)] || {};
-        var line = T('RULES_IPRANGES', st.ip || 0) + ' · ' + T('RULES_DOMAINS', st.dom || 0);
-        h += '<div><b>' + escHtml(geoDecodeName(p.name)) + ':</b> ' + escHtml(line) + '</div>';
-    }
-    box.innerHTML = h;
+    if(geoActiveIdx < 0 || geoActiveIdx >= geoPolicies.length){ box.textContent = ''; return; }
+    var st = awgGeoStats[String(geoPolicies[geoActiveIdx].id)] || {};
+    box.textContent = T('RULES_IPRANGES', st.ip || 0) + ' · ' + T('RULES_DOMAINS', st.dom || 0);
 }
 function geoSwitchTo(idx){
     if(idx === geoActiveIdx || idx < 0 || idx >= geoPolicies.length) return;
@@ -2954,17 +2953,20 @@ function updateStatusUI(s){
 
     // on-page log is polled in real time via awgRefreshLog() (not from s.log)
 
-    // Route info
+    // Route info — aggregate totals across ALL geo policies, in their own row (NOT tied to the
+    // default policy). The row label provides the heading, so no inline "Active:" prefix here.
     var rulesEl = document.getElementById('awg_active_rules');
+    var rulesRow = document.getElementById('awg_active_row');
     if(s.running){
         var infoParts = [];
         if(s.active_rules > 0) infoParts.push(T('RULES_ROUTING', s.active_rules));
         if(s.ipset_count > 0) infoParts.push(T('RULES_IPRANGES', s.ipset_count));
         if(s.geo_domains > 0) infoParts.push(T('RULES_DOMAINS', s.geo_domains));
-        rulesEl.innerHTML = escHtml(T('ACTIVE_PREFIX')) + (infoParts.join(' &middot; ') || escHtml(T('NO_RULES')));
-        rulesEl.style.color = '#93E7FF';
+        rulesEl.innerHTML = (infoParts.join(' &middot; ') || escHtml(T('NO_RULES')));
+        if(rulesRow) rulesRow.style.display = '';
     } else {
         rulesEl.innerHTML = '';
+        if(rulesRow) rulesRow.style.display = 'none';
     }
     // Per-tab geo stats (from the backend's per-policy breakdown).
     awgGeoStats = (s && s.geo_stats) || {};
@@ -3652,7 +3654,13 @@ function initAutocompleteIp(){
                         </select>
                         <div class="awg-hint" data-i18n="HINT_DEFAULT_POLICY">Applied to devices that are not in the list below.</div>
                         <div class="awg-hint" data-i18n="HINT_GEO_DNS_DEVICE">Geo by domains only works if the device uses the router as its DNS (configured in the Geo block below).</div>
-                        <div id="awg_active_rules" style="margin-top:6px; font-size:11px; color:#93E7FF;"></div>
+                    </td>
+                </tr>
+                <tr id="awg_active_row" style="display:none;">
+                    <th data-i18n="TH_GEO_ACTIVE">Active (all policies)</th>
+                    <td>
+                        <div id="awg_active_rules" style="font-size:11px; color:#93E7FF;"></div>
+                        <div class="awg-hint" data-i18n="HINT_GEO_ACTIVE">Totals across all geo policies (routing rules, IP ranges, domains).</div>
                     </td>
                 </tr>
                 <tr>
