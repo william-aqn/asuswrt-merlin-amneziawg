@@ -38,10 +38,14 @@ See [CHANGELOG.md](CHANGELOG.md) for the full changelog.
 - **Userspace daemon** -- based on [amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go), no kernel module needed
 - **Web UI** -- ROG-styled addon page integrated into router admin panel (VPN > AmneziaWG)
 - **Config import** -- upload `.conf` file exported from Amnezia VPN client
-- **Per-device routing** -- assign VPN policy per device: `VPN All`, `VPN Geo`, `Direct`
+- **Per-device routing** -- assign a policy per device: `VPN: all traffic`, any geo policy, `Direct`
+- **Multiple geo policies** -- independent geo policies as tabs (up to 8); each with its own GeoIP / GeoSite / GeoCustom / Antifilter set, chosen per device. Shared lists download once into a common pool
+- **Policy mode** -- *include* (route the lists via VPN) or *exclude* (route everything via VPN **except** the lists)
+- **Pointwise exclusions** -- own domains/IPs/files/URLs carved out of a policy (or, in exclude mode, carved back in)
 - **GeoIP service routing** -- IP ranges for Telegram, Google, Netflix, Twitter, etc. via [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip)
 - **GeoSite domain routing** -- domain lists via [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) + dnsmasq ipset
-- **Custom domains & IPs** -- manual domain and CIDR entries
+- **GeoCustom — own entries** -- manual domains, CIDR subnets, own files and URL sources
+- **Traffic analyzer** -- per device, see which domains/connections go via VPN vs direct; add captured items to a chosen geo policy in one click
 - **DNS interception** -- forces DNS through dnsmasq, blocks DoH/DoT for reliable geo routing
 - **MSS clamping** -- automatic TCP MSS fix for tunnel traffic
 - **Auto-update** -- daily cron for geo list refresh
@@ -119,11 +123,30 @@ ssh admin@<router-ip>
 
 ### Routing policies
 
+Each device in **Device Rules** picks a policy:
+
 | Policy | Description |
 |--------|-------------|
-| **VPN All** | All device traffic goes through VPN |
-| **VPN Geo** | Only traffic to GeoIP/GeoSite destinations goes through VPN |
+| **VPN: all traffic** | All device traffic goes through VPN |
+| **VPN: \<geo policy name\>** | Routed by the chosen geo policy (see below). One entry per geo policy you create |
 | **Direct** | Device bypasses VPN entirely |
+
+### Geo policies (tabs)
+
+You can create several geo policies (up to 8) as **tabs** ("+ Add geo policy"). Each tab has its own independent set of sources: **GeoIP**, **GeoSite**, **GeoCustom** (own domains/IPs/files/URLs) and **Geo Antifilter**. Which device uses which policy is set in Device Rules.
+
+All policies route into **one** tunnel — only *which* destinations enter it differs (each policy has its own `ipset`). Identical lists across policies are downloaded and stored **once** (a shared pool); each policy's tunnel only gets what that policy selected. On low-RAM routers the total `ipset` budget is split across policies to avoid OOM.
+
+**Policy mode** — a switch at the top of each tab:
+
+| Mode | Behavior |
+|------|----------|
+| **Route lists via VPN** (include) | Only list matches go through the tunnel; everything else is direct |
+| **Lists go direct** (exclude) | The opposite: all the device's traffic goes through the tunnel **except** the lists |
+
+> Exclude mode pulls most traffic into the tunnel (like "all traffic", but with carve-outs) — mind this when coexisting with zapret/Xray/b4.
+
+**Pointwise exclusions** — a block at the bottom of each tab (own domains/IPs/subnets/files/URLs). Entries act as exceptions per the mode: in include mode they go **direct** (carved out of the VPN), in exclude mode they go **via VPN**. Handy when a broad list (e.g. a GeoSite category) pulls in more than you want.
 
 ### GeoIP Service Lists
 
@@ -145,10 +168,14 @@ youtube,google,discord,netflix,spotify,instagram
 
 Requires devices to use the router as DNS server. For iPhones: **Settings > Wi-Fi > (i) > DNS > Manual > router IP only**.
 
-### Custom entries
+### GeoCustom — own entries
 
-- **Custom Domains** -- comma-separated domains (e.g. `example.com,service.org`)
-- **Custom IPs** -- comma-separated IPs/CIDRs (e.g. `8.8.8.8,1.1.1.0/24`)
+- **Custom domains** -- comma/newline-separated domains (e.g. `example.com,service.org`)
+- **Custom IPs / subnets** -- comma-separated IPs/CIDRs (e.g. `8.8.8.8,1.1.1.0/24`)
+- **Custom files** -- named lists you can paste/edit in the UI or load from a file (domain → DNS, IP/subnet → ipset; lines starting with `#` are comments)
+- **URL sources** -- links to downloadable lists in the same format
+
+The same fields appear in the **Pointwise exclusions** block — there they act as exclusions (see [Geo policies](#geo-policies-tabs)).
 
 ## Building from source
 
@@ -230,7 +257,9 @@ opkg remove amneziawg
 ```
 Internet <-- awg0 (tunnel) <-- iptables mangle AWG chain <-- br0 (LAN devices)
                                         |
-                                ipset awg_dst (GeoIP CIDRs + DNS-resolved IPs)
+                            per-geo-policy ipset: awg_dst, awg_dst2, …
+                            (GeoIP/Antifilter CIDRs + DNS-resolved IPs; a policy
+                             with exclusions also gets its own awg_dst<id>_x)
                                         |
                                 fwmark 0x100 -> routing table 300 -> awg0
 ```
@@ -249,7 +278,7 @@ Internet <-- awg0 (tunnel) <-- iptables mangle AWG chain <-- br0 (LAN devices)
 
 A: Add `telegram` to GeoIP Service Lists. Telegram connects by IP, not DNS -- domain lists alone won't work.
 
-**Q: Sites don't open on iPhone with VPN Geo policy?**
+**Q: Sites don't open on iPhone with a geo policy?**
 
 A: iPhone uses encrypted DNS (DoH) which bypasses the router's dnsmasq. Set DNS manually: Settings > Wi-Fi > (i) > DNS > Manual > router IP only.
 
@@ -259,7 +288,7 @@ A: Restart the tunnel with a pause: `/jffs/addons/amneziawg/amneziawg.sh stop; s
 
 **Q: How to add a custom service by IP?**
 
-A: Add CIDR ranges in Custom IPs field, e.g. `149.154.160.0/20,91.108.4.0/22` for Telegram.
+A: Add CIDR ranges in the "Custom IPs / subnets" field (GeoCustom), e.g. `149.154.160.0/20,91.108.4.0/22` for Telegram.
 
 **Q: Can it run alongside zapret2 or Xray (XRAYUI)?**
 
