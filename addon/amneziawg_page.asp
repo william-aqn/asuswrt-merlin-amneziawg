@@ -471,7 +471,7 @@ en: {
     ACTIVE_PREFIX: "Active: ",
     NO_RULES: "no rules",
     TH_GEO_ACTIVE: "Active (all policies)",
-    HINT_GEO_ACTIVE: "Totals across all geo policies (routing rules, IP ranges, domains).",
+    HINT_GEO_ACTIVE: "Totals across all geo policies (routing rules, IP ranges, domains). The IP-range count is live and grows as domains resolve, so it can exceed the number logged right after Apply.",
     // ---- coexist warning (innerHTML) ----
     COEX_STEP_POLICY: "<li>Change the <b>Default policy</b> from <b>«VPN — all traffic»</b> to <b>«Direct»</b> or <b>«VPN — Geo only»</b> — otherwise routing will take all traffic away from {0}.</li>",
     COEX_STEP_DNS: "<li>Enable <b>«Compatibility mode»</b> — so intercepting :53 doesn't conflict with {0}.</li>",
@@ -792,7 +792,7 @@ ru: {
     ACTIVE_PREFIX: "Активно: ",
     NO_RULES: "нет правил",
     TH_GEO_ACTIVE: "Активно (все политики)",
-    HINT_GEO_ACTIVE: "Суммарно по всем гео-политикам (правила маршрутизации, диапазоны IP, домены).",
+    HINT_GEO_ACTIVE: "Суммарно по всем гео-политикам (правила маршрутизации, диапазоны IP, домены). Число диапазонов IP — живое: растёт по мере резолва доменов, поэтому может превышать значение в журнале сразу после применения.",
     // ---- coexist warning (innerHTML) ----
     COEX_STEP_POLICY: "<li>Смените <b>Политику по умолчанию</b> с <b>«VPN — весь трафик»</b> на <b>«Напрямую»</b> или <b>«VPN — только Geo»</b> — иначе маршрутизация заберёт у {0} весь трафик.</li>",
     COEX_STEP_DNS: "<li>Включите <b>«Режим совместимости»</b> — чтобы перехват :53 не конфликтовал с {0}.</li>",

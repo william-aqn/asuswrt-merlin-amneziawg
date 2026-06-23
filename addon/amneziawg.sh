@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.11"
+AWG_VERSION="1.2.12"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -194,6 +194,25 @@ geo_ipset_total(){
         [ -n "$_n" ] && total=$((total + _n))
     done
     echo "$total"
+}
+
+# Total domain->set memberships in the live dnsmasq conf, counting ONLY each policy's MAIN set
+# (the *_x exclusion sets are skipped — same convention geo_ipset_total uses for IPs and the per-tab
+# stats use for both, so the aggregate stays equal to the sum of the per-tab domain counts even when
+# a policy has exclusion domains). Per ipset= line: (domains = NF-2) * (how many of its comma-joined
+# sets are main policy sets), so a domain routed to N policies counts N times. Read from the conf
+# dnsmasq actually loaded (post --test gate), so the setup_firewall log and the status JSON always
+# report the same number. (The build-time $domain_count is UNIQUE domains and stays for the >0
+# gating; it deliberately differs when policies share domains — that's why the log used to read
+# 1082 against the UI's 1271.)
+geo_domain_total(){
+    [ -f "$DNSMASQ_AWG_CONF" ] || { echo 0; return; }
+    local _mains="" _gid
+    for _gid in $(geo_ids); do _mains="$_mains $(geo_ipset "$_gid")"; done
+    awk -F/ -v mains="$_mains" '
+        BEGIN{ k=split(mains,a," "); for(i=1;i<=k;i++) M[a[i]]=1 }
+        /^ipset=/{ n=split($NF,ss,","); m=0; for(i=1;i<=n;i++) if(ss[i] in M) m++; c+=(NF-2)*m }
+        END{ print c+0 }' "$DNSMASQ_AWG_CONF" 2>/dev/null
 }
 
 # Routing mode of a policy: "vpn" (include, default — route the policy's lists via VPN) or
@@ -1744,10 +1763,12 @@ setup_firewall(){
     # (awgsaveconf -> setup_firewall), which previously tore it down without re-adding it.
     setup_ipv6_block
 
-    # Report the authoritative live ipset entry count (matches the UI's "IP ranges"). The old
-    # build-time wc -l tally summed source-file lines and skipped the custom_ips field, so it
-    # under-reported the real set contents.
-    log_msg "Firewall configured: $(geo_ipset_total) IPs, $domain_count domains"
+    # Report the SAME metrics the UI's "Active (all policies)" row shows, via the shared helpers,
+    # so log and UI can't diverge: IPs = live entries summed across every policy set; domains =
+    # domain->set memberships (a domain shared by N policies counts N times — matches the UI's
+    # per-tab sum). NOTE the IP count here is a build-time snapshot (sets were just rebuilt, so it's
+    # ~static); the UI's IP count then grows as dnsmasq resolves domain rules and adds entries.
+    log_msg "Firewall configured: $(geo_ipset_total) IPs, $(geo_domain_total) domains"
 }
 
 save_clients(){
@@ -2403,14 +2424,10 @@ EOF
     # Total entries across every per-policy geo ipset (awg_dst + awg_dst<id>).
     local ipset_count=$(geo_ipset_total)
 
-    local geo_domains=0
-    # Count actual domains, NOT ipset= lines — dnsmasq packs ~18 domains per
-    # "ipset=/d1/d2/.../setA,setB" line, so grep -c (lines) under-reported ~18x. Per line the
-    # domains are the slash-separated fields minus "ipset=" and the trailing set-list (NF-2); the
-    # last field may now list several comma-joined sets (one domain routed to N policies), so the
-    # aggregate counts it once per set (NF-2)*n to stay equal to the sum of the per-tab counts.
-    [ -f "$DNSMASQ_AWG_CONF" ] && geo_domains=$(awk -F/ '/^ipset=/{n=split($NF,ss,",");c+=(NF-2)*n} END{print c+0}' "$DNSMASQ_AWG_CONF" 2>/dev/null)
-    [ -z "$geo_domains" ] && geo_domains=0
+    # Domain->main-set memberships (a domain shared by N policies counts N times) — equals the sum
+    # of the per-tab counts. Shared with the setup_firewall log via geo_domain_total so they can't
+    # drift; see that helper for the exact metric.
+    local geo_domains=$(geo_domain_total)
 
     # Per-policy geo stats {"<id>":{"ip":N,"dom":M},...} for the UI's per-tab breakdown:
     # ip = entries in the policy's main set; dom = domains dnsmasq routes into that set.
