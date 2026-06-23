@@ -284,6 +284,11 @@ var statusTimer = null;
 var statusFails = 0;
 var awgLoaded = false;
 var awgPoll = null;
+// Bumped on every user start/stop/restart action. A status refresh (or action poll) that was
+// already in flight when the user clicked carries the OLD value; its callback checks this and
+// bails, so a stale "stopped" read can't repaint «Запустить» over the transitional «Отменить»/
+// «Подключение…» UI (the "button comes back, tempting a second click" bug).
+var awgActionGen = 0;
 var awgLastPeers = [];      // last peers array from the status poll — read by the live handshake ticker
 var awgTickTimer = null;    // singleton interval for awgTickHandshakes (started once)
 var v2flyList = [];
@@ -1162,6 +1167,9 @@ function doUpdate(version){
     var badge = document.getElementById('awg_badge');
     if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; ' + escHtml(T('STAT_UPDATING')); }
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
+    // Supersede any status read still in flight so it can't repaint over the «Updating» badge
+    // (same generation guard as awgAction; see awgActionGen).
+    awgActionGen++;
     // The modal just closed — scroll to the log so the user can watch the update progress.
     var _lb = document.getElementById('awg_log');
     if(_lb){ try { _lb.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(e){ try { _lb.scrollIntoView(); } catch(e2){} } }
@@ -2378,6 +2386,10 @@ function awgAction(action){
     // Stop periodic refresh and any prior in-flight action poll
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
     if(awgPoll){ clearInterval(awgPoll); awgPoll = null; }
+    // Supersede any status read still in flight (steady refresh or a prior action poll) so its
+    // pre-click result can't repaint the UI after we've shown the transitional state below.
+    awgActionGen++;
+    var myGen = awgActionGen;
     var sBtn = document.getElementById('btn_start');
     var pBtn = document.getElementById('btn_stop');
     var rBtn = document.getElementById('btn_restart');
@@ -2406,6 +2418,8 @@ function awgAction(action){
         xhr.open('GET', '/user/awg_status.htm?_=' + Date.now(), true);
         xhr.timeout = 3000;
         xhr.onload = function(){
+            // A newer action superseded this poll — abandon it (the new action owns the UI).
+            if(myGen !== awgActionGen){ clearInterval(poll); return; }
             try {
                 var s = JSON.parse(xhr.responseText);
                 // For start: wait until running AND has public key (fully ready)
@@ -2423,11 +2437,11 @@ function awgAction(action){
                 if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; }
             }
         };
-        xhr.onerror = function(){ if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
+        xhr.onerror = function(){ if(myGen !== awgActionGen){ clearInterval(poll); return; } if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
         // Without an ontimeout, a router that only times out (typical while a half-started
         // tunnel is breaking routing/DNS) never reaches the attempts>=90 recovery and the
         // poll wedges forever — leaving a stranded, disabled «Cancel». Mirror onerror.
-        xhr.ontimeout = function(){ if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
+        xhr.ontimeout = function(){ if(myGen !== awgActionGen){ clearInterval(poll); return; } if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
         xhr.send();
     }, 2000);
     awgPoll = poll;
@@ -2932,10 +2946,14 @@ function awgWatchdogFromDns(){
 }
 
 function awgRefreshStatus(){
+    var gen = awgActionGen;
     var xhr = new XMLHttpRequest();
     xhr.open('GET', '/user/awg_status.htm?_=' + Date.now(), true);
     xhr.timeout = 3000;
     xhr.onload = function(){
+        // A start/stop/restart action issued after this refresh now owns the UI — drop the stale
+        // read so it can't repaint the start button over the transitional «Cancel» state.
+        if(gen !== awgActionGen) return;
         if(xhr.status === 200){
             try {
                 var status = JSON.parse(xhr.responseText);
@@ -2948,8 +2966,8 @@ function awgRefreshStatus(){
             onStatusFail();
         }
     };
-    xhr.onerror = function(){ onStatusFail(); };
-    xhr.ontimeout = function(){ onStatusFail(); };
+    xhr.onerror = function(){ if(gen !== awgActionGen) return; onStatusFail(); };
+    xhr.ontimeout = function(){ if(gen !== awgActionGen) return; onStatusFail(); };
     xhr.send();
 }
 
