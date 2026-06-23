@@ -118,6 +118,7 @@
     font-size: 11px;
     letter-spacing: 0.5px;
     text-align: center;
+    white-space: nowrap;   /* keep headers on one line (both tables sit in a scrollable wrap) */
     padding: 6px 8px;   /* override firmware's asymmetric padding-left so centered text is truly centered */
 }
 #awg_peers_table tbody td {
@@ -277,6 +278,41 @@ textarea.awg-geo-ta {
 #FormTitle input[type="checkbox"]:disabled,
 #awg_analyze_modal input[type="checkbox"]:disabled,
 #awg_dhcp_modal input[type="checkbox"]:disabled{ opacity:0.5; cursor:default; }
+/* The firmware's form_style.css paints every <span> inside a .FormTable cell gold (#FFCC00) —
+   a stock-page default that turned our plain checkbox-list labels (Antifilter RKN lists,
+   auto-update, kill-switch, …) an unwanted yellow. Neutralise it for the addon's own form
+   labels; the green «recommended» / amber-warning spans set their colour inline and still win,
+   and grey .awg-hint text isn't inside a <label> so it's untouched. */
+#FormTitle .FormTable label span,
+#FormTitle .FormTable_table label span { color:#e8edf2; }
+/* Radio buttons: same dark treatment as the checkboxes (the geo-policy mode toggle was still
+   rendering as native white circles). Round, dark fill, themed border; blue fill + dark dot
+   when selected — mirrors the checked checkbox. */
+#FormTitle input[type="radio"],
+#awg_analyze_modal input[type="radio"],
+#awg_dhcp_modal input[type="radio"]{
+    -webkit-appearance:none; -moz-appearance:none; appearance:none;
+    width:16px; height:16px; margin:0 5px 0 0; padding:0;
+    vertical-align:-3px; box-sizing:border-box; flex:none;
+    background:#1c2226; border:1px solid #5a6b70; border-radius:50%;
+    cursor:pointer; position:relative;
+}
+#FormTitle input[type="radio"]:hover,
+#awg_analyze_modal input[type="radio"]:hover,
+#awg_dhcp_modal input[type="radio"]:hover{ border-color:#5db0ff; }
+#FormTitle input[type="radio"]:checked,
+#awg_analyze_modal input[type="radio"]:checked,
+#awg_dhcp_modal input[type="radio"]:checked{ background:#5db0ff; border-color:#5db0ff; }
+#FormTitle input[type="radio"]:checked::after,
+#awg_analyze_modal input[type="radio"]:checked::after,
+#awg_dhcp_modal input[type="radio"]:checked::after{
+    content:""; position:absolute; left:50%; top:50%;
+    width:6px; height:6px; border-radius:50%; background:#15202b;
+    transform:translate(-50%,-50%);
+}
+#FormTitle input[type="radio"]:disabled,
+#awg_analyze_modal input[type="radio"]:disabled,
+#awg_dhcp_modal input[type="radio"]:disabled{ opacity:0.5; cursor:default; }
 </style>
 <script>
 var custom_settings = <% get_custom_settings(); %>;
@@ -3816,8 +3852,8 @@ function initAutocompleteIp(){
                 <thead><tr>
                     <td width="18%" data-i18n="TH_IP_ADDRESS">IP address</td>
                     <td width="35%" data-i18n="TH_DEVICE_NAME">Device name</td>
-                    <td width="37%" data-i18n="TH_POLICY">Policy</td>
-                    <td width="10%" data-i18n="TH_ACTIONS">Actions</td>
+                    <td width="33%" data-i18n="TH_POLICY">Policy</td>
+                    <td width="14%" data-i18n="TH_ACTIONS">Actions</td>
                 </tr></thead>
                 <tbody id="awg_client_rows">
                 </tbody>
