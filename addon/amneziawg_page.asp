@@ -278,13 +278,16 @@ textarea.awg-geo-ta {
 #FormTitle input[type="checkbox"]:disabled,
 #awg_analyze_modal input[type="checkbox"]:disabled,
 #awg_dhcp_modal input[type="checkbox"]:disabled{ opacity:0.5; cursor:default; }
-/* The firmware's form_style.css paints every <span> inside a .FormTable cell gold (#FFCC00) —
-   a stock-page default that turned our plain checkbox-list labels (Antifilter RKN lists,
-   auto-update, kill-switch, …) an unwanted yellow. Neutralise it for the addon's own form
-   labels; the green «recommended» / amber-warning spans set their colour inline and still win,
-   and grey .awg-hint text isn't inside a <label> so it's untouched. */
-#FormTitle .FormTable label span,
-#FormTitle .FormTable_table label span { color:#e8edf2; }
+/* The firmware's form_style.css paints EVERY <span> inside a .FormTable cell gold (#FFCC00) —
+   a stock-page default that turned our plain form labels (Antifilter RKN lists, auto-update,
+   kill-switch, geo-policy mode toggle, «download via VPN», …) an unwanted yellow. Override it
+   at the firmware's own selector (`td span`) scoped to #FormTitle so we beat it on specificity
+   and match exactly the same cells — no dependency on the <label> nesting (an earlier
+   `label span` rule missed the mode-toggle / download-via-VPN labels). Spans that need a colour
+   set it inline (green «recommended», amber warnings, grey captions) and still win; .awg-hint /
+   the section captions live in <th> or <div>, so they're untouched. */
+#FormTitle .FormTable td span,
+#FormTitle .FormTable_table td span { color:#e8edf2; }
 /* Radio buttons: same dark treatment as the checkboxes (the geo-policy mode toggle was still
    rendering as native white circles). Round, dark fill, themed border; blue fill + dark dot
    when selected — mirrors the checked checkbox. */
@@ -1089,6 +1092,17 @@ function initial(){
     initAutocomplete();
     initAutocompleteIp();
     checkForUpdate();
+    // After an update/install page reload (awgReload set the flag), bring the log into view so
+    // the user keeps watching progress instead of landing back at the top of the page.
+    try {
+        if(sessionStorage.getItem('awg_scroll_log')){
+            sessionStorage.removeItem('awg_scroll_log');
+            setTimeout(function(){
+                var lb = document.getElementById('awg_log');
+                if(lb){ try { lb.scrollIntoView({ behavior:'smooth', block:'center' }); } catch(e){ try { lb.scrollIntoView(); } catch(e2){} } }
+            }, 400);
+        }
+    } catch(e){}
 }
 
 function checkForUpdate(){
@@ -1187,6 +1201,8 @@ function refreshModalState(){
 // Reload via a fresh GET (cache-busted), never location.reload() — reload() repeats
 // the POST from the last form submit, which makes the browser prompt to resubmit.
 function awgReload(){
+    // Remember to scroll to the log after the reload (update/install) so progress stays visible.
+    try { sessionStorage.setItem('awg_scroll_log', '1'); } catch(e){}
     window.location.href = window.location.pathname + '?_=' + (new Date()).getTime();
 }
 
@@ -3817,14 +3833,14 @@ function initAutocompleteIp(){
                 <tr>
                     <th data-i18n="TH_IPV6_LEAK">IPv6 leak protection</th>
                     <td>
-                        <label><input type="checkbox" id="awg_block_ipv6_dns"> <span data-i18n="LBL_BLOCK_IPV6_DNS">Block resolving IPv6 addresses in DNS (filter-AAAA)</span></label>
+                        <label><input type="checkbox" id="awg_block_ipv6_dns"> <span data-i18n="LBL_BLOCK_IPV6_DNS" style="color:#FFCC00;">Block resolving IPv6 addresses in DNS (filter-AAAA)</span></label>
                         <div class="awg-hint" data-i18n="HINT_IPV6_DNS">Critical for reliable Geo routing. Stops dual-stack (IPv4+IPv6) domains from bypassing the VPN over IPv6.</div>
                     </td>
                 </tr>
                 <tr>
                     <th data-i18n="TH_KILLSWITCH">Kill-switch</th>
                     <td>
-                        <label><input type="checkbox" id="awg_killswitch"> <span data-i18n="LBL_KILLSWITCH">Block VPN traffic when the tunnel goes down (strict kill-switch)</span></label>
+                        <label><input type="checkbox" id="awg_killswitch"> <span data-i18n="LBL_KILLSWITCH" style="color:#FFCC00;">Block VPN traffic when the tunnel goes down (strict kill-switch)</span></label>
                         <details class="awg-hint" data-i18n-html="HINT_KILLSWITCH_HTML"><summary>Blocks traffic of VPN devices if the tunnel goes down (instead of leaking around it to the WAN). Off by default. <u>Details</u></summary>When enabled: if the tunnel suddenly goes down (daemon crash / out of memory), traffic from devices with a «VPN» policy doesn't leak around it to the WAN in cleartext but is blocked until recovery (the watchdog brings the tunnel back within ~5 min). Off — the previous behavior (traffic may temporarily go around the VPN). Affects only devices with a VPN/Geo policy; with the default policy set to «VPN — all traffic» it affects the whole LAN.</details>
                     </td>
                 </tr>
@@ -3841,7 +3857,7 @@ function initAutocompleteIp(){
                 <tr>
                     <th data-i18n="TH_ZAPRET_COMPAT">Compatibility mode</th>
                     <td>
-                        <label><input type="checkbox" id="awg_no_dns_intercept"> <span data-i18n="LBL_NO_DNS_INTERCEPT">Compatibility mode — coexist with zapret2 / Xray / b4 (don't intercept DNS)</span></label>
+                        <label><input type="checkbox" id="awg_no_dns_intercept"> <span data-i18n="LBL_NO_DNS_INTERCEPT" style="color:#FFCC00;">Compatibility mode — coexist with zapret2 / Xray / b4 (don't intercept DNS)</span></label>
                         <details class="awg-hint" data-i18n-html="HINT_NO_DNS_HTML"><summary>Compatibility mode: disables AmneziaWG's DNS interception (port :53) so it can't clash with a co-resident DPI/proxy tool. ON by default for new installs. <u>Details</u></summary>Keep it on if <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) or <b>b4</b> runs alongside — otherwise a DNS conflict can leave the network without internet. Geo by IP (GeoIP/antifilter) keeps working; geo by domains keeps working for clients that use the router as their DNS — only clients with a hardcoded external resolver lose domain-geo. A nearby zapret2 / Xray / v2ray / sing-box / b4 or NFQUEUE/TPROXY (iptables or nft) footprint also disables interception automatically even without this checkbox. Note: this only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».</details>
                     </td>
                 </tr>
@@ -4039,7 +4055,7 @@ function initAutocompleteIp(){
                 <tr>
                     <th data-i18n="TH_WIPE_BEFORE">Wipe before update</th>
                     <td>
-                        <label><input type="checkbox" id="awg_geo_wipe_update"> <span data-i18n="LBL_WIPE_BEFORE">Delete all geo files before a full update / program update</span></label>
+                        <label><input type="checkbox" id="awg_geo_wipe_update"> <span data-i18n="LBL_WIPE_BEFORE" style="color:#FFCC00;">Delete all geo files before a full update / program update</span></label>
                         <div class="awg-hint" data-i18n="HINT_WIPE_BEFORE">Off (default): existing geo lists are kept, including during a program update (no re-download). On: wipe before re-downloading (a clean set, but if a download fails some list will stay missing).</div>
                     </td>
                 </tr>
