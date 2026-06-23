@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.10"
+AWG_VERSION="1.2.11"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -182,6 +182,18 @@ geo_key(){
 # ipset name for a policy. id 1 -> $IPSET_NAME (legacy "awg_dst" or user override).
 geo_ipset(){
     [ "$1" = 1 ] && echo "$IPSET_NAME" || echo "${IPSET_NAME}$1"
+}
+
+# Total live entries across every policy's main geo ipset, read back from the kernel. This is the
+# authoritative IP-range count (deduplicated, includes the custom_ips field, all policies) — both
+# the status JSON and the setup_firewall log use it so they always agree.
+geo_ipset_total(){
+    local total=0 _gid _n
+    for _gid in $(geo_ids); do
+        _n=$(ipset list "$(geo_ipset "$_gid")" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
+        [ -n "$_n" ] && total=$((total + _n))
+    done
+    echo "$total"
 }
 
 # Routing mode of a policy: "vpn" (include, default — route the policy's lists via VPN) or
@@ -1336,7 +1348,7 @@ setup_firewall(){
     prune_custom_urls
     build_geosite_domains
 
-    local ip_count=0 gid gset
+    local gid gset
     for gid in $(geo_ids); do
         gset=$(geo_ipset "$gid")
         local _cerr _crc
@@ -1361,17 +1373,17 @@ setup_firewall(){
         local _svc _f _ak _uk _cip
         for _svc in $(selected_geoip "$gid"); do
             _f="$GEO_DIR/geoip/v2fly_${_svc}.cidr"; [ -f "$_f" ] || continue
-            ipset_load_file "$_f" "$gset"; ip_count=$((ip_count + $(wc -l < "$_f")))
+            ipset_load_file "$_f" "$gset"
         done
         for _ak in $(selected_antifilter "$gid"); do
             antifilter_is_domain "$_ak" && continue
             _f="$GEO_DIR/antifilter/af_${_ak}.cidr"; [ -f "$_f" ] || continue
-            ipset_load_file "$_f" "$gset"; ip_count=$((ip_count + $(wc -l < "$_f")))
+            ipset_load_file "$_f" "$gset"
         done
         # Custom URL CIDRs this policy references (shared files keyed by URL hash).
         for _uk in $(policy_url_keys "$gid"); do
             _f="$GEO_DIR/geoip/userurl_${_uk}.cidr"; [ -f "$_f" ] || continue
-            ipset_load_file "$_f" "$gset"; ip_count=$((ip_count + $(wc -l < "$_f")))
+            ipset_load_file "$_f" "$gset"
         done
         # Custom IPs (field) -> permanent entries.
         for _cip in $(get_setting "$(geo_key "$gid" custom_ips)" | tr ',' ' '); do
@@ -1382,7 +1394,7 @@ setup_firewall(){
         apply_custom_geo "$gid"
         for _f in "$GEO_DIR"/geoip/usercustom_p${gid}_*.cidr; do
             [ -f "$_f" ] || continue
-            ipset_load_file "$_f" "$gset"; ip_count=$((ip_count + $(wc -l < "$_f")))
+            ipset_load_file "$_f" "$gset"
         done
         # This policy's own custom-domains file (consumed by the dnsmasq builder below).
         build_custom_domains "$gid"
@@ -1732,7 +1744,10 @@ setup_firewall(){
     # (awgsaveconf -> setup_firewall), which previously tore it down without re-adding it.
     setup_ipv6_block
 
-    log_msg "Firewall configured: $ip_count IPs, $domain_count domains"
+    # Report the authoritative live ipset entry count (matches the UI's "IP ranges"). The old
+    # build-time wc -l tally summed source-file lines and skipped the custom_ips field, so it
+    # under-reported the real set contents.
+    log_msg "Firewall configured: $(geo_ipset_total) IPs, $domain_count domains"
 }
 
 save_clients(){
@@ -2386,12 +2401,7 @@ EOF
     local active_rules=$(ip rule show 2>/dev/null | grep -c "lookup $RT_TABLE\|fwmark $FWMARK")
 
     # Total entries across every per-policy geo ipset (awg_dst + awg_dst<id>).
-    local ipset_count=0 _gid _gset _n
-    for _gid in $(geo_ids); do
-        _gset=$(geo_ipset "$_gid")
-        _n=$(ipset list "$_gset" -t 2>/dev/null | awk '/Number of entries/{print $NF}')
-        [ -n "$_n" ] && ipset_count=$((ipset_count + _n))
-    done
+    local ipset_count=$(geo_ipset_total)
 
     local geo_domains=0
     # Count actual domains, NOT ipset= lines — dnsmasq packs ~18 domains per
