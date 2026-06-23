@@ -237,6 +237,46 @@ textarea.awg-geo-ta {
 .awg-geo-tab-add { background:transparent; border:1px dashed #5a6b70; color:#9aa3ad; border-radius:6px; cursor:pointer; padding:5px 10px; margin-bottom:3px; font-size:12px; }
 .awg-geo-tab-add:hover { color:#5db0ff; border-color:#5db0ff; }
 #geo_policy_panel { border:1px solid #5db0ff; border-top:none; border-radius:0 0 6px 6px; padding:4px 8px 8px; }
+
+/* Checkboxes: the native white box contrasts hard against the dark ROG panels. Repaint them
+   in the page palette (dark fill, themed border, accent-blue tick). Scoped to the addon's own
+   containers so firmware-chrome checkboxes (left menu, etc.) are left untouched. */
+#FormTitle input[type="checkbox"],
+#awg_analyze_modal input[type="checkbox"],
+#awg_dhcp_modal input[type="checkbox"]{
+    -webkit-appearance:none; -moz-appearance:none; appearance:none;
+    width:16px; height:16px; margin:0 5px 0 0; padding:0;
+    vertical-align:-3px; box-sizing:border-box; flex:none;
+    background:#1c2226; border:1px solid #5a6b70; border-radius:3px;
+    cursor:pointer; position:relative;
+}
+#FormTitle input[type="checkbox"]:hover,
+#awg_analyze_modal input[type="checkbox"]:hover,
+#awg_dhcp_modal input[type="checkbox"]:hover{ border-color:#5db0ff; }
+#FormTitle input[type="checkbox"]:checked,
+#awg_analyze_modal input[type="checkbox"]:checked,
+#awg_dhcp_modal input[type="checkbox"]:checked,
+#FormTitle input[type="checkbox"]:indeterminate,
+#awg_analyze_modal input[type="checkbox"]:indeterminate,
+#awg_dhcp_modal input[type="checkbox"]:indeterminate{ background:#5db0ff; border-color:#5db0ff; }
+/* Checkmark (rotated border) for the checked state. */
+#FormTitle input[type="checkbox"]:checked::after,
+#awg_analyze_modal input[type="checkbox"]:checked::after,
+#awg_dhcp_modal input[type="checkbox"]:checked::after{
+    content:""; position:absolute; left:4px; top:1px;
+    width:4px; height:8px; border:solid #15202b; border-width:0 2px 2px 0;
+    transform:rotate(45deg);
+}
+/* Dash for the indeterminate (partial select-all) state. */
+#FormTitle input[type="checkbox"]:indeterminate::after,
+#awg_analyze_modal input[type="checkbox"]:indeterminate::after,
+#awg_dhcp_modal input[type="checkbox"]:indeterminate::after{
+    content:""; position:absolute; left:3px; top:6px; width:8px; height:0;
+    border-top:2px solid #15202b;
+}
+#FormTitle input[type="checkbox"]:disabled,
+#awg_analyze_modal input[type="checkbox"]:disabled,
+#awg_dhcp_modal input[type="checkbox"]:disabled{ opacity:0.5; cursor:default; }
 </style>
 <script>
 var custom_settings = <% get_custom_settings(); %>;
@@ -250,6 +290,14 @@ var v2flyList = [];
 var v2flyIpList = ['telegram','google','facebook','twitter','netflix','cloudflare','fastly','cloudfront'];
 function escHtml(s){
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+// Device names arrive URL-encoded in the log (from the ASUS client list: %20=space,
+// %27=apostrophe, multi-byte UTF-8 for Cyrillic names…). Decode %XX runs to a human-readable
+// form; a stray/malformed '%' is left as-is rather than corrupting the whole line.
+function awgDecodePct(s){
+    return String(s).replace(/(?:%[0-9A-Fa-f]{2})+/g, function(m){
+        try { return decodeURIComponent(m); } catch(e){ return m; }
+    });
 }
 
 // ---- i18n: follow the firmware UI language (preferred_lang). RU -> Russian, else English. ----
@@ -443,6 +491,10 @@ en: {
     BTN_START: "Start",
     BTN_STOP: "Stop",
     BTN_RESTART: "Restart",
+    BTN_CANCEL: "Cancel",
+    BTN_WD_FROM_DNS: "From DNS",
+    TITLE_WD_FROM_DNS: "Fill in from the Interface DNS above",
+    MSG_NO_DNS_FOR_WD: "The Interface DNS field is empty — set the DNS first.",
     TH_INTERFACE: "Interface",
     FIRSTRUN_HTML: "<b>It looks like no configuration is set yet.</b><br>\n                    Start by importing a <code>.conf</code> file from the Amnezia VPN app, then check the fields and click «Apply».",
     BTN_IMPORT_CONFIG: "Import configuration",
@@ -760,6 +812,10 @@ ru: {
     BTN_START: "Запустить",
     BTN_STOP: "Остановить",
     BTN_RESTART: "Перезапустить",
+    BTN_CANCEL: "Отменить",
+    BTN_WD_FROM_DNS: "Из DNS",
+    TITLE_WD_FROM_DNS: "Заполнить из поля DNS интерфейса выше",
+    MSG_NO_DNS_FOR_WD: "Поле DNS интерфейса пустое — сначала укажите DNS.",
     TH_INTERFACE: "Интерфейс",
     FIRSTRUN_HTML: "<b>Похоже, конфигурация ещё не задана.</b><br>\n                    Начните с импорта <code>.conf</code>-файла из приложения Amnezia VPN, затем проверьте поля и нажмите «Применить».",
     BTN_IMPORT_CONFIG: "Импорт конфигурации",
@@ -2322,9 +2378,21 @@ function awgAction(action){
     // Stop periodic refresh and any prior in-flight action poll
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
     if(awgPoll){ clearInterval(awgPoll); awgPoll = null; }
-    document.getElementById('btn_start').disabled = true;
-    document.getElementById('btn_stop').disabled = true;
-    document.getElementById('btn_restart').disabled = true;
+    var sBtn = document.getElementById('btn_start');
+    var pBtn = document.getElementById('btn_stop');
+    var rBtn = document.getElementById('btn_restart');
+    if(isStop){
+        // Stopping — nothing to cancel; lock the controls for the transition.
+        sBtn.disabled = pBtn.disabled = rBtn.disabled = true;
+    } else {
+        // Starting/restarting — surface the Stop button relabelled «Cancel» so the user can
+        // abort the attempt instead of staring at a dead, still-labelled «Start» button.
+        sBtn.style.display = 'none';
+        rBtn.style.display = 'none';
+        pBtn.style.display = '';
+        pBtn.disabled = false;
+        pBtn.value = T('BTN_CANCEL');
+    }
 
     // Show transitional status
     badge.className = 'awg-status connecting';
@@ -2356,6 +2424,10 @@ function awgAction(action){
             }
         };
         xhr.onerror = function(){ if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
+        // Without an ontimeout, a router that only times out (typical while a half-started
+        // tunnel is breaking routing/DNS) never reaches the attempts>=90 recovery and the
+        // poll wedges forever — leaving a stranded, disabled «Cancel». Mirror onerror.
+        xhr.ontimeout = function(){ if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
         xhr.send();
     }, 2000);
     awgPoll = poll;
@@ -2838,10 +2910,25 @@ function awgRefreshLog(){
         var lines = x.responseText.replace(/\[DIAG_DONE\]/g, '').replace(/\s+$/, '').split(/\r?\n/);
         if(lines.length > 80) lines = lines.slice(-80);
         var atBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 30;
-        box.textContent = lines.join('\n');
+        box.textContent = awgDecodePct(lines.join('\n'));
         if(atBottom) box.scrollTop = box.scrollHeight;
     };
     x.send();
+}
+
+// Watchdog convenience: prefill the probe hosts from the Interface DNS the user already
+// entered (so they don't retype IPs). Splits on space/comma, keeps up to 4 entries.
+function awgWatchdogFromDns(){
+    var wd = document.getElementById('awg_watchdog_hosts');
+    if(!wd) return;
+    var dns = (document.getElementById('awg_dns') || {}).value || '';
+    // Keep only tokens the watchdog backend accepts (IPv4 / hostname). The save path and
+    // watchdog_hosts() strip ':' , so an IPv6 DNS (2606:4700:4700::1111) would be silently
+    // mangled — drop such tokens here so what we prefill equals what gets stored & probed.
+    var hosts = dns.split(/[\s,]+/).filter(function(h){ return /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(h); }).slice(0, 4).join(' ');
+    if(!hosts){ alert(T('MSG_NO_DNS_FOR_WD')); return; }
+    wd.value = hosts;
+    wd.focus();
 }
 
 function awgRefreshStatus(){
@@ -2909,18 +2996,22 @@ function updateStatusUI(s){
         badge.innerHTML = '&#9679; ' + escHtml(T('STAT_CONNECTED'));
         document.getElementById('btn_start').style.display = 'none';
         document.getElementById('btn_stop').style.display = '';
+        document.getElementById('btn_stop').value = T('BTN_STOP');
         document.getElementById('btn_restart').style.display = '';
     } else if(s.starting){
         badge.className = 'awg-status connecting';
         badge.innerHTML = '&#9679; ' + escHtml(T('STAT_CONNECTING'));
         document.getElementById('btn_start').style.display = 'none';
+        // Still connecting — let the Stop button read «Cancel» and abort the attempt.
         document.getElementById('btn_stop').style.display = '';
+        document.getElementById('btn_stop').value = T('BTN_CANCEL');
         document.getElementById('btn_restart').style.display = 'none';
     } else {
         badge.className = 'awg-status stopped';
         badge.innerHTML = '&#9679; ' + escHtml(T('STAT_STOPPED'));
         document.getElementById('btn_start').style.display = '';
         document.getElementById('btn_stop').style.display = 'none';
+        document.getElementById('btn_stop').value = T('BTN_STOP');
         document.getElementById('btn_restart').style.display = 'none';
     }
 
@@ -3031,9 +3122,15 @@ function setOfflineUI(){
     var badge = document.getElementById('awg_badge');
     badge.className = 'awg-status stopped';
     badge.innerHTML = '&#9679; ' + escHtml(T('STAT_STOPPED'));
-    document.getElementById('btn_start').style.display = '';
-    document.getElementById('btn_stop').style.display = 'none';
-    document.getElementById('btn_restart').style.display = 'none';
+    // Always land on a clean, clickable «Start»: re-enable the buttons (an action may have
+    // disabled them) and reset the Stop button's label back from «Cancel» so a stranded
+    // transition can never leave a dead, mislabelled control as the only option.
+    var sBtn = document.getElementById('btn_start');
+    var pBtn = document.getElementById('btn_stop');
+    var rBtn = document.getElementById('btn_restart');
+    sBtn.style.display = ''; sBtn.disabled = false;
+    pBtn.style.display = 'none'; pBtn.disabled = false; pBtn.value = T('BTN_STOP');
+    rBtn.style.display = 'none'; rBtn.disabled = false;
 }
 
 function importConfig(){
@@ -3680,7 +3777,10 @@ function initAutocompleteIp(){
                 <tr>
                     <th data-i18n="TH_TUNNEL_CHECK_ADDR">Tunnel check addresses</th>
                     <td>
-                        <input type="text" id="awg_watchdog_hosts" maxlength="200" style="width:95%; max-width:320px;" placeholder="8.8.8.8 1.1.1.1" aria-label="Tunnel check addresses" data-i18n-aria="ARIA_TUNNEL_CHECK_ADDR">
+                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; max-width:480px;">
+                            <input type="text" class="input_25_table" id="awg_watchdog_hosts" maxlength="200" style="flex:1 1 200px; min-width:140px;" placeholder="8.8.8.8 1.1.1.1" aria-label="Tunnel check addresses" data-i18n-aria="ARIA_TUNNEL_CHECK_ADDR">
+                            <input type="button" class="button_gen" id="btn_wd_from_dns" value="From DNS" data-i18n-val="BTN_WD_FROM_DNS" title="Fill in from the Interface DNS above" data-i18n-title="TITLE_WD_FROM_DNS" onclick="awgWatchdogFromDns();" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0; white-space:nowrap;">
+                        </div>
                         <details class="awg-hint" data-i18n-html="HINT_WATCHDOG_HTML"><summary>Addresses the watchdog pings <b>through the tunnel</b> every 5 minutes (if at least one replies, the tunnel is alive). <u>Format and examples</u></summary><b>Format:</b> IP or domain, several allowed — separated by a space or comma (up to 4 addresses).<br><b>Example:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Prefer IPs (no dependency on DNS). Empty = default <b>8.8.8.8</b> and <b>1.1.1.1</b>. Change it if those addresses are blocked/unreachable for you — otherwise the watchdog restarts the VPN needlessly. Which addresses are checked is shown in the log below.</details>
                     </td>
                 </tr>
@@ -3892,7 +3992,7 @@ function initAutocompleteIp(){
                 <tr>
                     <th data-i18n="TH_IPSET_NAME">ipset name</th>
                     <td>
-                        <input type="text" id="awg_ipset_name" maxlength="31" style="width:95%; max-width:260px;" placeholder="awg_dst" aria-label="ipset name" data-i18n-aria="ARIA_IPSET_NAME">
+                        <input type="text" class="input_25_table" id="awg_ipset_name" maxlength="31" style="width:95%; max-width:260px;" placeholder="awg_dst" aria-label="ipset name" data-i18n-aria="ARIA_IPSET_NAME">
                         <div class="awg-hint" data-i18n-html="HINT_IPSET_HTML">The name of the ipset set for GeoIP/antifilter subnets (routed through the VPN). Default <code>awg_dst</code>. A set <b>created by the addon itself</b> is removed on stop, and when the name changes the old one is removed too — no leftovers/leaks. If you specify a set that's <b>already created by another connection/tool</b>, the addon only adds entries to it and doesn't touch it on stop (a shared set). Letters, digits and <code>_ . -</code> are allowed, up to 31 characters; empty = <code>awg_dst</code>.</div>
                     </td>
                 </tr>
