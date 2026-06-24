@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.17"
+AWG_VERSION="1.2.18"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3081,7 +3081,12 @@ finalize_ipk_install(){
     # Block auto-start during opkg install (S99amneziawg is triggered by opkg)
     touch /tmp/.awg_no_autostart
     log_msg "Update: installing package via opkg"
-    if ! opkg install "$tmp" && ! opkg install --force-architecture "$tmp"; then
+    # --force-downgrade: opkg refuses to install an older version by default and, worse,
+    # exits 0 while doing nothing ("Not downgrading package ... from X to Y") — so the
+    # install looked successful but left the old version in place. The UI version picker
+    # (awg_update_version) and manual .ipk upload both legitimately request a specific
+    # (possibly older) version, so force it. For upgrades/reinstalls the flag is a no-op.
+    if ! opkg install --force-downgrade "$tmp" && ! opkg install --force-downgrade --force-architecture "$tmp"; then
         log_msg "Update: ERROR opkg install failed — staying on v$AWG_VERSION"
         rm -f "$tmp" /tmp/.awg_no_autostart
         if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
