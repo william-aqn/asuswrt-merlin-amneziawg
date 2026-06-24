@@ -341,8 +341,8 @@ opkg remove amneziawg
 
 ## Авторы
 
-- **r0otx** -- [github.com/r0otx](https://github.com/r0otx)
-- **william-aqn** -- [github.com/william-aqn](https://github.com/william-aqn)
+- **DCRM** -- сопровождающий и автор форка, [github.com/william-aqn](https://github.com/william-aqn)
+- **r0otx** -- автор исходного проекта, [github.com/r0otx](https://github.com/r0otx)
 
 ## Поддержать проект
 

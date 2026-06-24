@@ -4153,7 +4153,7 @@ function initAutocompleteIp(){
                     <span style="text-align:right;">
                         <a href="https://github.com/r0otx/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; r0otx</a>
                         &nbsp;&middot;&nbsp;
-                        <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">mod by DCRM</a>
+                        <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; DCRM</a>
                     </span>
                 </div>
 

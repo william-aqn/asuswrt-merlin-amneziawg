@@ -311,8 +311,8 @@ A: It's a harmless warning, not an error. The `ipset` userspace tool (both the f
 
 ## Authors
 
-- **r0otx** -- [github.com/r0otx](https://github.com/r0otx)
-- **william-aqn** -- [github.com/william-aqn](https://github.com/william-aqn)
+- **DCRM** -- fork maintainer and author, [github.com/william-aqn](https://github.com/william-aqn)
+- **r0otx** -- original project author, [github.com/r0otx](https://github.com/r0otx)
 
 ## Support the project
 
