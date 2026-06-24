@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.19"
+AWG_VERSION="1.2.20"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -444,6 +444,23 @@ wait_for_iface(){
     local iface="$1" max="${2:-10}" i=0
     while [ $i -lt $max ]; do
         ip link show "$iface" >/dev/null 2>&1 && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# Wait for the daemon's UAPI control socket to be ready. Usage: wait_for_uapi <iface> <timeout>
+# amneziawg-go creates the TUN netdev BEFORE it binds/listens on the UAPI control socket, so the
+# link can exist (wait_for_iface passes) a beat before `awg setconf`/`awg show` can connect. On a
+# slow single-core box (RT-AC68U) an immediate setconf then loses that race and dies with a generic
+# exit 1. Probe via `awg show` — path-agnostic: it uses awg's OWN socket resolution, so it works
+# whether the socket lives in /var/run/wireguard or /var/run/amneziawg, and confirms the daemon is
+# actually accepting UAPI connections (not merely that the link exists).
+wait_for_uapi(){
+    local iface="$1" max="${2:-15}" i=0
+    while [ $i -lt $max ]; do
+        "$AWG_BIN" show "$iface" >/dev/null 2>&1 && return 0
         sleep 1
         i=$((i + 1))
     done
@@ -1185,9 +1202,17 @@ cleanup_firewall(){
 
     # Remove dnsmasq config
     rm -f "$DNSMASQ_AWG_CONF"
-    # Fixed-string removal (the path contains '.', which a sed regex would treat as
-    # any-char and could match an unrelated line).
-    [ -f "$DNSMASQ_INCLUDE" ] && grep -vF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.tmp" 2>/dev/null && mv "${DNSMASQ_INCLUDE}.tmp" "$DNSMASQ_INCLUDE"
+    # Fixed-string removal (the path contains '.', which a sed regex would treat as any-char and
+    # could match an unrelated line). Gate the rewrite on the line being PRESENT, then do the
+    # strip+mv UNCONDITIONALLY: the old `grep -vF ... > tmp && mv` chained the mv on grep's exit
+    # code, so when our conf-file line was the ONLY line in the include, `grep -v` printed nothing,
+    # exited 1, and the `&& mv` was SKIPPED — leaving the dangling `conf-file=$DNSMASQ_AWG_CONF`
+    # pointed at a file we just deleted (fatal to the firmware's dnsmasq at the next boot/restart).
+    # An empty result is the correct outcome here.
+    if [ -f "$DNSMASQ_INCLUDE" ] && grep -qF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" 2>/dev/null; then
+        grep -vF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.tmp" 2>/dev/null
+        mv "${DNSMASQ_INCLUDE}.tmp" "$DNSMASQ_INCLUDE"
+    fi
 
     # Remove the geo-update cron (re-added by setup_firewall only when autoupdate is on, so
     # toggling it off is honored here). The self-heal watchdog cron is deliberately NOT
@@ -1296,7 +1321,12 @@ reload_dnsmasq(){
                 log_msg "ERROR: dnsmasq still down — removing AWG dnsmasq rules + restarting to restore DNS/DHCP (conf kept as ${DNSMASQ_AWG_CONF}.bad)"
                 rm -f "$DNSMASQ_AWG_CONF"
                 rm -f "$DNSRELOAD_SIG"   # conf unloaded — force a real restart on the next reload
-                [ -f "$DNSMASQ_INCLUDE" ] && grep -vF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.tmp" 2>/dev/null && mv "${DNSMASQ_INCLUDE}.tmp" "$DNSMASQ_INCLUDE"
+                # Reliable strip (see cleanup_firewall): a bare `grep -vF ... && mv` skips the mv
+                # when our line is the only one, leaving a dangling conf-file= that breaks dnsmasq.
+                if [ -f "$DNSMASQ_INCLUDE" ] && grep -qF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" 2>/dev/null; then
+                    grep -vF "$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.tmp" 2>/dev/null
+                    mv "${DNSMASQ_INCLUDE}.tmp" "$DNSMASQ_INCLUDE"
+                fi
                 _j=0
                 while [ $_j -lt 15 ]; do
                     service restart_dnsmasq >/dev/null 2>&1
@@ -2277,17 +2307,32 @@ do_start(){
     fi
     log_msg "Userspace daemon started"
 
-    # Configure interface. Capture the exit code explicitly: a wrong-arch awg dies with
-    # SIGILL (shell exit 132 = 128 + signal 4) — the most common failure on old ARM
-    # routers — so name it in the log instead of a generic "setconf failed".
-    "$AWG_BIN" setconf "$IFACE" "$CONF"
-    local sc_rc=$?
+    # Configure interface. Two distinct failure modes, handled differently:
+    #  - wrong-arch awg dies with SIGILL (shell exit 132 = 128 + signal 4) — retrying is futile,
+    #    so break out immediately and name it.
+    #  - a generic exit 1 on a slow box is usually a RACE: amneziawg-go creates the awg0 link
+    #    (wait_for_iface passed) a moment before it is listening on the UAPI control socket, so the
+    #    first setconf can't connect. So wait for UAPI readiness, then retry with a short backoff.
+    # CRITICAL: capture setconf's STDERR (it used to be discarded — the old comment claimed it
+    # "named the error" but only the numeric code was kept) plus the daemon log on the FINAL
+    # failure, so a genuine config rejection (an obfuscation param this daemon build won't accept)
+    # is spelled out in the journal instead of a bare "exit 1" we can't act on.
+    wait_for_uapi "$IFACE" 15 || log_msg "WARNING: UAPI control socket not ready after 15s — trying setconf anyway"
+    local sc_rc=1 sc_try=0 sc_err=""
+    while [ $sc_try -lt 5 ]; do
+        sc_err=$("$AWG_BIN" setconf "$IFACE" "$CONF" 2>&1)
+        sc_rc=$?
+        { [ "$sc_rc" -eq 0 ] || [ "$sc_rc" -eq 132 ]; } && break
+        sc_try=$((sc_try + 1))
+        sleep 1
+    done
     if [ "$sc_rc" -ne 0 ]; then
         if [ "$sc_rc" -eq 132 ]; then
             log_msg "ERROR: 'awg setconf' killed by SIGILL (Illegal instruction) — wrong-arch awg"
             log_msg "  awg=$(elf_arch "$AWG_BIN") host=$(uname -m); run '$ADDON_DIR/amneziawg.sh diag'"
         else
-            log_msg "ERROR: setconf failed (exit $sc_rc)"
+            log_msg "ERROR: setconf failed (exit $sc_rc) after $sc_try retries: ${sc_err:-<no stderr>}"
+            [ -s /tmp/awg_daemon.log ] && log_msg "  daemon log: $(tr '\n' '|' < /tmp/awg_daemon.log)"
         fi
         ip link del "$IFACE" 2>/dev/null
         pidof amneziawg-go >/dev/null 2>&1 && kill $(pidof amneziawg-go) 2>/dev/null
@@ -2896,6 +2941,21 @@ do_mount_ui(){
 do_uninstall(){
     do_stop user   # user intent: remove the watchdog cron too
 
+    # Belt-and-suspenders: do_stop -> cleanup_firewall already strips our dnsmasq include, but
+    # do_stop can early-return on a lock-acquire failure, which would leave the persistent
+    # /jffs/configs/dnsmasq.conf.add pointing at /opt/amneziawg files the package is about to
+    # delete — a missing `conf-file=` is fatal to the firmware's dnsmasq at the next boot. Strip
+    # both our geo include and the analyzer include here unconditionally (lock-free; the rewrite is
+    # not gated on grep's exit so an empty result is honored), then make sure the resolver is alive.
+    rm -f "$DNSMASQ_AWG_CONF" "$ANALYZE_DNS_CONF"
+    if [ -f "$DNSMASQ_INCLUDE" ]; then
+        grep -vF "conf-file=$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.tmp" 2>/dev/null
+        grep -vF "conf-file=$ANALYZE_DNS_CONF" "${DNSMASQ_INCLUDE}.tmp" > "${DNSMASQ_INCLUDE}.tmp2" 2>/dev/null
+        mv "${DNSMASQ_INCLUDE}.tmp2" "$DNSMASQ_INCLUDE" 2>/dev/null
+        rm -f "${DNSMASQ_INCLUDE}.tmp"
+    fi
+    pidof dnsmasq >/dev/null 2>&1 || service restart_dnsmasq >/dev/null 2>&1
+
     [ -f /jffs/scripts/service-event ] && sed -i '/amneziawg/d' /jffs/scripts/service-event
     [ -f /jffs/scripts/services-start ] && sed -i '/amneziawg/d' /jffs/scripts/services-start
     [ -f /jffs/scripts/wan-event ] && sed -i '/amneziawg/d' /jffs/scripts/wan-event
@@ -3116,6 +3176,10 @@ finalize_ipk_install(){
     log_msg "Update: stopping VPN"
     do_stop 2>/dev/null
     wait_for_pid_exit amneziawg-go 10
+    # Let do_stop's DETACHED dnsmasq reload settle before opkg runs the package prerm (which kicks
+    # off its OWN teardown + reload). Two concurrent `service restart_dnsmasq` storms during a
+    # memory-pressured opkg can OOM/blackout the LAN on a low-RAM box (RT-AC68U, 256MB).
+    _i=0; while [ -d /tmp/.awg_dnsreload ] && [ $_i -lt 60 ]; do sleep 1; _i=$((_i + 1)); done
     # Block auto-start during opkg install (S99amneziawg is triggered by opkg)
     touch /tmp/.awg_no_autostart
     log_msg "Update: installing package via opkg"
@@ -3134,6 +3198,9 @@ finalize_ipk_install(){
     # Stop VPN if opkg's init script started it
     do_stop 2>/dev/null
     wait_for_pid_exit amneziawg-go 10
+    # Let this reload settle too before install_page / ensure_geo run (and before the resolver is
+    # confirmed for the user), so the resolver is back up by the time the update reports complete.
+    _i=0; while [ -d /tmp/.awg_dnsreload ] && [ $_i -lt 60 ]; do sleep 1; _i=$((_i + 1)); done
     rm -f /tmp/.awg_no_autostart
     # Restore preserved geo lists (if we moved them aside above)
     if [ -d "$geo_bak" ]; then

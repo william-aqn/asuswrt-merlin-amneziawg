@@ -104,10 +104,26 @@ POSTEOF
 
     cat > "$CONTROL_DIR/prerm" << 'PRERMEOF'
 #!/bin/sh
+# `uninstall` already runs a full `do_stop user` (stops the VPN, strips firewall/DNS rules + the
+# dnsmasq include, drops the watchdog cron). Calling `stop` first only spawned a SECOND detached
+# dnsmasq-reload racing the first — on a low-RAM box (RT-AC68U, 256MB) two concurrent
+# `service restart_dnsmasq` storms during opkg can OOM/blackout the LAN. So run uninstall only.
 if [ -f /jffs/addons/amneziawg/amneziawg.sh ]; then
-    /jffs/addons/amneziawg/amneziawg.sh stop 2>/dev/null || true
     /jffs/addons/amneziawg/amneziawg.sh uninstall 2>/dev/null || true
 fi
+# Defensive strip (in case uninstall was interrupted or the script was already gone): a dangling
+# `conf-file=/opt/amneziawg/...` in the persistent /jffs include is fatal to the firmware's dnsmasq
+# at the next boot once we rm -rf /opt/amneziawg below. Rewrite unconditionally (an empty result is
+# fine) — do NOT chain on grep's exit code.
+if [ -f /jffs/configs/dnsmasq.conf.add ]; then
+    grep -vF 'conf-file=/opt/amneziawg/' /jffs/configs/dnsmasq.conf.add > /jffs/configs/dnsmasq.conf.add.tmp 2>/dev/null
+    mv /jffs/configs/dnsmasq.conf.add.tmp /jffs/configs/dnsmasq.conf.add 2>/dev/null
+fi
+# Wait for any in-flight dnsmasq reload to finish, then confirm the resolver is back, BEFORE
+# deleting files — so a restart can't land mid-teardown and leave the LAN without DNS/DHCP until a
+# hard reboot.
+_i=0; while [ -d /tmp/.awg_dnsreload ] && [ $_i -lt 60 ]; do sleep 1; _i=$((_i + 1)); done
+_i=0; while ! pidof dnsmasq >/dev/null 2>&1 && [ $_i -lt 15 ]; do service restart_dnsmasq >/dev/null 2>&1; sleep 2; _i=$((_i + 1)); done
 rm -f /opt/bin/awg
 rm -rf /opt/amneziawg
 exit 0
