@@ -2530,9 +2530,12 @@ function awgEnterTransition(kind){
             if(myGen !== awgActionGen){ clearInterval(poll); return; }
             try {
                 var s = JSON.parse(xhr.responseText);
-                // For start: wait until running AND has public key (fully ready)
-                // For stop: wait until not running
-                var ready = (s.running === expect);
+                // Resolve only when the backend reports the expected final state AND no transition
+                // flag is still set. The !starting/!stopping guard is what makes «Перезапустить»
+                // safe: a restart is do_stop→do_start, and the pre-teardown running=true (still ===
+                // expect=true) would otherwise resolve us instantly, hand the UI to the steady poll,
+                // which then catches the brief fully-stopped moment and shows a clickable «Запустить».
+                var ready = (s.running === expect && !s.starting && !s.stopping);
                 if(ready || attempts >= 90){
                     clearInterval(poll);
                     updateStatusUI(s);

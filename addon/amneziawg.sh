@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.20"
+AWG_VERSION="1.2.21"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2484,6 +2484,19 @@ do_stop(){
     release_lock
 }
 
+# Stop then start as ONE operation, keeping the "Connecting" marker set across the stop->start
+# gap so the status never flashes a fully-stopped state mid-restart. Without it, the brief
+# running=false / no-flags window between do_stop and do_start made every status reader (page
+# steady poll, header widget, watchdog) see "stopped" and surface a clickable «Запустить» that
+# raced the restart's own start. do_start re-touches the flag; its EXIT trap clears it at the end.
+do_restart(){
+    do_stop
+    touch "$STARTING_FLAG"
+    update_status
+    wait_for_pid_exit amneziawg-go 10
+    do_start
+}
+
 # --- Status JSON for web UI ---
 
 update_status(){
@@ -3555,14 +3568,12 @@ do_service_event(){
             ;;
         awgstart)       do_start ;;
         awgstop)        do_stop user ;;
-        awgrestart)     do_stop; wait_for_pid_exit amneziawg-go 10; do_start ;;
+        awgrestart)     do_restart ;;
         awgforceapply)
             # Force Apply: persist settings, then full restart (re-runs setconf +
             # complete route/firewall/geo rebuild via do_start)
             local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_iface_p1)" ]; do sleep 1; _wt=$((_wt+1)); done
-            do_stop 2>/dev/null
-            wait_for_pid_exit amneziawg-go 10
-            do_start
+            do_restart
             ensure_geo   # download configured-but-missing geo lists (bg), then re-apply
             ;;
         awgsaveconf)
@@ -3621,7 +3632,7 @@ case "$1" in
     start)          do_start ;;
     stop)           do_stop user ;;
     stop_auto)      do_stop ;;          # internal: auto-rollback stop (deadman); keeps watchdog cron
-    restart)        do_stop; wait_for_pid_exit amneziawg-go 10; do_start ;;
+    restart)        do_restart ;;
     status)         update_status ;;
     diag|diagnostics) do_diag ;;
     update_geo)     update_geo_lists; do_firewall_restart; update_status ;;
