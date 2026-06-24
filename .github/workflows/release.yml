@@ -21,6 +21,11 @@ permissions:
 env:
   # amneziawg-tools (awg) release tag — the static-musl awg CLI is built from this tag
   AWG_TOOLS_TAG: v1.0.20260223
+  # amneziawg-go (daemon) release tag — PIN it (don't float master): reproducible builds, and
+  # v0.2.19 carries the AmneziaWG 1.5/2.0 obfuscation params (I1-I5, S3/S4) + "handle empty
+  # I1-I5" fix that modern provider configs need. (Floating master also reports a stale
+  # hardcoded `const Version = "0.0.20250522"`, which is misleading — see the sed patch below.)
+  AWG_GO_TAG: v0.2.19
 
 jobs:
   build:
@@ -40,8 +45,14 @@ jobs:
       - name: Build amneziawg-go (aarch64 + ARM32)
         run: |
           set -eux
-          git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go.git
-          echo "amneziawg-go commit: $(git -C amneziawg-go rev-parse HEAD)"
+          git clone --depth 1 --branch "$AWG_GO_TAG" https://github.com/amnezia-vpn/amneziawg-go.git
+          AWG_GO_COMMIT=$(git -C amneziawg-go rev-parse --short HEAD)
+          echo "amneziawg-go ref: $AWG_GO_TAG commit: $AWG_GO_COMMIT"
+          # `Version` is a `const` in version.go, so `-ldflags -X main.Version=` can't override it
+          # (only vars). Patch the source so `amneziawg-go --version` reports the real ref instead
+          # of the stale hardcoded "0.0.20250522" (which has fooled diagnosis before).
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG ($AWG_GO_COMMIT)\"|" amneziawg-go/version.go
+          grep '^const Version' amneziawg-go/version.go || true
           mkdir -p "$GITHUB_WORKSPACE/output"
           cd amneziawg-go
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64       go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go"

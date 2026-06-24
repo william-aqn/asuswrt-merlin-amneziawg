@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.22"
+AWG_VERSION="1.2.23"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2383,6 +2383,31 @@ do_start(){
         else
             log_msg "ERROR: setconf failed (exit $sc_rc) after $sc_try retries: ${sc_err:-<no stderr>}"
             [ -s /tmp/awg_daemon.log ] && log_msg "  daemon log: $(tr '\n' '|' < /tmp/awg_daemon.log)"
+            # A non-SIGILL setconf failure is almost always the daemon REJECTING an obfuscation
+            # parameter (EINVAL → "Unable to modify interface: Invalid argument"). Two probes name
+            # it, neither leaks secrets:
+            #  (1) dump the non-secret advanced params actually sent — long I-hex is collapsed to
+            #      "<head…tail>" so a malformed/unterminated tag (e.g. an I-param missing its
+            #      closing '>') is visible in the journal without dumping a kilobyte of hex;
+            local adv
+            adv=$(awk '
+                /^(Jc|Jmin|Jmax|S[1-4]|H[1-4]) /{ print; next }
+                /^I[1-5] /{ if(length($0)>44) $0=substr($0,1,28)"…"substr($0,length($0)-7); print }
+            ' "$CONF" 2>/dev/null | tr '\n' '|')
+            [ -n "$adv" ] && log_msg "  awg params: $adv"
+            #  (2) amneziawg-go stays SILENT on UAPI set-rejections at the default log level, so the
+            #      bare EINVAL never says which line. Relaunch once under LOG_LEVEL=verbose and retry
+            #      setconf so the daemon NAMES the offender (e.g. "failed to parse I1: …").
+            kill $(pidof amneziawg-go) 2>/dev/null; wait_for_pid_exit amneziawg-go 5
+            ip link del "$IFACE" 2>/dev/null
+            LOG_LEVEL=verbose "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1 &
+            if wait_for_iface "$IFACE" 5 && wait_for_uapi "$IFACE" 8; then
+                "$AWG_BIN" setconf "$IFACE" "$CONF" >/dev/null 2>&1
+                local vrej
+                vrej=$(grep -iE 'fail|invalid|error|parse|unable|reject|must be|overlap|not.*valid' /tmp/awg_daemon.log 2>/dev/null \
+                       | grep -ivF 'first class support' | head -3 | tr '\n' '|')
+                [ -n "$vrej" ] && log_msg "  verbose reject: $vrej"
+            fi
         fi
         ip link del "$IFACE" 2>/dev/null
         pidof amneziawg-go >/dev/null 2>&1 && kill $(pidof amneziawg-go) 2>/dev/null
