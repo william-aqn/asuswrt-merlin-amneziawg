@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.15"
+AWG_VERSION="1.2.16"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1009,17 +1009,33 @@ detect_dpi_tool(){
     nft list ruleset 2>/dev/null | grep -qE 'queue (num|to)|tproxy' && { echo "DPI (nft queue)"; return; }
 }
 
-# True when the firmware's OWN DNS redirection is active: DNSFilter / DNS Director
-# (dnsfilter_enable_x), or DoT/DNS-over-TLS via stubby (dnspriv_enable). Like the
-# zapret/xray case, we must NOT slam our global :53 DNAT on top of it — that would silently
-# override the user's per-client DNS policy or disable encrypted DNS. When detected we skip
-# our hijack (geo-by-IP still works; only forced domain-geo is weakened for external-resolver
-# clients) instead of fighting the firmware.
+# True when a co-resident DNS OWNER is active and we must NOT slam our global :53 DNAT on top of
+# it: AdGuardHome (it becomes the LAN's resolver — clients bypass dnsmasq entirely), or the
+# firmware's own DNSFilter / DNS Director (dnsfilter_enable_x / dns_director_enable), or
+# DoT/DNS-over-TLS via stubby (dnspriv_enable). Forcing our hijack over any of these would
+# override the user's DNS policy / encrypted DNS, or fight AGH for :53. When detected we skip the
+# hijack (geo-by-IP still works; only forced domain-geo is weakened for clients that resolve past
+# the router) instead of fighting the resolver owner. intercept_wanted() shares this, so the
+# watchdog reconciler can't drift from setup_firewall's decision.
 fw_dns_redirect_active(){
+    pidof AdGuardHome >/dev/null 2>&1 && return 0
     [ "$(nvram get dnsfilter_enable_x 2>/dev/null)" = "1" ] && return 0
     [ "$(nvram get dns_director_enable 2>/dev/null)" = "1" ] && return 0
     [ "$(nvram get dnspriv_enable 2>/dev/null)" = "1" ] && return 0
     return 1
+}
+
+# Name the SPECIFIC DNS owner (for the start-log diagnostics), with its process/nvram flag so a
+# reader can tell WHAT disabled our :53 capture — and, crucially, distinguish the case that still
+# lets geo-by-domain populate (DoT: dnsmasq stays the resolver) from the ones that DON'T:
+# AdGuardHome and DNSFilter / DNS Director redirect clients PAST dnsmasq, so domains never enter
+# the set. AGH is named first — it usually rides on top of one of the nvram flags below.
+# Echoes nothing when no DNS owner is active.
+fw_dns_redirect_name(){
+    pidof AdGuardHome >/dev/null 2>&1 && { echo "AdGuardHome (DNS owner — clients bypass dnsmasq ipset)"; return; }
+    [ "$(nvram get dnsfilter_enable_x 2>/dev/null)" = "1" ] && { echo "firmware DNSFilter (dnsfilter_enable_x=1)"; return; }
+    [ "$(nvram get dns_director_enable 2>/dev/null)" = "1" ] && { echo "firmware DNS Director (dns_director_enable=1)"; return; }
+    [ "$(nvram get dnspriv_enable 2>/dev/null)" = "1" ] && { echo "firmware DoT/DNS-over-TLS (dnspriv_enable=1)"; return; }
 }
 
 # Single source of truth for "should the global :53 DNS interception be installed right now?"
@@ -1276,6 +1292,12 @@ reload_dnsmasq(){
         # it, so they never touch the DNAT. setup_dns_interception self-guards on dnsmasq up.
         [ "$1" = "1" ] && setup_dns_interception
         if [ -f "$DNSMASQ_AWG_CONF" ]; then
+            # Snapshot the LIVE geo ipset entry count before/after the pre-resolve so the log shows
+            # whether domains actually landed in the set — not just that the ipset= RULES were
+            # written ("Firewall configured: N IPs, M domains" is a build-time snapshot + a rule
+            # tally, NOT proof of population). A no-growth result is the fingerprint of "domains
+            # don't route": either the resolver is down, or clients/the geo conf never feed the set.
+            _pre_ips=$(geo_ipset_total)
             bg_count=0
             awk -F/ '/^ipset=/{for(i=2;i<NF;i++)print $i}' "$DNSMASQ_AWG_CONF" | while read -r domain; do
                 [ -z "$domain" ] && continue
@@ -1284,6 +1306,14 @@ reload_dnsmasq(){
                 [ $bg_count -ge 10 ] && { wait; bg_count=0; }
             done
             wait
+            _post_ips=$(geo_ipset_total)
+            if [ "$_post_ips" != "$_pre_ips" ]; then
+                log_msg "Geo domain pre-resolve: ipset grew ${_pre_ips} -> ${_post_ips} entries (domains resolving into sets)"
+            elif dns_ok; then
+                log_msg "Geo domain pre-resolve: ipset UNCHANGED at ${_pre_ips} — resolver answers real names but domain IPs are NOT landing in the set (geo conf not loaded into dnsmasq, or restart was skipped) — a restart usually fixes it"
+            else
+                log_msg "Geo domain pre-resolve: ipset UNCHANGED at ${_pre_ips} — router DNS not resolving real names yet (WAN/upstream/DoT not ready); domains will fill on later client queries"
+            fi
         fi
     ) </dev/null >/dev/null 2>&1 &
 }
@@ -1694,14 +1724,22 @@ setup_firewall(){
     # after dnsmasq is confirmed answering (the reload block below). Installing it here, before
     # reload_dnsmasq restarts dnsmasq, would DNAT all LAN DNS to a resolver that's bouncing →
     # every device loses DNS until the restart/retry loop settles (the "can't connect" hang).
-    local _want_intercept=0
+    local _want_intercept=0 _fwdns=""
     if [ "$default_policy" != "direct" ] || [ "$has_geo" = true ]; then
         if [ "$(get_setting awg_no_dns_intercept)" = "1" ]; then
             log_msg "DNS interception OFF (awg_no_dns_intercept=1) — coexistence mode"
         elif zapret_active; then
             log_msg "DNS interception OFF — $(detect_dpi_tool) detected, coexisting (geo-by-IP still active)"
         elif fw_dns_redirect_active; then
-            log_msg "DNS interception OFF — firmware DNSFilter/DNS Director/DoT active, not overriding (geo-by-IP still active)"
+            # Name the exact DNS owner + spell out the consequence for geo-by-domain, so the start
+            # log alone explains "domains don't route" without any on-router commands.
+            _fwdns=$(fw_dns_redirect_name)
+            log_msg "DNS interception OFF — ${_fwdns} active, not overriding (geo-by-IP still active)"
+            case "$_fwdns" in
+                AdGuardHome*) log_msg "  note: AdGuardHome resolves clients directly — they bypass dnsmasq's ipset= directive, so geo-by-domain won't populate via dnsmasq; AGH has its own ipset feature (currently unconfigured — point it at the geo set to route domains)" ;;
+                *DoT*)        log_msg "  note: DoT keeps dnsmasq as the resolver — geo-by-domain still populates for clients that use the router's DNS (not external DoH/DoT)" ;;
+                *)            log_msg "  note: this redirects clients PAST dnsmasq — geo-by-domain will NOT populate unless firmware DNS is set to 'Router' (or interception is forced)" ;;
+            esac
         else
             _want_intercept=1
         fi
