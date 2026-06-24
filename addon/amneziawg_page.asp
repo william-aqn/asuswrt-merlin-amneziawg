@@ -4147,7 +4147,7 @@ function initAutocompleteIp(){
                 <div id="awg_log" class="awg-log" data-i18n="LOG_WAITING">Waiting for data…</div>
                 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px 10px; font-size:11px; opacity:0.55; margin-top:4px;">
                     <span style="margin-right:auto;">
-                        <span data-i18n="DONATE_LABEL" style="color:#ffd24a; font-weight:bold;">Support the project</span>&nbsp;&middot;&nbsp;<a href="https://boosty.to/dcrm/donate" target="_blank" style="text-decoration:none;">Boosty</a>&nbsp;&middot;&nbsp;USDT (TRC-20):
+                        <span data-i18n="DONATE_LABEL" style="color:#ffd24a; font-weight:bold;">Support the project</span>&nbsp;&middot;&nbsp;USDT (TRC-20):
                         <code onclick="awgCopyAddr('TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr', this);" title="Click to copy the address" data-i18n-title="DONATE_COPY_TITLE" style="cursor:pointer; padding:1px 4px; border:1px solid #555; border-radius:3px; font-size:11px;">TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr</code>
                     </span>
                     <span style="text-align:right;">

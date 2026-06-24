@@ -320,8 +320,6 @@ A: It's a harmless warning, not an error. The `ipset` userspace tool (both the f
 
 If you find this project useful, you can support its development:
 
-**Boosty:** [boosty.to/dcrm/donate](https://boosty.to/dcrm/donate)
-
 **USDT (TRC-20):** `TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr`
 
 ## Disclaimer

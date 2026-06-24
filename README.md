@@ -350,8 +350,6 @@ opkg remove amneziawg
 
 Если проект оказался полезен — можно поддержать разработку:
 
-**Boosty:** [boosty.to/dcrm/donate](https://boosty.to/dcrm/donate)
-
 **USDT (TRC-20):** `TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr`
 
 ## Благодарности
