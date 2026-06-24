@@ -8,6 +8,8 @@ DPI-obfuscated WireGuard VPN client with web UI for ASUS routers running [Asuswr
 
 Fully userspace implementation -- no kernel module required, works on any kernel version.
 
+> **About:** originally a fork of [r0otx/asuswrt-merlin-amneziawg](https://github.com/r0otx/asuswrt-merlin-amneziawg), but the project has changed substantially since forking and is now maintained independently. Thanks to r0otx for the original foundation.
+
 <details>
     <summary>Supported devices</summary>
 

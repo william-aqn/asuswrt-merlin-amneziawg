@@ -11,6 +11,8 @@ VPN-клиент с обходом DPI-блокировок на базе [Amnez
 
 Полностью userspace-реализация -- не требует kernel module, работает на любой версии ядра.
 
+> **О проекте:** изначально форк [r0otx/asuswrt-merlin-amneziawg](https://github.com/r0otx/asuswrt-merlin-amneziawg), но с момента ответвления проект очень сильно переработан и развивается самостоятельно. Спасибо r0otx за исходную основу.
+
 <details>
     <summary>Поддерживаемые устройства</summary>
 
