@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.18"
+AWG_VERSION="1.2.19"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1036,6 +1036,28 @@ fw_dns_redirect_name(){
     [ "$(nvram get dnsfilter_enable_x 2>/dev/null)" = "1" ] && { echo "firmware DNSFilter (dnsfilter_enable_x=1)"; return; }
     [ "$(nvram get dns_director_enable 2>/dev/null)" = "1" ] && { echo "firmware DNS Director (dns_director_enable=1)"; return; }
     [ "$(nvram get dnspriv_enable 2>/dev/null)" = "1" ] && { echo "firmware DoT/DNS-over-TLS (dnspriv_enable=1)"; return; }
+}
+
+# True when AdGuardHome is the active resolver on this box (it fronts :53 and clients bypass
+# dnsmasq). Used to surface the "wait for AGH" autostart option in the UI and to gate it.
+agh_present(){ pidof AdGuardHome >/dev/null 2>&1; }
+
+# Block up to $1 seconds (default 60) until AdGuardHome is up AND bound to :53, then return 0.
+# With AGH fronting DNS, autostart's dnsmasq restart is what triggers AMAGHI's ipset collector —
+# so waiting for AGH to be READY (not a blind sleep) guarantees the geo-ipset bridge is rebuilt
+# against a live AGH. Returns 1 on timeout and proceeds anyway, so a missing/renamed AGH binary
+# can never wedge autostart.
+wait_for_agh(){
+    local max="${1:-60}" i=0
+    while [ "$i" -lt "$max" ]; do
+        if pidof AdGuardHome >/dev/null 2>&1 && netstat -ln 2>/dev/null | grep -qE '[:.]53[[:space:]]'; then
+            log_msg "AdGuardHome ready after ${i}s — proceeding with autostart"
+            return 0
+        fi
+        i=$((i + 1)); sleep 1
+    done
+    log_msg "AdGuardHome not confirmed ready after ${max}s — proceeding with autostart anyway"
+    return 1
 }
 
 # Single source of truth for "should the global :53 DNS interception be installed right now?"
@@ -2200,6 +2222,18 @@ do_start(){
         fi
     fi
 
+    # Optional pre-start delay + AdGuardHome-readiness wait. Out of the box the delay is 0 (start
+    # immediately, as before) and is settable from the UI (awg_start_delay, 0-300s). On AGH boxes
+    # the geo-by-domain ipset bridge is (re)built by AMAGHI's collector when we restart dnsmasq
+    # below, so awg_wait_for_agh holds until AGH is actually up on :53 — deterministic ordering
+    # instead of a fixed guess. Both are no-ops by default / when AGH is already up, so manual
+    # starts and watchdog auto-recovery aren't slowed.
+    local _start_delay
+    _start_delay=$(get_setting awg_start_delay)
+    { [ -n "$_start_delay" ] && validate_uint "$_start_delay" && [ "$_start_delay" -le 300 ]; } || _start_delay=0
+    [ "$_start_delay" -gt 0 ] && { log_msg "Pre-start delay: ${_start_delay}s"; sleep "$_start_delay"; }
+    [ "$(get_setting awg_wait_for_agh)" = "1" ] && agh_present && wait_for_agh 60
+
     acquire_lock || { log_msg "Cannot acquire lock, aborting start"; update_status; return 1; }
 
     generate_config || { update_status; release_lock; return 1; }
@@ -2498,6 +2532,10 @@ EOF
     # Kill-switch state (opt-in fail-closed routing) for the UI toggle.
     local killswitch=false
     [ "$(get_setting awg_killswitch)" = "1" ] && killswitch=true
+    # AdGuardHome present? Surfaced so the page shows the "wait for AGH on autostart" option only
+    # on AGH boxes (where the geo-ipset bridge depends on AGH being ready before our dnsmasq restart).
+    local agh=false
+    agh_present && agh=true
     # Coexistence alarm: a DPI/proxy tool present AND an all->VPN policy that pulls LAN
     # traffic into the tunnel. Surfaced so the page can render a blocking banner.
     local coexist_warn=false
@@ -2516,7 +2554,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
@@ -2848,11 +2886,11 @@ do_mount_ui(){
 
     [ -f "$GEO_DIR/v2fly_categories.txt" ] && cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
     update_status
-
-    if [ "$(get_setting awg_autostart)" = "1" ]; then
-        sleep 10
-        do_start
-    fi
+    # NOTE: the tunnel's boot autostart is the .ipk's S99amneziawg init script (Entware rc.unslung
+    # -> 'amneziawg.sh start' -> do_start), NOT this hook. The old `awg_autostart` branch here was
+    # dead code (the key was never set anywhere and had no UI) and is removed. The optional
+    # pre-start delay and the AdGuardHome-readiness wait now live in do_start — the single real
+    # start path hit by every trigger (boot, UI, restart, watchdog).
 }
 
 do_uninstall(){

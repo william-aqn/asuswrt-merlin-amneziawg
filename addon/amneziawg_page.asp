@@ -570,6 +570,13 @@ en: {
     TH_ZAPRET_COMPAT: "Compatibility mode",
     LBL_NO_DNS_INTERCEPT: "Compatibility mode — coexist with zapret2 / Xray / b4 (don't intercept DNS)",
     HINT_NO_DNS_HTML: "<summary>Compatibility mode: disables AmneziaWG's DNS interception (port :53) so it can't clash with a co-resident DPI/proxy tool. ON by default for new installs. <u>Details</u></summary>Keep it on if <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) or <b>b4</b> runs alongside — otherwise a DNS conflict can leave the network without internet. Geo by IP (GeoIP/antifilter) keeps working; geo by domains keeps working for clients that use the router as their DNS — only clients with a hardcoded external resolver lose domain-geo. A nearby zapret2 / Xray / v2ray / sing-box / b4 or NFQUEUE/TPROXY (iptables or nft) footprint also disables interception automatically even without this checkbox. Note: this only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».",
+    TH_START_DELAY: "Startup delay",
+    ARIA_START_DELAY: "Startup delay in seconds",
+    LBL_START_DELAY_UNIT: "sec",
+    HINT_START_DELAY: "Pause before starting the tunnel on boot. 0 = start immediately (default). Increase only if the tunnel comes up before the network or a co-resident resolver is ready.",
+    TH_WAIT_AGH: "AdGuardHome",
+    LBL_WAIT_AGH: "On autostart, wait until AdGuardHome is up before starting the tunnel",
+    HINT_WAIT_AGH_HTML: "<summary>AdGuardHome detected. With this on, on boot AmneziaWG waits until AGH is actually up on :53 before starting (capped at 60s). <u>Why</u></summary>AdGuardHome fronts DNS on this router, and AmneziaWG's geo-by-domain routing reaches AGH through AMAGHI's ipset collector, which re-scans whenever AmneziaWG restarts dnsmasq. If that restart runs before AGH is ready, the geo set may not get (re)bridged. Waiting until AGH answers on :53 makes the ordering deterministic. Off — start without waiting (set a fixed «Startup delay» above if you prefer a pause).",
     SEC_DEVICE_RULES: "Device rules",
     TH_IP_ADDRESS: "IP address",
     TH_DEVICE_NAME: "Device name",
@@ -890,6 +897,13 @@ ru: {
     TH_ZAPRET_COMPAT: "Режим совместимости",
     LBL_NO_DNS_INTERCEPT: "Режим совместимости — сосуществование с zapret2 / Xray / b4 (не перехватывать DNS)",
     HINT_NO_DNS_HTML: "<summary>Режим совместимости: отключает перехват DNS (порт :53) у AmneziaWG, чтобы он не конфликтовал с соседней DPI/прокси-утилитой. Для новых установок включён по умолчанию. <u>Подробнее</u></summary>Держите включённым, если рядом работает <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) или <b>b4</b> — иначе конфликт DNS может оставить сеть без интернета. Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам работает для клиентов, использующих роутер как DNS — только клиенты с жёстко прописанным внешним резолвером теряют geo по доменам. Обнаруженный рядом zapret2 / Xray / v2ray / sing-box / b4 или след NFQUEUE/TPROXY (iptables или nft) тоже отключает перехват автоматически даже без этой галочки. Важно: галочка решает только конфликт по DNS — при политике «VPN — весь трафик» маршрутизация всё равно заберёт трафик прокси, поэтому для совместимости выбирайте «Напрямую» или «VPN — только Geo».",
+    TH_START_DELAY: "Задержка запуска",
+    ARIA_START_DELAY: "Задержка запуска в секундах",
+    LBL_START_DELAY_UNIT: "с",
+    HINT_START_DELAY: "Пауза перед запуском туннеля на буте. 0 = сразу (по умолчанию). Увеличьте, только если туннель поднимается раньше, чем готова сеть или соседний резолвер.",
+    TH_WAIT_AGH: "AdGuardHome",
+    LBL_WAIT_AGH: "При автозапуске ждать готовности AdGuardHome перед запуском туннеля",
+    HINT_WAIT_AGH_HTML: "<summary>Обнаружен AdGuardHome. С этой галочкой при загрузке AmneziaWG ждёт, пока AGH реально поднимется на :53, и только потом стартует (потолок 60 с). <u>Зачем</u></summary>На этом роутере DNS обслуживает AdGuardHome, а geo-по-доменам у AmneziaWG доезжает до AGH через ipset-коллектор AMAGHI, который пересканирует конфиг при каждом перезапуске dnsmasq. Если перезапуск случится раньше готовности AGH, гео-набор может не перемоститься. Ожидание ответа AGH на :53 делает порядок детерминированным. Выкл — старт без ожидания (можно задать фиксированную «Задержку запуска» выше).",
     SEC_DEVICE_RULES: "Правила устройств",
     TH_IP_ADDRESS: "IP-адрес",
     TH_DEVICE_NAME: "Имя устройства",
@@ -1781,6 +1795,10 @@ function applyConfig(actionScript){
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
     custom_settings.awg_no_dns_intercept = document.getElementById('awg_no_dns_intercept').checked ? '1' : '0';
     custom_settings.awg_killswitch = document.getElementById('awg_killswitch').checked ? '1' : '0';
+    var _wfa = document.getElementById('awg_wait_for_agh');
+    if(_wfa) custom_settings.awg_wait_for_agh = _wfa.checked ? '1' : '0';
+    var _sd = document.getElementById('awg_start_delay');
+    if(_sd){ var _sdv = parseInt(_sd.value, 10); custom_settings.awg_start_delay = (isNaN(_sdv) || _sdv < 0) ? '0' : String(Math.min(_sdv, 300)); }
     // Watchdog probe hosts: keep only safe host chars (IP/hostname + separators), collapse spaces
     custom_settings.awg_watchdog_hosts = document.getElementById('awg_watchdog_hosts').value.replace(/[^0-9A-Za-z.\-, ]/g, '').replace(/\s+/g, ' ').trim();
     custom_settings.awg_geo_wipe_update = document.getElementById('awg_geo_wipe_update').checked ? '1' : '0';
@@ -2256,6 +2274,11 @@ function loadGeoSettings(){
     // Kill-switch (default off — preserves prior fail-open behavior unless the user opts in)
     var ks = document.getElementById('awg_killswitch');
     if(ks) ks.checked = (custom_settings.awg_killswitch === '1');
+    // Wait-for-AdGuardHome on autostart (only meaningful/visible on AGH boxes; default off).
+    var wfa = document.getElementById('awg_wait_for_agh');
+    if(wfa) wfa.checked = (custom_settings.awg_wait_for_agh === '1');
+    var sd = document.getElementById('awg_start_delay');
+    if(sd) sd.value = (custom_settings.awg_start_delay && custom_settings.awg_start_delay !== '0') ? custom_settings.awg_start_delay : '';
     // Watchdog probe hosts (empty = backend default 8.8.8.8 1.1.1.1)
     var wh = document.getElementById('awg_watchdog_hosts');
     if(wh) wh.value = custom_settings.awg_watchdog_hosts || '';
@@ -3195,6 +3218,11 @@ function updateStatusUI(s){
         notdl.style.display = (geoVisible && !s.geo_downloaded && !awgGeoBusy) ? '' : 'none';
     }
 
+    // The "wait for AdGuardHome" autostart option is only meaningful on AGH boxes — show its row
+    // only when the backend reports AdGuardHome present (status.agh).
+    var aghRow = document.getElementById('awg_wait_for_agh_row');
+    if(aghRow) aghRow.style.display = (s && s.agh) ? '' : 'none';
+
     renderCoexistWarning(s);
 }
 
@@ -3896,6 +3924,23 @@ function initAutocompleteIp(){
                     <td>
                         <label><input type="checkbox" id="awg_no_dns_intercept"> <span data-i18n="LBL_NO_DNS_INTERCEPT" style="color:#FFCC00;">Compatibility mode — coexist with zapret2 / Xray / b4 (don't intercept DNS)</span></label>
                         <details class="awg-hint" data-i18n-html="HINT_NO_DNS_HTML"><summary>Compatibility mode: disables AmneziaWG's DNS interception (port :53) so it can't clash with a co-resident DPI/proxy tool. ON by default for new installs. <u>Details</u></summary>Keep it on if <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) or <b>b4</b> runs alongside — otherwise a DNS conflict can leave the network without internet. Geo by IP (GeoIP/antifilter) keeps working; geo by domains keeps working for clients that use the router as their DNS — only clients with a hardcoded external resolver lose domain-geo. A nearby zapret2 / Xray / v2ray / sing-box / b4 or NFQUEUE/TPROXY (iptables or nft) footprint also disables interception automatically even without this checkbox. Note: this only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».</details>
+                    </td>
+                </tr>
+                <tr>
+                    <th data-i18n="TH_START_DELAY">Startup delay</th>
+                    <td>
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <input type="text" class="input_25_table" id="awg_start_delay" maxlength="3" placeholder="0" style="width:90px; flex:0 0 auto;" aria-label="Startup delay in seconds" data-i18n-aria="ARIA_START_DELAY">
+                            <span data-i18n="LBL_START_DELAY_UNIT" style="color:#9aa;">sec</span>
+                        </div>
+                        <div class="awg-hint" data-i18n="HINT_START_DELAY">Pause before starting the tunnel on boot. 0 = start immediately (default). Increase only if the tunnel comes up before the network or a co-resident resolver is ready.</div>
+                    </td>
+                </tr>
+                <tr id="awg_wait_for_agh_row" style="display:none;">
+                    <th data-i18n="TH_WAIT_AGH">AdGuardHome</th>
+                    <td>
+                        <label><input type="checkbox" id="awg_wait_for_agh"> <span data-i18n="LBL_WAIT_AGH">On autostart, wait until AdGuardHome is up before starting the tunnel</span></label>
+                        <details class="awg-hint" data-i18n-html="HINT_WAIT_AGH_HTML"><summary>AdGuardHome detected. With this on, on boot AmneziaWG waits until AGH is actually up on :53 before starting (capped at 60s). <u>Why</u></summary>AdGuardHome fronts DNS on this router, and AmneziaWG's geo-by-domain routing reaches AGH through AMAGHI's ipset collector, which re-scans whenever AmneziaWG restarts dnsmasq. If that restart runs before AGH is ready, the geo set may not get (re)bridged. Waiting until AGH answers on :53 makes the ordering deterministic. Off — start without waiting (set a fixed «Startup delay» above if you prefer a pause).</details>
                     </td>
                 </tr>
                 </table>
