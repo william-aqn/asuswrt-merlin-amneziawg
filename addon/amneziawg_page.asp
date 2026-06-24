@@ -535,7 +535,6 @@ en: {
     BTN_START: "Start",
     BTN_STOP: "Stop",
     BTN_RESTART: "Restart",
-    BTN_CANCEL: "Cancel",
     BTN_WD_FROM_DNS: "From DNS",
     TITLE_WD_FROM_DNS: "Fill in from the Interface DNS above",
     MSG_NO_DNS_FOR_WD: "The Interface DNS field is empty — set the DNS first.",
@@ -856,7 +855,6 @@ ru: {
     BTN_START: "Запустить",
     BTN_STOP: "Остановить",
     BTN_RESTART: "Перезапустить",
-    BTN_CANCEL: "Отменить",
     BTN_WD_FROM_DNS: "Из DNS",
     TITLE_WD_FROM_DNS: "Заполнить из поля DNS интерфейса выше",
     MSG_NO_DNS_FOR_WD: "Поле DNS интерфейса пустое — сначала укажите DNS.",
@@ -2461,11 +2459,21 @@ function awgActionRecover(pollId){
 function awgAction(action){
     document.form.action_script.value = action;
     awgSubmitForm();
-    var badge = document.getElementById('awg_badge');
-    var isStop = action.indexOf('stop') !== -1;
-    var expect = !isStop;
+    var kind = action.indexOf('stop') !== -1 ? 'stop' : (action.indexOf('restart') !== -1 ? 'restart' : 'start');
     // Flip the header widget's icon in the same frame as our buttons (it polls independently).
-    awgSignalWidget(isStop ? 'stop' : (action.indexOf('restart') !== -1 ? 'restart' : 'start'));
+    awgSignalWidget(kind);
+    // Drive the page's own status block into the transitional state + poll to completion.
+    awgEnterTransition(kind);
+}
+
+// Move the page's status badge/buttons into the transitional state for `kind`
+// ('start'|'stop'|'restart') and poll until the backend settles. Split out of awgAction so it can
+// run WITHOUT (re)firing the action — that's how a widget-initiated start/stop flips THIS page in
+// lockstep (see window.awgPageSignal) instead of lagging up to one 5s steady poll.
+function awgEnterTransition(kind){
+    var badge = document.getElementById('awg_badge');
+    var isStop = (kind === 'stop');
+    var expect = !isStop;
 
     // Stop periodic refresh and any prior in-flight action poll
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
@@ -2477,21 +2485,11 @@ function awgAction(action){
     var sBtn = document.getElementById('btn_start');
     var pBtn = document.getElementById('btn_stop');
     var rBtn = document.getElementById('btn_restart');
-    if(isStop){
-        // Stopping — collapse the actions row to just the «Остановка…» badge: hide every button.
-        // The stop is quick and final, so there's nothing useful to offer mid-stop; the steady
-        // poll's stopping-branch keeps them hidden until it completes, then shows «Запустить».
-        // (Replaces the old disabled-but-visible [Остановить][Перезапустить], which looked odd.)
-        sBtn.style.display = pBtn.style.display = rBtn.style.display = 'none';
-    } else {
-        // Starting/restarting — surface the Stop button relabelled «Cancel» so the user can
-        // abort the attempt instead of staring at a dead, still-labelled «Start» button.
-        sBtn.style.display = 'none';
-        rBtn.style.display = 'none';
-        pBtn.style.display = '';
-        pBtn.disabled = false;
-        pBtn.value = T('BTN_CANCEL');
-    }
+    // Any transition (start / stop / restart) — collapse the actions row to just the badge: hide
+    // every button. The phase is short and there's nothing useful to offer mid-transition;
+    // «Отменить» is intentionally gone (per request). The steady poll keeps them hidden until the
+    // backend settles, then shows the right control («Запустить» or «Остановить»/«Перезапустить»).
+    sBtn.style.display = pBtn.style.display = rBtn.style.display = 'none';
 
     // Show transitional status
     badge.className = 'awg-status connecting';
@@ -2527,12 +2525,17 @@ function awgAction(action){
         xhr.onerror = function(){ if(myGen !== awgActionGen){ clearInterval(poll); return; } if(attempts >= 90){ awgActionRecover(poll); } };
         // Without an ontimeout, a router that only times out (typical while a half-started
         // tunnel is breaking routing/DNS) never reaches the attempts>=90 recovery and the
-        // poll wedges forever — leaving a stranded, disabled «Cancel». Mirror onerror.
+        // poll wedges forever — leaving the page stuck mid-transition. Mirror onerror.
         xhr.ontimeout = function(){ if(myGen !== awgActionGen){ clearInterval(poll); return; } if(attempts >= 90){ awgActionRecover(poll); } };
         xhr.send();
     }, 2000);
     awgPoll = poll;
 }
+
+// Called by the header widget when ITS button starts an action, so this page's status block flips
+// in lockstep instead of waiting up to one 5s steady poll. The widget already POSTed the action —
+// we only mirror the UI and take over polling. Wrapped so a thrown error can't break the widget.
+window.awgPageSignal = function(kind){ try { awgEnterTransition(kind); } catch(e){} };
 
 function showLoading(){}
 function hideLoading(){}
@@ -3039,7 +3042,7 @@ function awgRefreshStatus(){
     xhr.timeout = 3000;
     xhr.onload = function(){
         // A start/stop/restart action issued after this refresh now owns the UI — drop the stale
-        // read so it can't repaint the start button over the transitional «Cancel» state.
+        // read so it can't repaint the buttons over the transitional connecting/stopping state.
         if(gen !== awgActionGen) return;
         if(xhr.status === 200){
             try {
@@ -3106,10 +3109,9 @@ function updateStatusUI(s){
     } else if(s.starting){
         badge.className = 'awg-status connecting';
         badge.innerHTML = '&#9679; ' + escHtml(T('STAT_CONNECTING'));
+        // Connecting — show only the badge, no buttons («Отменить» removed per request).
         document.getElementById('btn_start').style.display = 'none';
-        // Still connecting — let the Stop button read «Cancel» and abort the attempt.
-        document.getElementById('btn_stop').style.display = '';
-        document.getElementById('btn_stop').value = T('BTN_CANCEL');
+        document.getElementById('btn_stop').style.display = 'none';
         document.getElementById('btn_restart').style.display = 'none';
     } else {
         badge.className = 'awg-status stopped';
@@ -3227,9 +3229,9 @@ function setOfflineUI(){
     var badge = document.getElementById('awg_badge');
     badge.className = 'awg-status stopped';
     badge.innerHTML = '&#9679; ' + escHtml(T('STAT_STOPPED'));
-    // Always land on a clean, clickable «Start»: re-enable the buttons (an action may have
-    // disabled them) and reset the Stop button's label back from «Cancel» so a stranded
-    // transition can never leave a dead, mislabelled control as the only option.
+    // Always land on a clean, clickable «Start»: re-show + re-enable it (a transition may have
+    // hidden/disabled the buttons) so a stranded transition can never leave the page without a
+    // clickable control.
     var sBtn = document.getElementById('btn_start');
     var pBtn = document.getElementById('btn_stop');
     var rBtn = document.getElementById('btn_restart');

@@ -339,7 +339,27 @@
       if (transitioning) return;
       var stop = (lastRunning === true);
       fire(stop ? "start_awgstop" : "start_awgstart");
+      notifyPage(stop ? "stop" : "start"); // flip the addon page in lockstep if it's open
       beginTransition(!stop, false);
+    }
+
+    // Mirror our own button action into the addon settings page when it's the page currently open
+    // (same window on classic firmware, or a child iframe on the newer iframe UI), so its status
+    // block reacts in the same frame instead of lagging its 5s steady poll. The page exposes
+    // window.awgPageSignal; this is a no-op on every other firmware page. All in try/catch.
+    function notifyPage(kind) {
+      try {
+        if (typeof window.awgPageSignal === "function") { window.awgPageSignal(kind); return; }
+        if (window.frames) {
+          for (var f = 0; f < window.frames.length; f++) {
+            try {
+              if (typeof window.frames[f].awgPageSignal === "function") {
+                window.frames[f].awgPageSignal(kind); return;
+              }
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
     }
 
     // Enter the transitional (amber) state and fast-poll until the backend settles. Shared by
