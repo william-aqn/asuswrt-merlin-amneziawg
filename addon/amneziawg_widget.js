@@ -23,8 +23,13 @@
 
     var lastRunning = null;     // null = неизвестно
     var lastData = null;        // последний разобранный JSON статуса
-    var transitioning = false;  // идёт инициированное нами переключение
+    var transitioning = false;  // идёт инициированное нами (или страницей) переключение
     var expectRunning = false;  // ожидаемое running после переключения
+    var sawTransition = false;  // в текущем переходе уже видели флаг starting/stopping в статусе
+    var restartCycle = false;   // переход running→running (перезапуск): ждём, пока увидим спад
+    var probePolls = 0;         // сколько ещё быстрых «зондирующих» опросов после refresh-сигнала
+    var transGuard = null;      // таймер-предохранитель текущего перехода
+    var pollMs = POLL_MS;       // текущий интервал опроса (чтобы не дёргать таймер зря)
 
     var T_ALL = {
       en: { title:"AmneziaWG VPN", on:"Connected", off:"Stopped", starting:"Connecting…", stopping:"Stopping…",
@@ -253,9 +258,14 @@
     }
 
     // Transient transition label, matching the main UI ("Подключение…" / "Остановка…").
+    // Prefer the backend's live phase flags (so a restart's stop→start sub-phases read right);
+    // before the first poll of an action we just initiated, fall back to the expected direction.
     function mvText() {
-      var up = transitioning ? expectRunning : !!(lastData && lastData.starting === true);
-      return up ? T.starting : T.stopping;
+      if (lastData) {
+        if (lastData.stopping === true) return T.stopping;
+        if (lastData.starting === true) return T.starting;
+      }
+      return (transitioning && expectRunning) ? T.starting : T.stopping;
     }
 
     function renderPanel() {
@@ -328,17 +338,44 @@
       if (e) { e.preventDefault(); e.stopPropagation(); }
       if (transitioning) return;
       var stop = (lastRunning === true);
-      expectRunning = !stop;
+      fire(stop ? "start_awgstop" : "start_awgstart");
+      beginTransition(!stop, false);
+    }
+
+    // Enter the transitional (amber) state and fast-poll until the backend settles. Shared by
+    // the widget's own button and the addon page's signal so both react to one event.
+    // expectUp: tunnel should end up running. isRestart: a running→running cycle — we must
+    // observe the tunnel go down (or a phase flag) before resolving, else the still-up
+    // running=true at click time would resolve us instantly (icon flashes green mid-restart).
+    function beginTransition(expectUp, isRestart) {
+      expectRunning = !!expectUp;
+      restartCycle = !!isRestart;
+      sawTransition = false;
       transitioning = true;
       renderIndicator();
-      renderPanel();
-      fire(stop ? "start_awgstop" : "start_awgstart");
+      if (isOpen()) renderPanel();
       restartTimer(FAST_MS);
-      poll(); // быстрый первый опрос после отправки
-      setTimeout(function () {
-        if (transitioning) { transitioning = false; restartTimer(POLL_MS); poll(); }
+      poll(); // быстрый первый опрос
+      if (transGuard) clearTimeout(transGuard);
+      transGuard = setTimeout(function () {
+        if (transitioning) { transitioning = false; ensureSlow(); poll(); }
       }, TRANSITION_MAX);
     }
+
+    // Public hook for the addon settings page (separate script in the same window — or the
+    // parent window when the addon runs inside the firmware's iframe UI). The page calls
+    // window.awgWidgetSignal('start'|'stop'|'restart') the instant ITS button is clicked, so the
+    // header icon flips in the same frame instead of lagging up to one 10s poll behind.
+    // 'refresh' is a light poke (used after «Применить»): no forced transition, just a short
+    // fast-probe so a restart the Apply may trigger is caught within ~2s — harmless if it
+    // triggers none. We never re-fire the action here; the page already POSTed it.
+    function externalAction(kind) {
+      if (kind === "refresh") { probePolls = 6; ensureFast(); poll(); return; }
+      beginTransition(kind !== "stop", kind === "restart");
+    }
+
+    function ensureFast() { if (pollMs !== FAST_MS) restartTimer(FAST_MS); }
+    function ensureSlow() { if (pollMs !== POLL_MS) restartTimer(POLL_MS); }
 
     function fire(action) {
       var sink = $("awgWidgetSink");
@@ -378,10 +415,34 @@
           var s = JSON.parse(x.responseText);
           lastData = s;
           lastRunning = (s.running === true);
-          if (transitioning && lastRunning === expectRunning) {
-            transitioning = false;
-            restartTimer(POLL_MS);
+
+          // Drive both the poll cadence and transition resolution off the backend's live phase
+          // flags, so the icon tracks any switch — ours, the page's, Apply's, the watchdog's.
+          var inFlight = (s.starting === true || s.stopping === true);
+          // "Saw the cycle" = observed a phase flag OR (for a restart) caught the tunnel down —
+          // either is proof the running→running restart actually happened, so a fast restart that
+          // slips between two polls still resolves on its own instead of waiting out the guard.
+          if (inFlight || (restartCycle && lastRunning === false)) sawTransition = true;
+          if (probePolls > 0) probePolls--;
+
+          if (transitioning) {
+            // Our explicit transition is done once the backend reports no in-progress flag AND
+            // the tunnel reached the expected state (for a restart, after we've seen it cycle).
+            if (!inFlight && lastRunning === expectRunning && (!restartCycle || sawTransition)) {
+              transitioning = false;
+              if (transGuard) { clearTimeout(transGuard); transGuard = null; }
+              ensureSlow();
+            } else {
+              ensureFast();
+            }
+          } else if (inFlight || probePolls > 0) {
+            // A switch started elsewhere (Apply / другая вкладка / вотчдог): mirror it and speed
+            // up so we catch its end promptly instead of up to one 10s poll late.
+            ensureFast();
+          } else {
+            ensureSlow();
           }
+
           // Самокоррекция языка после переключения языка прошивки — без перезагрузки страницы.
           if (s.lang) {
             var newLang = /^ru$/i.test(s.lang) ? 'ru' : 'en';
@@ -397,6 +458,7 @@
     }
 
     function restartTimer(ms) {
+      pollMs = ms;
       if (window.__awgPollTimer) clearInterval(window.__awgPollTimer);
       window.__awgPollTimer = setInterval(poll, ms);
     }
@@ -420,6 +482,11 @@
         }
       }
     }
+
+    // Expose the page→widget hook (see externalAction). Wrapped so a thrown error here can never
+    // break the firmware page that hosts us. Assigned now (the IIFE has fully initialised by this
+    // point) — the page only calls it later, on a user click.
+    window.awgWidgetSignal = function (kind) { try { externalAction(kind); } catch (e) {} };
 
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", function () { mount(0); }, false);

@@ -1816,6 +1816,10 @@ function applyConfig(actionScript){
     // the Apply buttons meanwhile so an impatient second tap can't queue a redundant
     // firewall rebuild / tunnel restart under the backend lock.
     awgSetApplyBusy(true);
+    // Sync the header icon. «Применить» (awgsaveconf) only rebuilds the firewall — no tunnel
+    // cycle — so a light fast-probe suffices. «Сохранить и перезапустить» (awgforceapply) really
+    // does do_stop; do_start, so give it the same full guarded amber transition as «Перезапустить».
+    awgSignalWidget(actionScript === 'start_awgforceapply' ? 'restart' : 'refresh');
     awgPostSettings(actionScript, null, null, function(ok){
         awgSetApplyBusy(false);
         awgShowAck(ok ? T('ACK_SAVED') : T('ACK_SEND_FAILED'), ok);
@@ -2428,12 +2432,40 @@ function addManualIPs(input){
     }
 }
 
+// Notify the header widget (a separate script — same window, or the parent window when the
+// addon runs inside the firmware's iframe UI) the instant we initiate an action, so its icon
+// reacts in lockstep with our buttons instead of lagging its own 10s poll. kind:
+// 'start'|'stop'|'restart' mirror the transition; 'refresh' is a light fast-probe after Apply.
+function awgSignalWidget(kind){
+    try {
+        var wins = [window, window.parent, window.top];
+        for(var i = 0; i < wins.length; i++){
+            var w = wins[i];
+            if(w && typeof w.awgWidgetSignal === 'function'){ w.awgWidgetSignal(kind); return; }
+        }
+    } catch(e){}
+}
+
+// Recover from a wedged transition (router unreachable for the whole ~180s action window): land
+// on a clean, clickable «Запустить» and resume the steady poll. setOfflineUI() resets BOTH
+// style.display AND disabled — essential now that the stop branch HIDES the buttons (a bare
+// disabled=false would leave them display:none, stranding the page with no clickable control).
+// The immediate awgRefreshStatus() lets a router that just came back correct the UI at once.
+function awgActionRecover(pollId){
+    clearInterval(pollId);
+    setOfflineUI();
+    if(!statusTimer) statusTimer = setInterval(awgRefreshStatus, 5000);
+    awgRefreshStatus();
+}
+
 function awgAction(action){
     document.form.action_script.value = action;
     awgSubmitForm();
     var badge = document.getElementById('awg_badge');
     var isStop = action.indexOf('stop') !== -1;
     var expect = !isStop;
+    // Flip the header widget's icon in the same frame as our buttons (it polls independently).
+    awgSignalWidget(isStop ? 'stop' : (action.indexOf('restart') !== -1 ? 'restart' : 'start'));
 
     // Stop periodic refresh and any prior in-flight action poll
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
@@ -2446,8 +2478,11 @@ function awgAction(action){
     var pBtn = document.getElementById('btn_stop');
     var rBtn = document.getElementById('btn_restart');
     if(isStop){
-        // Stopping — nothing to cancel; lock the controls for the transition.
-        sBtn.disabled = pBtn.disabled = rBtn.disabled = true;
+        // Stopping — collapse the actions row to just the «Остановка…» badge: hide every button.
+        // The stop is quick and final, so there's nothing useful to offer mid-stop; the steady
+        // poll's stopping-branch keeps them hidden until it completes, then shows «Запустить».
+        // (Replaces the old disabled-but-visible [Остановить][Перезапустить], which looked odd.)
+        sBtn.style.display = pBtn.style.display = rBtn.style.display = 'none';
     } else {
         // Starting/restarting — surface the Stop button relabelled «Cancel» so the user can
         // abort the attempt instead of staring at a dead, still-labelled «Start» button.
@@ -2486,14 +2521,14 @@ function awgAction(action){
                     document.getElementById('btn_restart').disabled = false;
                 }
             } catch(e){
-                if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; }
+                if(attempts >= 90){ awgActionRecover(poll); }
             }
         };
-        xhr.onerror = function(){ if(myGen !== awgActionGen){ clearInterval(poll); return; } if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
+        xhr.onerror = function(){ if(myGen !== awgActionGen){ clearInterval(poll); return; } if(attempts >= 90){ awgActionRecover(poll); } };
         // Without an ontimeout, a router that only times out (typical while a half-started
         // tunnel is breaking routing/DNS) never reaches the attempts>=90 recovery and the
         // poll wedges forever — leaving a stranded, disabled «Cancel». Mirror onerror.
-        xhr.ontimeout = function(){ if(myGen !== awgActionGen){ clearInterval(poll); return; } if(attempts >= 90){ clearInterval(poll); awgRefreshStatus(); document.getElementById('btn_start').disabled = false; document.getElementById('btn_stop').disabled = false; document.getElementById('btn_restart').disabled = false; } };
+        xhr.ontimeout = function(){ if(myGen !== awgActionGen){ clearInterval(poll); return; } if(attempts >= 90){ awgActionRecover(poll); } };
         xhr.send();
     }, 2000);
     awgPoll = poll;
