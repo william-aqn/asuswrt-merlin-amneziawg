@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.21"
+AWG_VERSION="1.2.22"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2139,8 +2139,26 @@ probe_bin(){
     [ -n "$out" ] && echo "      $(echo "$out" | head -2 | tr '\n' '|')"
 }
 
-# One-shot debug dump: platform, CPU, installed package, binary architectures, and live
-# SIGILL probes. Read-only — safe to run anytime. Usage: amneziawg.sh diag
+# Mask WireGuard secret values (private + preshared keys) from a config stream on stdin, so the
+# dump is safe to paste into a chat/issue. Public keys, endpoint and obfuscation params are kept —
+# they're needed to debug a setconf rejection and aren't secret.
+redact_secrets(){
+    sed -e 's/\(PrivateKey[[:space:]]*=[[:space:]]*\).*/\1<redacted>/' \
+        -e 's/\(PresharedKey[[:space:]]*=[[:space:]]*\).*/\1<redacted>/'
+}
+
+# Last N lines of a file, indented, or a "(no <file>)" note. Usage: tail_clip <file> [lines]
+tail_clip(){
+    if [ -f "$1" ]; then
+        tail -n "${2:-60}" "$1" 2>/dev/null | sed 's/^/  /'
+    else
+        echo "  (no $1)"
+    fi
+}
+
+# One-shot debug dump: platform, CPU, installed package, binary architectures, live SIGILL
+# probes, plus full system state (config/settings redacted, routing, dnsmasq, syslog, dmesg).
+# Read-only — safe to run anytime. Usage: amneziawg.sh diag
 do_diag(){
     echo "================= AmneziaWG diag ================="
     echo "addon version    : $AWG_VERSION"
@@ -2191,6 +2209,38 @@ do_diag(){
     echo "tun module loaded    : $(lsmod 2>/dev/null | grep -q '^tun ' && echo yes || echo no)"
     echo "modprobe tun         : $(modprobe tun 2>&1; echo rc=$?)"
     echo "/dev/net/tun         :"; ls -la /dev/net/tun 2>&1 | sed 's/^/  /'
+    echo "--- firmware / model ---"
+    echo "model            : $(nvram get productid 2>/dev/null) (odm $(nvram get odmpid 2>/dev/null))"
+    echo "firmware         : $(nvram get firmver 2>/dev/null).$(nvram get buildno 2>/dev/null)_$(nvram get extendno 2>/dev/null)"
+    echo "uptime/load      : $(uptime 2>/dev/null || cat /proc/loadavg 2>/dev/null)"
+    echo "native WireGuard : $(nvram show 2>/dev/null | grep -E '^(wgs|wgc[0-9]*)_enable=' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    echo "disk (jffs/opt/tmp):"; df -h /jffs /opt /tmp 2>/dev/null | sed 's/^/  /'
+    echo "--- generated config ($CONF, secrets redacted) ---"
+    if [ -f "$CONF" ]; then redact_secrets < "$CONF" | sed 's/^/  /'; else echo "  (no config generated yet)"; fi
+    echo "--- awg settings (custom_settings, secrets redacted) ---"
+    if [ -f "$SETTINGS" ]; then
+        grep '^awg_' "$SETTINGS" 2>/dev/null | awk '{k=$1; if(k ~ /^awg_iface_p1/||k ~ /^awg_peer_p2/||k ~ /priv/||k ~ /psk/||k ~ /preshar/||k ~ /secret/){print k" <redacted>"}else{print}}' | head -120 | sed 's/^/  /'
+    else echo "  (no $SETTINGS)"; fi
+    echo "--- awg show (live UAPI state, no secrets) ---"
+    if pidof amneziawg-go >/dev/null 2>&1; then "$AWG_BIN" show "$IFACE" 2>&1 | sed 's/^/  /'; else echo "  (daemon not running)"; fi
+    echo "--- routing (rule / table $RT_TABLE / fwmark marks) ---"
+    echo "ip rule:"; ip rule show 2>/dev/null | sed 's/^/  /'
+    echo "ip route table $RT_TABLE:"; ip route show table "$RT_TABLE" 2>/dev/null | sed 's/^/  /'
+    echo "mangle marks:"; iptables -t mangle -S 2>/dev/null | grep -iE 'awg|0x100|MARK' | head -30 | sed 's/^/  /'
+    echo "--- dnsmasq ---"
+    echo "args   : $(tr '\0' ' ' < /proc/$(pidof dnsmasq 2>/dev/null | awk '{print $1}')/cmdline 2>/dev/null)"
+    echo "conf.add (our block):"
+    if [ -f /jffs/configs/dnsmasq.conf.add ]; then
+        grep -nE 'AmneziaWG|amneziawg|awg' /jffs/configs/dnsmasq.conf.add 2>/dev/null | head -30 | sed 's/^/  /'
+    else echo "  (no dnsmasq.conf.add)"; fi
+    echo "--- processes (vpn / dpi / dns) ---"
+    ps 2>/dev/null | grep -iE 'amneziawg|awg0| awg |dnsmasq|xray|zapret|/b4| b4 |adguard|tpws|nfqws' | grep -v grep | head -25 | sed 's/^/  /'
+    echo "--- system log: awg / tun / OOM / segfault (filtered) ---"
+    { cat /tmp/syslog.log-1 /tmp/syslog.log; } 2>/dev/null | grep -iE 'amneziawg|awg0| awg |wireguard|tun[0-9 ]|out of memory|oom-killer|segfault|illegal instruction|traps:' | tail -50 | sed 's/^/  /'
+    echo "--- system log (/tmp/syslog.log, last 60 lines) ---"
+    tail_clip /tmp/syslog.log 60
+    echo "--- dmesg (kernel ring, last 60 lines) ---"
+    dmesg 2>/dev/null | tail -60 | sed 's/^/  /' || echo "  (dmesg unavailable)"
     echo "================================================="
 }
 
