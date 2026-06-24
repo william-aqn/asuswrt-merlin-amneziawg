@@ -1,7 +1,5 @@
 output/
 amneziawg-go/
-merlin-kernel/
-kernel.config
 *.ipk
 .DS_Store
 asuswrt-merlin-xrayui

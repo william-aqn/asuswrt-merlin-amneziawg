@@ -103,8 +103,6 @@ ssh admin@<router-ip>
 /jffs/addons/amneziawg/amneziawg.sh restart         # restart the tunnel with the new code
 ```
 
-> `install.sh` in the repo root is a legacy installer for the old kernel-module variant (`amneziawg.ko`); it is not used in the current userspace build.
-
 > GUI SCP clients: for Windows — [WinSCP](https://winscp.net/eng/download.php), for macOS — [MacSCP](https://www.macscp.co/).
 
 ### Post-installation
@@ -203,15 +201,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 go build -ldflags="-s -w" -o ../outp
 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -o ../output/amneziawg-go-arm
 ```
 
-### Build awg CLI tool (via Docker)
+### Build awg CLI tool (static musl)
+
+`awg` is linked statically against musl (to run on the router's older glibc). The canonical commands for every variant live in `.github/workflows/release.yml` (the "Build awg…" steps); CI builds `awg`/`awg-arm`/`awg-arm5` and publishes the `.ipk`s. Locally, for ARM64:
 
 ```shell
-# ARM64 (aarch64) — main Dockerfile
-./build.sh
-
-# ARM32 (static musl, works on both armv7-2.6 and armv7-3.2)
-DOCKER_BUILDKIT=1 docker build -f Dockerfile.arm32 --output=output .
+docker run --rm --platform linux/arm64 -v "$PWD/output:/out" alpine:3.19 sh -c \
+  'apk add --no-cache build-base linux-headers git && \
+   git clone --depth 1 --branch v1.0.20260223 https://github.com/amnezia-vpn/amneziawg-tools.git /t && \
+   cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && cp awg /out/awg'
 ```
+
+> ARM32: `armv7` — same with `--platform linux/arm/v7`; the old `armv5` (RT-AC68U) **must** be soft-float (`dockcross/linux-armv5-musl`) or it SIGILLs on VFP-less cores. Exact commands are in `release.yml`.
 
 ### Build .ipk package
 

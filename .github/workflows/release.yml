@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 env:
-  # amneziawg-tools (awg) — pinned to the same tag as the Dockerfiles
+  # amneziawg-tools (awg) release tag — the static-musl awg CLI is built from this tag
   AWG_TOOLS_TAG: v1.0.20260223
 
 jobs:

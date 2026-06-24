@@ -123,8 +123,6 @@ ssh admin@<ip-роутера>
 /jffs/addons/amneziawg/amneziawg.sh restart         # перезапустить туннель с новым кодом
 ```
 
-> `install.sh` в корне репозитория — устаревший инсталлятор для старого варианта с модулем ядра (`amneziawg.ko`); в текущей userspace-сборке он не используется.
-
 > SCP-клиенты с графическим интерфейсом: для Windows — [WinSCP](https://winscp.net/eng/download.php), для macOS — [MacSCP](https://www.macscp.co/).
 
 ### После установки
@@ -235,15 +233,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 go build -ldflags="-s -w" -o ../outp
 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -o ../output/amneziawg-go-arm
 ```
 
-### Сборка awg CLI (через Docker)
+### Сборка awg CLI (статический musl)
+
+Утилита `awg` линкуется статически с musl (чтобы работать на старой glibc роутера). Канонические команды для всех вариантов — в `.github/workflows/release.yml` (шаги «Build awg…»); CI собирает `awg`/`awg-arm`/`awg-arm5` и публикует `.ipk`. Локально для ARM64:
 
 ```shell
-# ARM64 (aarch64) — через основной Dockerfile
-./build.sh
-
-# ARM32 (static musl, для обоих armv7-2.6 и armv7-3.2)
-DOCKER_BUILDKIT=1 docker build -f Dockerfile.arm32 --output=output .
+docker run --rm --platform linux/arm64 -v "$PWD/output:/out" alpine:3.19 sh -c \
+  'apk add --no-cache build-base linux-headers git && \
+   git clone --depth 1 --branch v1.0.20260223 https://github.com/amnezia-vpn/amneziawg-tools.git /t && \
+   cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && cp awg /out/awg'
 ```
+
+> ARM32: `armv7` — то же с `--platform linux/arm/v7`; старый `armv5` (RT-AC68U) **обязательно** soft-float (`dockcross/linux-armv5-musl`), иначе SIGILL на ядрах без VFP. Точные команды — в `release.yml`.
 
 ### Сборка .ipk пакетов
 
