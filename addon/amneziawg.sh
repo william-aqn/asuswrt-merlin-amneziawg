@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.29"
+AWG_VERSION="1.2.30"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1038,6 +1038,29 @@ xray_redirect_active(){
     iptables-save -t mangle 2>/dev/null | grep -q 'TPROXY' && return 0
     ip rule show 2>/dev/null | grep -q 'from all fwmark 0x10000' && return 0
     return 1
+}
+
+# Stop a co-resident XRAYUI/Xray ON EXPLICIT USER ACTION (the coexistence banner's "Stop Xray"
+# button). Go through XRAYUI's OWN entry point — `/jffs/scripts/xrayui stop` runs its `stop()`
+# (killall xray + its `cleanup_firewall`), which is what actually REMOVES the TPROXY/fwmark rules.
+# A raw `killall xray` would leave those rules behind and the conflict would persist. We only ever
+# STOP, only when the user asks — never start or reconfigure xray.
+do_xray_stop(){
+    if [ ! -x /jffs/scripts/xrayui ]; then
+        log_msg "Stop Xray requested, but /jffs/scripts/xrayui not found — cannot control XRAYUI"
+        update_status
+        return 1
+    fi
+    log_msg "Stopping Xray (XRAYUI) at user request: /jffs/scripts/xrayui stop"
+    local out
+    out=$(/jffs/scripts/xrayui stop 2>&1)
+    log_msg "  xrayui stop: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-300)"
+    if xray_redirect_active; then
+        log_msg "  NOTE: XRAYUI transparent-proxy rules still present after stop — give it a moment or check XRAYUI"
+    else
+        log_msg "  Xray stopped — transparent-proxy rules cleared; AmneziaWG can route now"
+    fi
+    update_status
 }
 
 # True when a co-resident DNS OWNER is active and we must NOT slam our global :53 DNAT on top of
@@ -2734,6 +2757,10 @@ EOF
     # the router's own egress, which breaks the tunnel (up but no traffic). Page renders a banner.
     local xray_capture=false
     xray_redirect_active && xray_capture=true
+    # Can we offer a "Stop Xray" button? Only if XRAYUI's own entry point is present (so the stop
+    # goes through its cleanup_firewall and actually removes the TPROXY rules).
+    local xray_ctl=false
+    [ -x /jffs/scripts/xrayui ] && xray_ctl=true
 
     # Firmware UI language (preferred_lang nvram) so the page/widget can localize without a
     # round-trip. The frontend maps RU -> Russian, everything else -> English. Empty -> EN.
@@ -2748,7 +2775,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
@@ -3772,6 +3799,7 @@ do_service_event(){
             ;;
         awganalyzestart) do_analyze_start ;;
         awganalyzestop)  do_analyze_stop ;;
+        awgxraystop)     do_xray_stop ;;
     esac
 }
 

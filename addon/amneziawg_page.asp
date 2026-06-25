@@ -527,9 +527,12 @@ en: {
     COEX_STEP_DNS: "<li>Enable <b>«Compatibility mode»</b> — so intercepting :53 doesn't conflict with {0}.</li>",
     COEX_HEADER: "⚠ Detected <b>{0}</b> on the router. So AmneziaWG doesn't conflict with it and leave the network without internet:",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">After the changes, click <b>«Apply»</b>. GeoIP routing by IP keeps working in the meantime.</span>",
-    XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> is running in <b>transparent-proxy mode (TPROXY, «redirect all traffic»)</b>. It captures the router's own egress — including AmneziaWG's handshake — so the tunnel comes up but <b>passes no traffic</b> and auto-rolls-back.",
+    XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> is running in <b>transparent-proxy mode (TPROXY, «redirect all traffic»)</b>. Its routing rule sits <b>ahead</b> of AmneziaWG's (ip-rule priority 19 vs 98), so LAN traffic is grabbed by Xray before it reaches the tunnel — <b>devices you assigned to AmneziaWG actually go out through Xray</b>, not the tunnel.",
     XRAY_CAP_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>In <b>XRAYUI</b>, turn off <b>«Redirect all traffic» / transparent routing (TPROXY)</b> — or exclude AmneziaWG's endpoint and the <b>awg0</b> interface from its capture.</li><li>Or keep only <b>one</b> VPN active at a time (XRAYUI <i>or</i> AmneziaWG).</li></ul>",
-    XRAY_CAP_TECH: "<span style=\"opacity:0.85;\">Conflict signature: <code>ip rule</code> shows <code>from all fwmark 0x10000/0x10000 lookup 77</code> + TPROXY rules in the <code>mangle</code> table — they steal the tunnel's packets before they reach <code>awg0</code>.</span>",
+    XRAY_CAP_TECH: "<span style=\"opacity:0.85;\">Conflict signature: <code>ip rule</code> has <code>from all fwmark 0x10000/0x10000 lookup 77</code> (priority 19) ahead of AmneziaWG's rule (priority 98), plus TPROXY rules in the <code>mangle</code> table.</span>",
+    XRAY_STOP_BTN: "Stop Xray",
+    XRAY_STOPPING: "Stopping Xray…",
+    XRAY_STOP_CONFIRM: "Stop Xray / XRAYUI now? Its transparent-proxy (TPROXY) rules will be removed so AmneziaWG can route traffic. You can start XRAYUI again from its own page (VPN → X-RAY).",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Import will replace the current interface and peer settings. Continue?",
     MSG_IMPORT_UNRECOGNIZED: "Could not recognize the configuration: no [Interface]/[Peer] fields found (PrivateKey, PublicKey, Endpoint). Make sure it's a .conf from the Amnezia / WireGuard app.",
@@ -863,9 +866,12 @@ ru: {
     COEX_STEP_DNS: "<li>Включите <b>«Режим совместимости»</b> — чтобы перехват :53 не конфликтовал с {0}.</li>",
     COEX_HEADER: "⚠ Обнаружен <b>{0}</b> на роутере. Чтобы AmneziaWG не конфликтовал с ним и не оставил сеть без интернета:",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>",
-    XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> работает в режиме <b>прозрачного проксирования (TPROXY, «перенаправить весь трафик»)</b>. Он перехватывает собственный egress роутера — включая рукопожатие AmneziaWG, — поэтому туннель поднимается, но <b>не пропускает трафик</b> и откатывается.",
+    XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> работает в режиме <b>прозрачного проксирования (TPROXY, «перенаправить весь трафик»)</b>. Его правило маршрутизации стоит <b>впереди</b> правила AmneziaWG (приоритет ip-rule 19 против 98), поэтому LAN-трафик забирает Xray раньше, чем тот дойдёт до туннеля — <b>устройства, назначенные на AmneziaWG, по факту уходят через Xray</b>, а не в туннель.",
     XRAY_CAP_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>В <b>XRAYUI</b> отключите <b>«Перенаправлять весь трафик» / прозрачную маршрутизацию (TPROXY)</b> — либо исключите из перехвата endpoint AmneziaWG и интерфейс <b>awg0</b>.</li><li>Либо держите включённым только <b>один</b> VPN за раз (XRAYUI <i>или</i> AmneziaWG).</li></ul>",
-    XRAY_CAP_TECH: "<span style=\"opacity:0.85;\">Признак конфликта: в <code>ip rule</code> есть <code>from all fwmark 0x10000/0x10000 lookup 77</code> + правила TPROXY в таблице <code>mangle</code> — они забирают пакеты туннеля до того, как те дойдут до <code>awg0</code>.</span>",
+    XRAY_CAP_TECH: "<span style=\"opacity:0.85;\">Признак конфликта: в <code>ip rule</code> правило <code>from all fwmark 0x10000/0x10000 lookup 77</code> (приоритет 19) стоит впереди правила AmneziaWG (приоритет 98), плюс правила TPROXY в таблице <code>mangle</code>.</span>",
+    XRAY_STOP_BTN: "Остановить Xray",
+    XRAY_STOPPING: "Останавливаю Xray…",
+    XRAY_STOP_CONFIRM: "Остановить Xray / XRAYUI сейчас? Его правила прозрачного проксирования (TPROXY) будут удалены, чтобы AmneziaWG мог маршрутизировать трафик. Включить XRAYUI обратно можно на его странице (VPN → X-RAY).",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Импорт заменит текущие настройки интерфейса и пира. Продолжить?",
     MSG_IMPORT_UNRECOGNIZED: "Не удалось распознать конфигурацию: не найдены поля [Interface]/[Peer] (PrivateKey, PublicKey, Endpoint). Проверьте, что это .conf из приложения Amnezia / WireGuard.",
@@ -3337,12 +3343,35 @@ function renderCoexistWarning(s){
 // Reverse-coexistence banner: a transparent proxy (XRAYUI/xray in TPROXY "redirect all" mode)
 // captures the router's OWN egress, including AmneziaWG's handshake — so the tunnel comes up but
 // passes no traffic. The backend flags this in status.xray_capture (xray running + TPROXY/fwmark).
+var awgXrayStopping = false;
 function renderXrayCaptureWarning(s){
     var el = document.getElementById('awg_xray_warn');
     if(!el) return;
-    if(!s || !s.xray_capture){ el.style.display = 'none'; el.innerHTML = ''; return; }
-    el.innerHTML = T('XRAY_CAP_HEADER') + T('XRAY_CAP_FIX') + T('XRAY_CAP_TECH');
+    if(!s || !s.xray_capture){ el.style.display = 'none'; el.innerHTML = ''; awgXrayStopping = false; return; }
+    var html = T('XRAY_CAP_HEADER') + T('XRAY_CAP_FIX') + T('XRAY_CAP_TECH');
+    // Offer a one-click "Stop Xray" only when XRAYUI is actually controllable (status.xray_ctl =
+    // /jffs/scripts/xrayui present) — the backend stops it through XRAYUI's own cleanup.
+    if(s.xray_ctl){
+        html += '<div style="margin-top:8px;"><input type="button" class="button_gen"'
+              + (awgXrayStopping ? ' disabled' : '')
+              + ' value="' + escHtml(awgXrayStopping ? T('XRAY_STOPPING') : T('XRAY_STOP_BTN')) + '"'
+              + ' onclick="awgStopXray(this);"></div>';
+    }
+    el.innerHTML = html;
     el.style.display = '';
+}
+// "Stop Xray": stop the co-resident XRAYUI through its OWN entry point (backend do_xray_stop ->
+// /jffs/scripts/xrayui stop) so its TPROXY/fwmark rules are cleaned up, not just the process.
+// User-initiated, with a confirm. After firing, refresh status so the banner clears once gone.
+function awgStopXray(btn){
+    if(awgXrayStopping) return;
+    if(!confirm(T('XRAY_STOP_CONFIRM'))) return;
+    awgXrayStopping = true;
+    if(btn){ btn.disabled = true; btn.value = T('XRAY_STOPPING'); }
+    awgPostSettings('start_awgxraystop', null, 2, function(){
+        setTimeout(awgRefreshStatus, 2500);
+        setTimeout(function(){ awgXrayStopping = false; awgRefreshStatus(); }, 6000);
+    });
 }
 
 function setOfflineUI(){
