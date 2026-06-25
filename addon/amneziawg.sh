@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.26"
+AWG_VERSION="1.2.27"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2494,8 +2494,11 @@ do_start(){
         hc_try=0
         hc_reason="not passing traffic (probed: $(watchdog_hosts))"
         while [ $hc_try -lt 30 ]; do
-            if ping_hosts_once; then
-                # ICMP is up. If we hijacked LAN DNS, also require it to actually resolve:
+            # Reachability: ICMP every round (fast); a TCP/HTTPS connect through the tunnel at
+            # ~10s and ~30s in catches endpoints that pass TCP but DROP ICMP (e.g. Cloudflare WARP)
+            # without slowing the common case or dragging out a genuinely-dead tunnel's rollback.
+            if ping_hosts_once || { { [ $hc_try -eq 5 ] || [ $hc_try -eq 15 ]; } && tunnel_tcp_alive; }; then
+                # ICMP/TCP is up. If we hijacked LAN DNS, also require it to actually resolve:
                 # an ICMP-only "verified" tunnel leaves clients pinned to a dead resolver
                 # (with DoH/DoT REJECTed too) = silent LAN-wide outage that never rolls back.
                 # Skip the DNS gate when dnsmasq isn't up (a dnsmasq problem, not the tunnel's
@@ -3134,6 +3137,25 @@ ping_hosts_once(){
     return 1
 }
 
+# Confirm the tunnel actually carries traffic via a short HTTPS connect THROUGH it. This catches
+# endpoints that pass TCP but DROP ICMP — notably Cloudflare WARP, where ping_hosts_once false-
+# negatives a perfectly working tunnel (handshake completes, data flows, but `ping -I awg0` never
+# replies → the health check would roll a working tunnel back). Binds curl to the awg0 source IP;
+# the "from <awg0-ip> lookup $RT_TABLE" rule (installed by setup_firewall, same path awg_dl_iface_opt
+# uses) routes it out the tunnel. Returns 0 if any target's TCP/TLS connect completes. No curl / no
+# tunnel routing in place -> return 1, so the ICMP verdict stands (never a false POSITIVE).
+tunnel_tcp_alive(){
+    which curl >/dev/null 2>&1 || return 1
+    local addr h
+    addr=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
+    [ -n "$addr" ] || return 1
+    ip rule show 2>/dev/null | grep -qF "from $addr lookup $RT_TABLE" || return 1
+    for h in 1.1.1.1 8.8.8.8; do
+        curl -k -s -o /dev/null --interface "$addr" --connect-timeout 4 --max-time 6 "https://$h" 2>/dev/null && return 0
+    done
+    return 1
+}
+
 # Is the tunnel passing traffic? True if ANY configured host replies across a couple of quick
 # rounds. A SINGLE ICMP can be dropped/delayed past its timeout under heavy tunnel load (e.g.
 # streaming) without the tunnel being down — restarting the whole VPN on one miss tore working
@@ -3145,6 +3167,9 @@ tunnel_alive(){
         ping_hosts_once && return 0
         i=$((i + 1)); sleep 1
     done
+    # ICMP all-miss — confirm via a TCP/HTTPS connect through the tunnel before declaring it dead,
+    # so an ICMP-dropping endpoint (e.g. Cloudflare WARP) isn't torn down every watchdog tick.
+    tunnel_tcp_alive && return 0
     return 1
 }
 
