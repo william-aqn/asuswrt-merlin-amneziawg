@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.23"
+AWG_VERSION="1.2.24"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2027,9 +2027,18 @@ generate_config(){
     local h3=$(get_setting awg_h3)
     local h4=$(get_setting awg_h4)
 
-    # I1-I5 from base64-encoded setting
+    # I1-I5 from base64-encoded setting. A long I-param's base64 exceeds the firmware's
+    # ~3000-char-per-value custom_settings cap, so the UI splits it across awg_initdata +
+    # awg_initdata1 + awg_initdata2 … — reassemble the chunks in order before decoding.
     local i1="" i2="" i3="" i4="" i5=""
     local initdata=$(get_setting awg_initdata)
+    local _ic=1 _ichunk
+    while [ "$_ic" -le 30 ]; do
+        _ichunk=$(get_setting "awg_initdata${_ic}")
+        [ -z "$_ichunk" ] && break
+        initdata="${initdata}${_ichunk}"
+        _ic=$((_ic + 1))
+    done
     if [ -n "$initdata" ]; then
         local decoded
         decoded=$(echo "$initdata" | base64 -d 2>/dev/null)

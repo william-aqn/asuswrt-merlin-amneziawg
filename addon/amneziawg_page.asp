@@ -1662,10 +1662,14 @@ function loadSettings(){
             el.value = custom_settings[fields[i]];
         }
     }
-    // Load I1-I5 from base64
-    if(custom_settings.awg_initdata){
+    // Load I1-I5 from base64 — reassemble the chunked value (awg_initdata + awg_initdata1 + …;
+    // a long I-param's base64 is split across keys because the firmware caps one value at ~3000).
+    var initB64all = custom_settings.awg_initdata || '';
+    for(var ic = 1; ic <= 30 && custom_settings['awg_initdata' + ic] != undefined; ic++)
+        initB64all += custom_settings['awg_initdata' + ic];
+    if(initB64all){
         try {
-            var initLines = atob(custom_settings.awg_initdata).split('\n');
+            var initLines = atob(initB64all).split('\n');
             for(var il = 0; il < initLines.length; il++){
                 var ip = initLines[il].split('=');
                 if(ip.length >= 2){
@@ -1779,11 +1783,25 @@ function applyConfig(actionScript){
         var iv = document.getElementById('awg_i' + ix);
         if(iv && iv.value) initData += 'I' + ix + ' = ' + iv.value + '\n';
     }
+    var initB64;
     try {
-        custom_settings.awg_initdata = initData ? btoa(initData) : '';
+        initB64 = initData ? btoa(initData) : '';
     } catch(e){
         alert(T('MSG_INIT_NON_ASCII'));
         return;
+    }
+    // The firmware caps ONE custom_settings value at ~3000 chars; a long I-param's base64
+    // overflows that and is silently truncated (the closing '>' is lost → setconf rejects
+    // "missing enclosing >"). Split the base64 across awg_initdata + awg_initdata1 + … (<=2900
+    // each) and clear any stale chunks from a previous, longer value.
+    for(var ck = 1; ck <= 30; ck++) delete custom_settings['awg_initdata' + ck];
+    var ICHUNK = 2900;
+    if(initB64.length <= ICHUNK){
+        custom_settings.awg_initdata = initB64;
+    } else {
+        custom_settings.awg_initdata = initB64.substr(0, ICHUNK);
+        for(var cj = 1; cj * ICHUNK < initB64.length; cj++)
+            custom_settings['awg_initdata' + cj] = initB64.substr(cj * ICHUNK, ICHUNK);
     }
 
     // Save geo settings PER POLICY (GeoIP/GeoSite/GeoCustom/Antifilter for each tab) into the
