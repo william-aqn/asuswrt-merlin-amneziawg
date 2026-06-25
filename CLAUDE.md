@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AmneziaWG userspace VPN (the `amneziawg-go` daemon + `awg` CLI) + web UI addon for ASUS routers running Asuswrt-Merlin 388.x firmware. Provides DPI-obfuscated WireGuard VPN with per-device policy routing and GeoIP/GeoSite selective routing. All documentation and UI text is in Russian.
+AmneziaWG userspace VPN (the `amneziawg-go` daemon + `awg` CLI) + web UI addon for ASUS routers running Asuswrt-Merlin (384.15+, including the 3006.x / `3.0.0.6` BE-series builds) firmware. Provides DPI-obfuscated WireGuard VPN with per-device policy routing and GeoIP/GeoSite selective routing. All documentation and UI text is in Russian.
 
 **Target:** ARM64 (aarch64) and ARM32 ASUS routers. Fully userspace — no kernel module, works on any kernel version (only the stock `tun` device is needed).
 
@@ -39,11 +39,11 @@ Userspace-only: builds `amneziawg-go` (Go) and the static-musl `awg` CLI per arc
 ### Key paths on router
 - `/opt/amneziawg/` — daemon (`amneziawg-go`), tool (`awg`), config, client list, geo data
 - `/jffs/addons/amneziawg/` — addon script + ASP page
-- `/jffs/configs/dnsmasq.conf.add` — domain-based routing rules (tagged with `### AmneziaWG`)
+- `/jffs/configs/dnsmasq.conf.add` — holds a persistent `conf-file=/opt/amneziawg/dnsmasq_awg.conf` include line; the actual domain→ipset rules live in that included file (header `# AmneziaWG domain routing`), NOT in conf.add itself
 - `/jffs/addons/custom_settings.txt` — Merlin settings store (all keys prefixed `awg_`)
 
 ### Routing model
-Three policies per device: `vpn_all` (ip rule → table 300), `vpn_geo` (iptables fwmark 0x100 + ipset match → table 300), `direct`. Default policy applies to unlisted devices. Route table **300**, priority 100, fwmark 0x100. (Table is 300, not 200 — bumped to avoid colliding with co-resident NFQUEUE DPI tools like b4; see coexistence notes below.)
+Three policies per device: `vpn_all` (ip rule → table 300), `vpn_geo` (iptables fwmark 0x100 + ipset match → table 300), `direct`. Default policy applies to unlisted devices. Route table **300**, fwmark 0x100; the `ip rule`s sit at distinct priorities by type — 97 (direct → main), 98 (fwmark → 300, the geo mechanism), 99 (vpn_all → 300), 100 (router-originated → 300). (Table is 300, not 200 — bumped to avoid colliding with co-resident NFQUEUE DPI tools like b4; see coexistence notes below.)
 
 ## Shell scripting notes
 
@@ -62,6 +62,7 @@ All router-side scripts must be POSIX sh (busybox ash) — no bashisms. The rout
 - **The "Running amneziawg-go is not required because this kernel has first class support" box is a HARMLESS, UNCONDITIONAL wireguard-go notice** printed to stderr on every Linux start — never the cause of a failure. Read the journal line *after* it.
 - **`setconf failed … "Unable to modify interface: Invalid argument"` = the daemon rejected an obfuscation param (EINVAL), not a race.** UAPI returns only a numeric errno (→ `awg` prints the generic string) and the default log level is silent on the reason. `do_start` re-launches the daemon under `LOG_LEVEL=verbose` + one `setconf` so it NAMES the line (e.g. `failed to parse I1: missing enclosing >`) and dumps the non-secret advanced params. Daemon constraints: `jc/jmin/jmax > 0`, `s1-s4 ≥ 0`, `h1-h4` must not overlap, `i1-i5` parsed strictly. `H1=1 H2=2 H3=3 H4=4` + `S=0` is VALID (I-param mode, e.g. a Cloudflare-WARP config).
 - **setconf UAPI race**: amneziawg-go creates the `awg0` netdev BEFORE it binds the UAPI control socket, so an immediate `setconf` (right after `wait_for_iface` passes) can lose the race and die with a generic exit 1 even on a fast box. `wait_for_uapi` (probes via `awg show`, path-agnostic) + retries cover it.
+- **Post-start health check (≈60s auto-rollback)**: after `do_start` brings up the daemon + firewall, a backgrounded probe pings the configured hosts THROUGH the tunnel (`ping -I awg0`, default `8.8.8.8`/quad9, 30×2s) and — when DNS interception is on — also checks resolution. If nothing passes within ~60s it auto-rolls-back (`do_stop`) to prevent lockout, after capturing `awg show` (handshake age / transfer) into the journal — so "up but no traffic" is diagnosable: handshake present → fault is downstream (route/MTU/egress hijacked); no handshake → endpoint unreachable or obfuscation mismatch. Probe hosts come from `awg_watchdog_hosts` (sanitized against shell injection). The same probe drives the periodic watchdog.
 
 ## DNS, firewall & geo
 
@@ -73,7 +74,8 @@ All router-side scripts must be POSIX sh (busybox ash) — no bashisms. The rout
 ## Release & coexistence
 
 - **Always add the `### X.Y.Z` CHANGELOG.md entry BEFORE tagging.** `release.yml` pulls release notes from it and the in-app update modal reads it; a tag without its entry ships a "naked" release.
-- **api.github.com is region-blocked for the maintainer** — releases/updates resolve and SHA256-verify via **jsDelivr** (data API + checksums branch), GitHub API only as fallback.
-- **Co-resident DPI/proxy tools** (zapret/zapret2, xray/XRAYUI, b4) share the router's `:53`, NFQUEUE, and route-table space. Running two NFQUEUE DPI tools at once can blackhole the box; the addon detects them and defaults «Режим совместимости» (no DNS hijack) on for new installs. `RT_TABLE=300` avoids colliding with them.
+- **api.github.com is region-blocked for the maintainer** — both `install-online.sh` and the in-app updater resolve the **version** GitHub API → **jsDelivr** data API → jsDelivr-mirrored `build-ipk.sh` `PKG_VERSION` (in that order). But **SHA256 is taken from the GitHub API release digest and SKIPPED when the API is blocked** (install proceeds unverified) — jsDelivr is NOT a checksum fallback (it mirrors only git-tracked repo files, not release assets). Don't claim jsDelivr verifies integrity.
+- **Co-resident DPI/proxy tools** (zapret/zapret2, xray/XRAYUI, b4) share the router's `:53`, NFQUEUE, and route-table space. Running two NFQUEUE DPI tools at once can blackhole the box; the addon detects them and defaults «Режим совместимости» (no DNS hijack) on for new installs. `RT_TABLE=300` avoids colliding with them. This `coexist_warn` is about **AWG stealing the proxy's traffic** (fix via policy / compat mode).
+- **Reverse coexistence — a transparent proxy stealing AWG's egress**: XRAYUI/xray in TPROXY "redirect all traffic" mode captures the router's OWN egress (incl. amneziawg-go's handshake UDP + the `awg0` health probe), so the tunnel comes **up but passes no traffic** and the health check rolls it back. `xray_redirect_active()` (gated `pidof xray` + (`TPROXY` in mangle OR `from all fwmark 0x10000` in `ip rule`), so the firmware WG-client's own fwmark rules don't false-alarm) → status field `xray_capture` → a red UI banner with the fix (disable XRAYUI redirect-all / exclude `awg0`+endpoint / run one VPN at a time). Opposite direction from `coexist_warn`.
 - **RT-AC68U (Cortex-A9, no VFP, 256 MB)**: armv7 binaries MUST be soft-float (musl `arm-linux-musleabi`) or they SIGILL; watch for OOM.
 - **UI is bilingual RU/EN**, auto-detecting the firmware language (httpApi `preferred_lang`).

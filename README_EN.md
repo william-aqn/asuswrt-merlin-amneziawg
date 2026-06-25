@@ -242,7 +242,8 @@ awg show
 # Update geo lists
 /jffs/addons/amneziawg/amneziawg.sh update_geo
 
-# Diagnostics (version, platform, binaries, network, TUN — for a bug report)
+# Diagnostics — full report (version, platform, binaries, network/TUN, routing,
+# dnsmasq, system logs, generated config with secrets redacted) for a bug report
 /jffs/addons/amneziawg/amneziawg.sh diag
 ```
 
@@ -298,6 +299,8 @@ A: Add CIDR ranges in the "Custom IPs / subnets" field (GeoCustom), e.g. `149.15
 A: Yes, with caveats. The addon auto-detects a co-resident DPI-bypass/proxy tool (zapret2/bol-van, Xray/XRAYUI, v2ray, sing-box, **b4**, or NFQUEUE/TPROXY rules in iptables or nftables) and in that case **does not enable DNS interception** (the :53 DNAT), to avoid colliding with them -- otherwise the network can lose internet access. This is controlled by **Compatibility mode** (formerly the "Don't intercept DNS" checkbox): it is **on by default for fresh installs** so even an unknown tool can't leave the network without internet; existing installs keep their previous behavior until you enable it.
 
 Important: this only resolves the DNS-layer conflict. With the default **"VPN -- All Traffic"** policy, routing still pulls the neighbor proxy's traffic into the tunnel, so for coexistence choose the **"Direct"** or **"VPN -- Geo Only"** policy, not "all". Geo routing by IP keeps working.
+
+**Reverse case — XRAYUI captures AmneziaWG's traffic.** If XRAYUI runs in transparent-proxy "redirect all traffic" mode (TPROXY), it also grabs the router's own egress — including AmneziaWG's handshake — so the tunnel comes up but passes no traffic (the health check rolls it back after ~60s). The addon detects this and shows a **red banner** on the page. Fix: in XRAYUI turn off "redirect all" / transparent routing, or exclude AmneziaWG's endpoint and the `awg0` interface from its capture, or keep only one VPN active at a time.
 
 **Q: `ipset` prints `Warning: Kernel support protocol versions 6-6 while userspace supports protocol versions 6-7`?**
 
