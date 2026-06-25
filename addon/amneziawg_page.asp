@@ -503,6 +503,11 @@ en: {
     DIAG_COPIED: "Copied ✓",
     DIAG_COPY_FAILED: "Failed",
     DIAG_COPIED_ALERT: "Diagnostics and the log were copied to the clipboard — you can paste them straight into a Telegram message.",
+    DIAG_DOWNLOADED: "Downloaded ✓",
+    DIAG_DOWNLOAD_FAILED: "Download failed",
+    DIAG_DOWNLOAD_NOTE: "Saves the diagnostics + log as a .txt file. Or copy (📋) to paste into Telegram.",
+    BTN_DOWNLOAD_DIAG: "Download diagnostic data",
+    BTN_COPY_DIAG_MINI: "Copy to clipboard (for Telegram)",
     DIAG_COPY_FAILED_ALERT: "Could not copy. Select the text in the window and copy it manually (Ctrl+C).",
     // ---- status info lines ----
     INFO_ADDRESS: "Address: ",
@@ -659,7 +664,7 @@ en: {
     APPLY_DESC1_HTML: "<b>Apply</b> — save the settings and apply them «on the fly»: updates devices, routing policies, the firewall and the GeoIP/GeoSite lists <b>without dropping the VPN connection</b>. If the VPN is stopped — the settings are just saved and applied at the next start.",
     APPLY_DESC2_HTML: "<b>Save and fully restart the VPN</b> (stop → start) — the config is re-applied (awg setconf), the interface, routes and firewall are rebuilt, the connection drops for a couple of seconds. Needed when changing keys, the server (Endpoint), MTU or obfuscation parameters (Jc, S1, H1…H4), or if the connection is «stuck».",
     SEC_LOG: "Log",
-    BTN_GET_DIAG: "Get diagnostic data and copy log",
+    BTN_GET_DIAG: "Get diagnostic data",
     LOG_WAITING: "Waiting for data…",
     MODAL_UPDATE_TITLE: "Update",
     INSTALL_LABEL: "Install:",
@@ -833,6 +838,11 @@ ru: {
     DIAG_COPIED: "Скопировано ✓",
     DIAG_COPY_FAILED: "Не удалось",
     DIAG_COPIED_ALERT: "Диагностика и журнал скопированы в буфер обмена — можно сразу вставить в сообщение Telegram.",
+    DIAG_DOWNLOADED: "Скачано ✓",
+    DIAG_DOWNLOAD_FAILED: "Не удалось скачать",
+    DIAG_DOWNLOAD_NOTE: "Сохраняет диагностику + журнал в файл .txt. Или скопировать (📋) для вставки в Telegram.",
+    BTN_DOWNLOAD_DIAG: "Скачать диагностические данные",
+    BTN_COPY_DIAG_MINI: "Скопировать в буфер (для Telegram)",
     DIAG_COPY_FAILED_ALERT: "Не удалось скопировать. Выделите текст в окне и скопируйте вручную (Ctrl+C).",
     // ---- status info lines ----
     INFO_ADDRESS: "Адрес: ",
@@ -989,7 +999,7 @@ ru: {
     APPLY_DESC1_HTML: "<b>Применить</b> — сохранить настройки и применить их «на лету»: обновляет устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite <b>без разрыва VPN-соединения</b>. Если VPN остановлен — настройки просто сохранятся и применятся при следующем запуске.",
     APPLY_DESC2_HTML: "<b>Сохранить и полностью перезапустить VPN</b> (stop → start) — заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall, соединение на пару секунд прерывается. Нужно при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».",
     SEC_LOG: "Журнал",
-    BTN_GET_DIAG: "Получить диагностические данные и скопировать лог",
+    BTN_GET_DIAG: "Получить диагностические данные",
     LOG_WAITING: "Ожидание данных…",
     MODAL_UPDATE_TITLE: "Обновление",
     INSTALL_LABEL: "Установить:",
@@ -3021,20 +3031,45 @@ function awgAnalyzeAddSelected(){
 }
 
 // "Copy diagnostic data": diagnostics + current log, wrapped for a Telegram post.
-function awgCopyDiagReport(btn){
-    if(!awgDiagText){ alert(T('DIAG_NOT_READY')); return; }
+// Build the combined report (diag dump + the on-page log), shared by download + copy.
+function awgBuildDiagReport(){
     var lbox = document.getElementById('awg_log');
     var log = lbox ? String(lbox.textContent || lbox.innerText || '').replace(/\s+$/, '') : '';
-    var combined = awgDiagText + (log ? ('\n\n' + T('DIAG_LOG_HEADER') + '\n' + log) : '');
-    awgCopyText('```\n' + combined + '\n```', function(ok){
-        if(btn){
-            if(btn._lbl == null) btn._lbl = btn.value;
-            btn.value = ok ? T('DIAG_COPIED') : T('DIAG_COPY_FAILED');
-            setTimeout(function(){ if(btn._lbl != null){ btn.value = btn._lbl; btn._lbl = null; } }, 1500);
-        }
-        alert(ok
-            ? T('DIAG_COPIED_ALERT')
-            : T('DIAG_COPY_FAILED_ALERT'));
+    return awgDiagText + (log ? ('\n\n' + T('DIAG_LOG_HEADER') + '\n' + log) : '');
+}
+// Brief inline feedback in the footer note (green ok / red fail), auto-clears.
+function awgDiagFlashNote(msg, ok){
+    var n = document.getElementById('awg_diag_note');
+    if(!n) return;
+    n.style.color = ok ? '#5cb85c' : '#d9534f';
+    n.textContent = msg;
+    clearTimeout(n._ft);
+    n._ft = setTimeout(function(){ n.textContent = ''; n.style.color = '#f0ad4e'; }, 1800);
+}
+// Primary action: generate the report client-side and download it as a .txt file (no round-trip).
+function awgDownloadDiagReport(btn){
+    if(!awgDiagText){ alert(T('DIAG_NOT_READY')); return; }
+    var report = awgBuildDiagReport();
+    var d = new Date(), p = function(n){ return (n < 10 ? '0' : '') + n; };
+    var name = 'amneziawg-diag-' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate())
+             + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + '.txt';
+    try {
+        var blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+        awgDiagFlashNote(T('DIAG_DOWNLOADED'), true);
+    } catch(e){
+        awgDiagFlashNote(T('DIAG_DOWNLOAD_FAILED'), false);
+    }
+}
+// Secondary: copy the report (fenced for Telegram) to the clipboard — the mini icon button.
+function awgCopyDiagReport(btn){
+    if(!awgDiagText){ alert(T('DIAG_NOT_READY')); return; }
+    awgCopyText('```\n' + awgBuildDiagReport() + '\n```', function(ok){
+        awgDiagFlashNote(ok ? T('DIAG_COPIED') : T('DIAG_COPY_FAILED'), ok);
     });
 }
 function awgCopyFallback(text, done){
@@ -4295,9 +4330,12 @@ function initAutocompleteIp(){
         </div>
         <div id="awg_diag_body" style="padding:14px 18px; overflow:auto; font-family:'Courier New','Lucida Console',monospace; font-size:12px; line-height:1.45; white-space:pre-wrap; word-wrap:break-word;"></div>
         <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
-            <input type="button" class="button_gen" value="Copy diagnostic data" data-i18n-val="BTN_COPY_DIAG" onclick="awgCopyDiagReport(this);">
+            <input type="button" class="button_gen" value="Download diagnostic data" data-i18n-val="BTN_DOWNLOAD_DIAG" onclick="awgDownloadDiagReport(this);">
+            <button type="button" id="awg_diag_copy_btn" onclick="awgCopyDiagReport(this);" title="Copy to clipboard (for Telegram)" data-i18n-title="BTN_COPY_DIAG_MINI" aria-label="Copy to clipboard" data-i18n-aria="BTN_COPY_DIAG_MINI" style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; padding:0; background:transparent; border:1px solid #666; border-radius:5px; color:inherit; cursor:pointer; flex:0 0 auto;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            </button>
             <span id="awg_diag_note" style="font-size:11px; color:#f0ad4e;"></span>
-            <span style="font-size:11px; opacity:0.7;" data-i18n="DIAG_COPY_NOTE">Copied together with the log, wrapped for pasting into Telegram.</span>
+            <span style="font-size:11px; opacity:0.7;" data-i18n="DIAG_DOWNLOAD_NOTE">Saves the diagnostics + log as a .txt file. Or copy (📋) to paste into Telegram.</span>
             <input type="button" class="button_gen" value="Close" data-i18n-val="BTN_CLOSE" onclick="awgCloseDiag();" style="margin-left:auto;">
         </div>
     </div>

@@ -247,7 +247,7 @@ awg show
 /jffs/addons/amneziawg/amneziawg.sh diag
 ```
 
-> The same report is available in the web UI via the **"Получить диагностические данные"** button in the "Журнал" (Log) block — it is copied to the clipboard wrapped in a code block, ready to paste into Telegram.
+> The same report is available in the web UI via the **"Получить диагностические данные"** button in the "Журнал" (Log) block — you can **download it as a `.txt` file** or **copy it** to the clipboard with the 📋 mini-button (fenced in a code block, ready to paste into Telegram).
 
 ## How to uninstall
 

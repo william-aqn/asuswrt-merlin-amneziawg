@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.27"
+AWG_VERSION="1.2.28"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3144,13 +3144,14 @@ ping_hosts_once(){
 # the "from <awg0-ip> lookup $RT_TABLE" rule (installed by setup_firewall, same path awg_dl_iface_opt
 # uses) routes it out the tunnel. Returns 0 if any target's TCP/TLS connect completes. No curl / no
 # tunnel routing in place -> return 1, so the ICMP verdict stands (never a false POSITIVE).
+# Probes the SAME user-configured hosts as the ICMP check (`watchdog_hosts`), on HTTPS/443.
 tunnel_tcp_alive(){
     which curl >/dev/null 2>&1 || return 1
     local addr h
     addr=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
     [ -n "$addr" ] || return 1
     ip rule show 2>/dev/null | grep -qF "from $addr lookup $RT_TABLE" || return 1
-    for h in 1.1.1.1 8.8.8.8; do
+    for h in $(watchdog_hosts); do
         curl -k -s -o /dev/null --interface "$addr" --connect-timeout 4 --max-time 6 "https://$h" 2>/dev/null && return 0
     done
     return 1
