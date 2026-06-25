@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.24"
+AWG_VERSION="1.2.25"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2500,6 +2500,13 @@ do_start(){
             update_status
         else
             log_msg "ERROR: Tunnel $hc_reason after 60s, rolling back to prevent lockout"
+            # Snapshot the live UAPI state BEFORE the rollback kills the daemon — the single most
+            # useful signal for "up but no traffic". A present "latest handshake" + non-zero
+            # received bytes means the tunnel IS established and the fault is downstream (routing /
+            # MTU / a co-resident tool stealing egress); no handshake means the handshake UDP never
+            # got a reply (endpoint unreachable, obfuscation mismatch, or egress hijacked). The diag
+            # runs after rollback so `awg show` there is empty — capture it here while it's alive.
+            log_msg "  awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer|endpoint' | tr '\n' '|' | sed 's/|$//')"
             do_stop 2>/dev/null
             log_msg "VPN stopped automatically. Check server config and endpoint reachability."
             update_status
