@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.28"
+AWG_VERSION="1.2.29"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2014,6 +2014,22 @@ validate_header(){
     return 0
 }
 
+# Sanity-check an AmneziaWG I1-I5 obfuscation param. Its grammar is a sequence of `<tag …>`
+# tokens, so a value that contains any tag MUST start with '<', end with '>', and have matching
+# bracket counts. The real-world failure was a TRUNCATED value that lost its closing '>'
+# (`<b 0x…` with the tail cut by a storage cap or an incomplete paste) — which amneziawg-go then
+# rejects with "failed to parse I1: missing enclosing >". Catch that here, BEFORE setconf, with a
+# clear message. Conservative: only validates when a '<' is present (never blocks a tagless value).
+validate_iparam(){
+    local v="$1" op cl t
+    case "$v" in *'<'*) ;; *) return 0 ;; esac
+    op=$(printf '%s' "$v" | tr -cd '<' | wc -c | tr -d ' ')
+    cl=$(printf '%s' "$v" | tr -cd '>' | wc -c | tr -d ' ')
+    [ "$op" = "$cl" ] || return 1
+    t=$(printf '%s' "$v" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    case "$t" in '<'*'>') return 0 ;; *) return 1 ;; esac
+}
+
 validate_ip(){
     echo "$1" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' || return 1
     return 0
@@ -2089,6 +2105,13 @@ generate_config(){
     [ -n "$h2" ] && { validate_header "$h2" || { log_msg "ERROR: Invalid H2: $h2"; return 1; }; }
     [ -n "$h3" ] && { validate_header "$h3" || { log_msg "ERROR: Invalid H3: $h3"; return 1; }; }
     [ -n "$h4" ] && { validate_header "$h4" || { log_msg "ERROR: Invalid H4: $h4"; return 1; }; }
+    # I1-I5: reject a truncated/malformed obfuscation tag (unbalanced <> / no closing '>') with a
+    # named error instead of letting amneziawg-go fail setconf with a cryptic "Invalid argument".
+    local _in _iv
+    for _in in 1 2 3 4 5; do
+        eval "_iv=\$i$_in"
+        [ -n "$_iv" ] && { validate_iparam "$_iv" || { log_msg "ERROR: I$_in looks truncated/malformed (unbalanced <> or no closing '>') — re-import the config"; return 1; }; }
+    done
 
     {
         echo "[Interface]"

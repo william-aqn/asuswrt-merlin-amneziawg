@@ -420,6 +420,7 @@ en: {
     // ---- first-run / validation ----
     TITLE_IMPORT_FIRST: "Import a configuration (.conf) first",
     MSG_INIT_NON_ASCII: "Fields I1–I5 contain invalid (non-ASCII) characters.",
+    MSG_IPARAM_MALFORMED: "Field {0} looks truncated or malformed: the «< >» brackets don't match, or it doesn't end with «>». Re-copy the full value from your config (a valid I-param ends with «>»).",
     MSG_REQUIRED_FIELDS: "Required fields: Private Key, Peer Public Key and Endpoint.",
     MSG_BAD_KEY_FORMAT: "Invalid key format. Keys must be 44 characters long (base64).",
     MSG_ENDPOINT_NEEDS_PORT: "Endpoint must include a port (e.g. server:51820).",
@@ -755,6 +756,7 @@ ru: {
     // ---- first-run / validation ----
     TITLE_IMPORT_FIRST: "Сначала импортируйте конфигурацию (.conf)",
     MSG_INIT_NON_ASCII: "Поля I1–I5 содержат недопустимые (не-ASCII) символы.",
+    MSG_IPARAM_MALFORMED: "Поле {0} выглядит обрезанным или повреждённым: скобки «< >» не сходятся либо значение не оканчивается на «>». Скопируйте полное значение из конфига заново (корректный I-параметр оканчивается на «>»).",
     MSG_REQUIRED_FIELDS: "Обязательные поля: Private Key, Peer Public Key и Endpoint.",
     MSG_BAD_KEY_FORMAT: "Неверный формат ключа. Ключи должны быть длиной 44 символа (base64).",
     MSG_ENDPOINT_NEEDS_PORT: "Endpoint должен содержать порт (например, server:51820).",
@@ -1793,6 +1795,22 @@ function applyConfig(actionScript){
     custom_settings.awg_default_policy = document.getElementById('default_policy').value;
     custom_settings.awg_clients = serializeClients();
 
+    // Sanity-check I1-I5 before saving: an AmneziaWG obfuscation tag is `<…>`, so a value with a
+    // '<' must balance its brackets and end with '>'. The classic failure is a TRUNCATED value
+    // that lost its closing '>' (incomplete paste / an old storage cap), which amneziawg-go then
+    // rejects with "failed to parse I1: missing enclosing >". Catch it here with a clear message.
+    for(var iz = 1; iz <= 5; iz++){
+        var izv = document.getElementById('awg_i' + iz);
+        var izs = izv ? String(izv.value || '').trim() : '';
+        if(izs && izs.indexOf('<') !== -1){
+            var izo = (izs.match(/</g) || []).length, izc = (izs.match(/>/g) || []).length;
+            if(izo !== izc || izs.charAt(0) !== '<' || izs.charAt(izs.length - 1) !== '>'){
+                alert(T('MSG_IPARAM_MALFORMED', 'I' + iz));
+                if(izv) izv.focus();
+                return;
+            }
+        }
+    }
     // Save I1-I5 as base64 (contain HTML-unsafe chars)
     var initData = '';
     for(var ix = 1; ix <= 5; ix++){
