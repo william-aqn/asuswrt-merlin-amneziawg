@@ -521,6 +521,9 @@ en: {
     COEX_STEP_DNS: "<li>Enable <b>«Compatibility mode»</b> — so intercepting :53 doesn't conflict with {0}.</li>",
     COEX_HEADER: "⚠ Detected <b>{0}</b> on the router. So AmneziaWG doesn't conflict with it and leave the network without internet:",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">After the changes, click <b>«Apply»</b>. GeoIP routing by IP keeps working in the meantime.</span>",
+    XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> is running in <b>transparent-proxy mode (TPROXY, «redirect all traffic»)</b>. It captures the router's own egress — including AmneziaWG's handshake — so the tunnel comes up but <b>passes no traffic</b> and auto-rolls-back.",
+    XRAY_CAP_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>In <b>XRAYUI</b>, turn off <b>«Redirect all traffic» / transparent routing (TPROXY)</b> — or exclude AmneziaWG's endpoint and the <b>awg0</b> interface from its capture.</li><li>Or keep only <b>one</b> VPN active at a time (XRAYUI <i>or</i> AmneziaWG).</li></ul>",
+    XRAY_CAP_TECH: "<span style=\"opacity:0.85;\">Conflict signature: <code>ip rule</code> shows <code>from all fwmark 0x10000/0x10000 lookup 77</code> + TPROXY rules in the <code>mangle</code> table — they steal the tunnel's packets before they reach <code>awg0</code>.</span>",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Import will replace the current interface and peer settings. Continue?",
     MSG_IMPORT_UNRECOGNIZED: "Could not recognize the configuration: no [Interface]/[Peer] fields found (PrivateKey, PublicKey, Endpoint). Make sure it's a .conf from the Amnezia / WireGuard app.",
@@ -848,6 +851,9 @@ ru: {
     COEX_STEP_DNS: "<li>Включите <b>«Режим совместимости»</b> — чтобы перехват :53 не конфликтовал с {0}.</li>",
     COEX_HEADER: "⚠ Обнаружен <b>{0}</b> на роутере. Чтобы AmneziaWG не конфликтовал с ним и не оставил сеть без интернета:",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>",
+    XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> работает в режиме <b>прозрачного проксирования (TPROXY, «перенаправить весь трафик»)</b>. Он перехватывает собственный egress роутера — включая рукопожатие AmneziaWG, — поэтому туннель поднимается, но <b>не пропускает трафик</b> и откатывается.",
+    XRAY_CAP_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>В <b>XRAYUI</b> отключите <b>«Перенаправлять весь трафик» / прозрачную маршрутизацию (TPROXY)</b> — либо исключите из перехвата endpoint AmneziaWG и интерфейс <b>awg0</b>.</li><li>Либо держите включённым только <b>один</b> VPN за раз (XRAYUI <i>или</i> AmneziaWG).</li></ul>",
+    XRAY_CAP_TECH: "<span style=\"opacity:0.85;\">Признак конфликта: в <code>ip rule</code> есть <code>from all fwmark 0x10000/0x10000 lookup 77</code> + правила TPROXY в таблице <code>mangle</code> — они забирают пакеты туннеля до того, как те дойдут до <code>awg0</code>.</span>",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Импорт заменит текущие настройки интерфейса и пира. Продолжить?",
     MSG_IMPORT_UNRECOGNIZED: "Не удалось распознать конфигурацию: не найдены поля [Interface]/[Peer] (PrivateKey, PublicKey, Endpoint). Проверьте, что это .conf из приложения Amnezia / WireGuard.",
@@ -3245,6 +3251,7 @@ function updateStatusUI(s){
     if(aghRow) aghRow.style.display = (s && s.agh) ? '' : 'none';
 
     renderCoexistWarning(s);
+    renderXrayCaptureWarning(s);
 }
 
 // Warn when a co-resident proxy/DPI tool (Xray/XRAYUI, zapret, ...) is running AND the
@@ -3271,6 +3278,17 @@ function renderCoexistWarning(s){
     el.innerHTML = T('COEX_HEADER', escHtml(tool))
         + '<ul style="margin:5px 0 4px 0; padding-left:20px;">' + steps + '</ul>'
         + T('COEX_FOOTER');
+    el.style.display = '';
+}
+
+// Reverse-coexistence banner: a transparent proxy (XRAYUI/xray in TPROXY "redirect all" mode)
+// captures the router's OWN egress, including AmneziaWG's handshake — so the tunnel comes up but
+// passes no traffic. The backend flags this in status.xray_capture (xray running + TPROXY/fwmark).
+function renderXrayCaptureWarning(s){
+    var el = document.getElementById('awg_xray_warn');
+    if(!el) return;
+    if(!s || !s.xray_capture){ el.style.display = 'none'; el.innerHTML = ''; return; }
+    el.innerHTML = T('XRAY_CAP_HEADER') + T('XRAY_CAP_FIX') + T('XRAY_CAP_TECH');
     el.style.display = '';
 }
 
@@ -3748,6 +3766,7 @@ function initAutocompleteIp(){
                 <!-- Coexistence warning: shown by updateStatusUI() when a co-resident proxy/DPI
                      tool (Xray/XRAYUI, zapret, ...) is detected AND the config would collide with it -->
                 <div id="awg_coexist_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a2e1a; border:1px solid #f0ad4e; border-radius:5px; color:#f0ad4e; font-size:12px; line-height:1.5;"></div>
+                <div id="awg_xray_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
 
                 <!-- Peers Table -->
                 <div class="awg-section" data-i18n="SEC_CONNECTED_PEERS">Connected peers</div>

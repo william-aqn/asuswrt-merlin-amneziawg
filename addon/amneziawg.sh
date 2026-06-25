@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.25"
+AWG_VERSION="1.2.26"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1024,6 +1024,20 @@ detect_dpi_tool(){
     { pidof nfqws || pidof tpws; } >/dev/null 2>&1 && { echo "zapret"; return; }
     iptables-save 2>/dev/null | grep -qE 'NFQUEUE|TPROXY' && { echo "DPI (NFQUEUE/TPROXY)"; return; }
     nft list ruleset 2>/dev/null | grep -qE 'queue (num|to)|tproxy' && { echo "DPI (nft queue)"; return; }
+}
+
+# True when a co-resident transparent proxy (XRAYUI/xray in TPROXY "redirect all traffic" mode)
+# is capturing the router's OWN egress. Such a setup installs a catch-all policy rule
+# (`from all fwmark 0x10000/0x10000 lookup 77` — XRAYUI's signature) + TPROXY mangle rules, which
+# grab amneziawg-go's handshake UDP and our `ping -I awg0` probe before they reach the tunnel — so
+# AWG comes up but passes no traffic and the health check rolls it back. Gated on xray actually
+# running so the firmware's own WireGuard-client fwmark rules can't trip a false alarm. This is the
+# OPPOSITE direction from detect_dpi_tool/coexist_warn (there AWG steals the proxy's traffic).
+xray_redirect_active(){
+    pidof xray >/dev/null 2>&1 || return 1
+    iptables-save -t mangle 2>/dev/null | grep -q 'TPROXY' && return 0
+    ip rule show 2>/dev/null | grep -q 'from all fwmark 0x10000' && return 0
+    return 1
 }
 
 # True when a co-resident DNS OWNER is active and we must NOT slam our global :53 DNAT on top of
@@ -2507,6 +2521,7 @@ do_start(){
             # got a reply (endpoint unreachable, obfuscation mismatch, or egress hijacked). The diag
             # runs after rollback so `awg show` there is empty — capture it here while it's alive.
             log_msg "  awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer|endpoint' | tr '\n' '|' | sed 's/|$//')"
+            xray_redirect_active && log_msg "  HINT: XRAYUI transparent-proxy (TPROXY 'redirect all') is active — it captures the router's egress incl. our handshake; turn off XRAYUI's redirect-all mode or run one VPN at a time"
             do_stop 2>/dev/null
             log_msg "VPN stopped automatically. Check server config and endpoint reachability."
             update_status
@@ -2689,6 +2704,10 @@ EOF
     # traffic into the tunnel. Surfaced so the page can render a blocking banner.
     local coexist_warn=false
     [ -n "$dpi_tool" ] && { [ "$default_policy" = "vpn_all" ] || any_exclude_mode; } && coexist_warn=true
+    # Reverse coexistence alarm: a transparent proxy (XRAYUI/xray TPROXY "redirect all") capturing
+    # the router's own egress, which breaks the tunnel (up but no traffic). Page renders a banner.
+    local xray_capture=false
+    xray_redirect_active && xray_capture=true
 
     # Firmware UI language (preferred_lang nvram) so the page/widget can localize without a
     # round-trip. The frontend maps RU -> Russian, everything else -> English. Empty -> EN.
@@ -2703,7 +2722,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
