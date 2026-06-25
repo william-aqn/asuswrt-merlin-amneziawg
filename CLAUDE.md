@@ -43,8 +43,37 @@ Userspace-only: builds `amneziawg-go` (Go) and the static-musl `awg` CLI per arc
 - `/jffs/addons/custom_settings.txt` — Merlin settings store (all keys prefixed `awg_`)
 
 ### Routing model
-Three policies per device: `vpn_all` (ip rule → table 200), `vpn_geo` (iptables fwmark 0x100 + ipset match → table 200), `direct`. Default policy applies to unlisted devices. Route table 200, priority 100, fwmark 0x100.
+Three policies per device: `vpn_all` (ip rule → table 300), `vpn_geo` (iptables fwmark 0x100 + ipset match → table 300), `direct`. Default policy applies to unlisted devices. Route table **300**, priority 100, fwmark 0x100. (Table is 300, not 200 — bumped to avoid colliding with co-resident NFQUEUE DPI tools like b4; see coexistence notes below.)
 
 ## Shell scripting notes
 
-All router-side scripts must be POSIX sh (busybox ash) — no bashisms. The router runs BusyBox with limited coreutils.
+All router-side scripts must be POSIX sh (busybox ash) — no bashisms. The router runs BusyBox with limited coreutils. Specific gotchas, each of which has bitten us:
+
+- **No `command -v`** — Merlin busybox lacks `CONFIG_ASH_CMDCMD`, so `command -v` returns 127 and silently disables any guard built on it. Use `which`.
+- **`custom_settings.txt` caps a SINGLE value at ~3000 chars** — the firmware (via `<% get_custom_settings() %>`) silently truncates the overflow, no error. Any setting that can exceed ~2900 chars (e.g. a long `I1`-`I5` base64 — a big `<b 0x…>` junk packet) MUST be chunked across multiple keys (`awg_initdata`, `awg_initdata1`, …) and reassembled identically in the page (load + save) AND in `generate_config`. Don't add a new long single-key setting without chunking. busybox `awk` itself reads 3400-char lines fine — it's not the limiter.
+- **Entware binaries with versioned `.so` deps** (e.g. `ipset` → `libipset`) load the firmware's older `/usr/lib` copy when run from the addon context (no `/opt/etc/profile`) and die at link time. Prefer the firmware binary or set `LD_LIBRARY_PATH=/opt/lib`.
+- **`base64` may be absent** — some firmware busybox builds omit the applet and the box may have no Entware coreutils `base64` either. Don't assume it exists.
+- **Cyrillic is everywhere** in this repo (RU UI/docs) — search with `rg` (ripgrep), not `grep`.
+- Capture `setconf`/command **stderr** on failure (it used to be discarded); a bare numeric exit code is rarely actionable.
+
+## amneziawg-go daemon & setconf
+
+- **The build pins `AWG_GO_TAG` (currently `v0.2.19`)** in `release.yml`, not floating master — reproducible, and v0.2.19 carries the AWG 1.5/2.0 params (`I1`-`I5`, `S3`/`S4`) + the "handle empty I1-I5" fix that modern provider configs need. The build **sed-patches `version.go`'s `const Version`** (ldflags `-X` can't override a `const`) so `--version`/diag report the real ref. Upstream hardcodes a stale `const Version = "0.0.20250522"` and never bumps it — **do not infer the daemon's age from that string**.
+- **The "Running amneziawg-go is not required because this kernel has first class support" box is a HARMLESS, UNCONDITIONAL wireguard-go notice** printed to stderr on every Linux start — never the cause of a failure. Read the journal line *after* it.
+- **`setconf failed … "Unable to modify interface: Invalid argument"` = the daemon rejected an obfuscation param (EINVAL), not a race.** UAPI returns only a numeric errno (→ `awg` prints the generic string) and the default log level is silent on the reason. `do_start` re-launches the daemon under `LOG_LEVEL=verbose` + one `setconf` so it NAMES the line (e.g. `failed to parse I1: missing enclosing >`) and dumps the non-secret advanced params. Daemon constraints: `jc/jmin/jmax > 0`, `s1-s4 ≥ 0`, `h1-h4` must not overlap, `i1-i5` parsed strictly. `H1=1 H2=2 H3=3 H4=4` + `S=0` is VALID (I-param mode, e.g. a Cloudflare-WARP config).
+- **setconf UAPI race**: amneziawg-go creates the `awg0` netdev BEFORE it binds the UAPI control socket, so an immediate `setconf` (right after `wait_for_iface` passes) can lose the race and die with a generic exit 1 even on a fast box. `wait_for_uapi` (probes via `awg show`, path-agnostic) + retries cover it.
+
+## DNS, firewall & geo
+
+- **`:53` DNAT (DNS interception) must be installed AFTER the dnsmasq restart, never before** — installing it first locks every LAN device out of DNS/DHCP until reboot (LAN-critical). Check `setup_dns_interception` vs `reload_dnsmasq` ordering.
+- **dnsmasq honors only the FIRST `ipset=` line per domain.** Domains shared across multiple geo policies must be ONE comma-joined `ipset=/dom/setA,setB` line, not separate per-policy lines.
+- **Removing the persistent `conf-file=` line** from `/jffs/configs/dnsmasq.conf.add` must be robust: a `grep -vF … && mv` skips the `mv` when our line is the *only* line (`grep -v` → 0 lines → exit 1) — leaving a dangling `conf-file` that makes firmware dnsmasq fatally fail at next boot (no DNS/DHCP, survives reboot).
+- A `do_stop` that reloads dnsmasq **in the background** can race a packaging `rm -rf /opt/amneziawg` (uninstall/update) and OOM a low-RAM box — wait for the reload to settle before removing files.
+
+## Release & coexistence
+
+- **Always add the `### X.Y.Z` CHANGELOG.md entry BEFORE tagging.** `release.yml` pulls release notes from it and the in-app update modal reads it; a tag without its entry ships a "naked" release.
+- **api.github.com is region-blocked for the maintainer** — releases/updates resolve and SHA256-verify via **jsDelivr** (data API + checksums branch), GitHub API only as fallback.
+- **Co-resident DPI/proxy tools** (zapret/zapret2, xray/XRAYUI, b4) share the router's `:53`, NFQUEUE, and route-table space. Running two NFQUEUE DPI tools at once can blackhole the box; the addon detects them and defaults «Режим совместимости» (no DNS hijack) on for new installs. `RT_TABLE=300` avoids colliding with them.
+- **RT-AC68U (Cortex-A9, no VFP, 256 MB)**: armv7 binaries MUST be soft-float (musl `arm-linux-musleabi`) or they SIGILL; watch for OOM.
+- **UI is bilingual RU/EN**, auto-detecting the firmware language (httpApi `preferred_lang`).
