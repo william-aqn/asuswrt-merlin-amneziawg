@@ -49,6 +49,9 @@ See [CHANGELOG.md](CHANGELOG.md) for the full changelog.
 - **GeoCustom — own entries** -- manual domains, CIDR subnets, own files and URL sources
 - **Traffic analyzer** -- per device, see which domains/connections go via VPN vs direct; add captured items to a chosen geo policy in one click
 - **DNS interception** -- forces DNS through dnsmasq, blocks DoH/DoT for reliable geo routing
+- **DNS via tunnel** -- optionally the whole LAN resolves through the config's DNS servers inside the tunnel (provider-internal resolvers like `100.64.0.1` work too); ISP DNS poisoning is out of the picture, and the firmware DNS returns automatically when the tunnel goes down
+- **Self-healing** -- a post-start health check (ping/TCP/handshake through the tunnel) with auto-rollback of a dead tunnel, a 5-minute watchdog (revives a fallen tunnel, repairs rules after firewall restarts), and a deadman guard against losing the LAN
+- **Conflict warnings** -- on-page banners for co-resident DPI/proxy tools (zapret/Xray/b4), XRAYUI in "redirect all" mode, and the firmware's own VPN client (wgc/VPN Fusion) whose rules outrank the addon's
 - **MSS clamping** -- automatic TCP MSS fix for tunnel traffic
 - **Auto-update** -- daily cron for geo list refresh
 
@@ -75,7 +78,7 @@ The script auto-detects router architecture, downloads the latest package from G
 curl -sfL https://cdn.jsdelivr.net/gh/william-aqn/asuswrt-merlin-amneziawg@main/install-online.sh | sh
 ```
 
-The script downloads the `.ipk` through mirrors and verifies its SHA256.
+The script downloads the `.ipk` through proxy mirrors. The SHA256 checksum is verified when the GitHub API is reachable; with GitHub fully blocked the check is skipped (jsDelivr serves only repo files and cannot attest release-asset hashes).
 
 ### From .ipk package
 
@@ -182,24 +185,32 @@ The same fields appear in the **Pointwise exclusions** block — there they act 
 ### Prerequisites
 
 - Docker Desktop
-- Go 1.24+ (for amneziawg-go)
+- Go (recent stable; the `armv7-2.6` package additionally needs the Go 1.23 toolchain — see below)
 - GNU tar (`brew install gnu-tar` on macOS)
 
 ### Build amneziawg-go (userspace daemon)
 
 ```shell
-git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go.git
+git clone --depth 1 --branch v0.2.19 https://github.com/amnezia-vpn/amneziawg-go.git
 cd amneziawg-go
 
 # ARM64 (aarch64-3.10) — GT-AX11000, RT-AX86U, RT-AX88U
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../output/amneziawg-go
 
-# ARM32 (armv7-2.6) — RT-AC68U, RT-AC66U, older ARM routers
-CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 go build -ldflags="-s -w" -o ../output/amneziawg-go-arm5
-
 # ARM32 (armv7-3.2) — RT-AX56U, RT-AX58U, newer HND routers
 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -o ../output/amneziawg-go-arm
 ```
+
+**ARM32 `armv7-2.6` (RT-AC68U, RT-AC66U and other kernel-2.6.36 routers) is built differently.** Go ≥ 1.24 supports only Linux kernel ≥ 3.2 — a regular build dies silently right after launch on those routers. The daemon for this package is therefore built with the **Go 1.23** toolchain (supports kernels from 2.6.32) with the dependencies downgraded to the newest 1.23-compatible line:
+
+```shell
+go get golang.org/x/sys@v0.35.0 golang.org/x/net@v0.43.0 golang.org/x/crypto@v0.41.0
+go mod edit -go=1.23.0 -toolchain=none
+GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 \
+  go build -ldflags="-s -w" -o ../output/amneziawg-go-arm5
+```
+
+The canonical commands (including the version patch so `--version` reports `v0.2.19-legacy26`) live in `.github/workflows/release.yml`, step "Build amneziawg-go-arm5 (legacy Go 1.23…)".
 
 ### Build awg CLI tool (static musl)
 
@@ -242,8 +253,10 @@ awg show
 # Update geo lists
 /jffs/addons/amneziawg/amneziawg.sh update_geo
 
-# Diagnostics — full report (version, platform, binaries, network/TUN, routing,
-# dnsmasq, system logs, generated config with secrets redacted) for a bug report
+# Diagnostics — full report (version, platform, binaries + live probes, daemon exit code,
+# coreutils self-test, network/TUN, routing, rule copy counts, lock & watchdog state,
+# per-policy geo ipsets, dnsmasq, firmware VPN client, system logs, generated config with
+# secrets redacted) for a bug report
 /jffs/addons/amneziawg/amneziawg.sh diag
 ```
 
@@ -285,6 +298,14 @@ A: Add `telegram` to GeoIP Service Lists. Telegram connects by IP, not DNS -- do
 **Q: Sites don't open on iPhone with a geo policy?**
 
 A: iPhone uses encrypted DNS (DoH) which bypasses the router's dnsmasq. Set DNS manually: Settings > Wi-Fi > (i) > DNS > Manual > router IP only.
+
+**Q: Is ARM32 (RT-AC68U) supported?**
+
+A: Yes — there's a dedicated `armv7-2.6` .ipk. Since **1.2.32** its daemon is built with a special legacy toolchain (Go 1.23): regular Go ≥ 1.24 builds don't support these routers' 2.6.36 kernel and died silently with `ERROR: amneziawg-go failed to create interface`. To verify you have the right build: `/opt/amneziawg/amneziawg-go --version` should report `v0.2.19-legacy26 (…)`.
+
+**Q: The tunnel stops by itself a minute or two after starting (or loops "works 2 minutes → drop → reconnect")?**
+
+A: Update to **1.2.32+**. Previously the health check and the watchdog probed the tunnel with ping (and TCP) against the `awg_watchdog_hosts` targets — and if those hosts answer neither ICMP nor TCP:443 (Cloudflare WARP, provider-internal gateways like `100.64.0.1`), a fully working tunnel was falsely declared dead and rolled back. Now a fresh **WireGuard handshake** counts as proof of life (our own probe packets force it to refresh), so silent probe hosts no longer cause rollbacks. Still, leave the probe-hosts field empty (defaults to `8.8.8.8 1.1.1.1`) or point it at genuinely ping-able hosts — checks pass faster that way.
 
 **Q: Tunnel works for ping but not for websites?**
 
