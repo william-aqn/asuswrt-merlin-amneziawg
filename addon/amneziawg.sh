@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.30"
+AWG_VERSION="1.2.31"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -60,6 +60,26 @@ GEOIP_SERVICES="telegram google facebook twitter netflix cloudflare fastly cloud
 
 # Ensure Entware binaries are in PATH (not set when called from httpd/service-event)
 export PATH="/opt/bin:/opt/sbin:/sbin:/usr/sbin:$PATH"
+
+# Coreutils sanity: Entware installs GNU grep/sed/awk into /opt/bin, which SHADOWS the firmware's
+# busybox applets (opt is first in PATH) — and a dying USB stick / corrupted Entware then breaks
+# every guard in this script SILENTLY (field case: segfaulting /opt grep made the br0-IP check
+# "fail", skipped the dnsmasq include strip → dangling conf-file → dnsmasq fatal → LAN without
+# DNS/DHCP). Probe the three; if ANY is broken, fall back to the firmware-only PATH (busybox
+# lives in squashfs — it can't be corrupted by a bad USB) and say so once per boot. Entware-only
+# tools (opkg) become unavailable for this run — on a box in this state that's the lesser evil.
+AWG_PATH_SANE=1
+if [ "$(echo probe 2>/dev/null | grep -c probe 2>/dev/null)" != "1" ] \
+   || [ "$(echo probe 2>/dev/null | sed -n 's/probe/ok/p' 2>/dev/null)" != "ok" ] \
+   || [ "$(echo probe 2>/dev/null | awk '{print "ok"}' 2>/dev/null)" != "ok" ]; then
+    AWG_PATH_SANE=0
+    export PATH="/bin:/usr/bin:/sbin:/usr/sbin"
+    if [ ! -f /tmp/.awg_path_warned ]; then
+        touch /tmp/.awg_path_warned
+        logger -t "amneziawg" "WARNING: grep/sed/awk from Entware (/opt) are BROKEN (corrupted USB/Entware install?) — falling back to firmware busybox for this run. Check the USB drive / reinstall Entware."
+        echo "$(date '+%Y-%m-%d %H:%M:%S') WARNING: Entware coreutils broken (grep/sed/awk) — using firmware busybox; check USB / reinstall Entware" >> "$UI_LOG" 2>/dev/null
+    fi
+fi
 
 # Resolve a WORKING `ipset` once, then route every call through a wrapper. The addon runs
 # without Entware's /opt/etc/profile, so the Entware ipset in /opt/sbin loads the firmware's
@@ -384,6 +404,16 @@ flush_conntrack(){
     return 0
 }
 
+# Delete EVERY copy of an iptables rule, not just the first (`iptables -D` removes one match
+# per call). Duplicate copies accumulated in the field (9x TCPMSS clamp pairs on one report):
+# every start that raced an already-up tunnel APPENDED a fresh set while each stop removed
+# exactly ONE — monotonic growth. Usage: ipt_drain <iptables args of the -D form>.
+ipt_drain(){
+    local _n=0
+    while [ $_n -lt 25 ] && iptables "$@" 2>/dev/null; do _n=$((_n + 1)); done
+    return 0
+}
+
 save_and_set_rp_filter(){
     for iface in all awg0 br0; do
         local f="/proc/sys/net/ipv4/conf/$iface/rp_filter"
@@ -580,6 +610,23 @@ fetch_with_mirrors(){
     return 1
 }
 
+# Negative-cache for failed geo downloads. A list that does not exist upstream (e.g. GeoIP
+# "strava" — no such category in Loyalsoldier/geoip) used to be re-fetched on EVERY apply:
+# geo_any_pending saw the file missing forever, and each ensure_geo burned four mirror
+# timeouts per list. After a failure, skip re-tries of that list for 6h; a manual/cron
+# "Update now" (update_geo_lists) clears the stamps and retries everything.
+dl_fail_stamp(){ echo "$GEO_DIR/.dlfail_$1"; }
+dl_recently_failed(){
+    local f _now _then
+    f=$(dl_fail_stamp "$1")
+    [ -f "$f" ] || return 1
+    _now=$(date +%s); _then=$(cat "$f" 2>/dev/null)
+    case "$_then" in ''|*[!0-9]*) return 1 ;; esac
+    [ $((_now - _then)) -lt 21600 ]
+}
+dl_mark_failed(){ mkdir -p "$GEO_DIR" 2>/dev/null; date +%s > "$(dl_fail_stamp "$1")" 2>/dev/null; }
+dl_clear_failed(){ rm -f "$GEO_DIR"/.dlfail_* 2>/dev/null; }
+
 # Download a single GeoIP service list (IPv4 only) into the SHARED pool. $1=svc.
 download_geoip_service(){
     local svc="$1"
@@ -592,11 +639,13 @@ download_geoip_service(){
         rm -f "$tmp"
         # Reject garbage (e.g. a proxy HTML error page): require at least one IPv4 line
         if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$GEO_DIR/geoip/v2fly_${svc}.cidr" 2>/dev/null; then
-            rm -f "$GEO_DIR/geoip/v2fly_${svc}.cidr"; return 1
+            rm -f "$GEO_DIR/geoip/v2fly_${svc}.cidr"; dl_mark_failed "geoip_${svc}"; return 1
         fi
+        rm -f "$(dl_fail_stamp "geoip_${svc}")" 2>/dev/null
         return 0
     fi
     rm -f "$tmp"
+    dl_mark_failed "geoip_${svc}"
     return 1
 }
 
@@ -658,7 +707,8 @@ download_antifilter_list(){
         if fetch_with_mirrors "$url" "$tmp" 60 && [ -s "$tmp" ]; then
             grep -E '^[a-zA-Z0-9]' "$tmp" > "$out"
             rm -f "$tmp"
-            [ -s "$out" ] || { rm -f "$out"; return 1; }
+            [ -s "$out" ] || { rm -f "$out"; dl_mark_failed "af_${key}"; return 1; }
+            rm -f "$(dl_fail_stamp "af_${key}")" 2>/dev/null
             return 0
         fi
     else
@@ -668,11 +718,13 @@ download_antifilter_list(){
         if fetch_with_mirrors "$url" "$tmp" 60 && [ -s "$tmp" ]; then
             grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$tmp" > "$out"
             rm -f "$tmp"
-            [ -s "$out" ] || { rm -f "$out"; return 1; }
+            [ -s "$out" ] || { rm -f "$out"; dl_mark_failed "af_${key}"; return 1; }
+            rm -f "$(dl_fail_stamp "af_${key}")" 2>/dev/null
             return 0
         fi
     fi
     rm -f "$tmp"
+    dl_mark_failed "af_${key}"
     return 1
 }
 
@@ -746,9 +798,11 @@ download_custom_urls(){
         if fetch_with_mirrors "$url" "$tmp" 60 && [ -s "$tmp" ]; then
             rm -f "$GEO_DIR/domains/userurl_${key}.txt" "$GEO_DIR/geoip/userurl_${key}.cidr"
             classify_user_list "$tmp" "$GEO_DIR/domains/userurl_${key}.txt" "$GEO_DIR/geoip/userurl_${key}.cidr"
+            rm -f "$(dl_fail_stamp "url_${key}")" 2>/dev/null
             log_msg "Custom URL: $url ($key)"
         else
-            log_msg "Custom URL download failed: $url"
+            dl_mark_failed "url_${key}"
+            log_msg "Custom URL download failed: $url (won't re-try for 6h)"
         fi
         rm -f "$tmp"
     done
@@ -945,16 +999,18 @@ build_custom_domains(){
 }
 
 # Does ANY policy have a selected source whose shared file is missing on disk? (union check)
+# A recently-FAILED download does not count as pending — otherwise a permanently-missing list
+# re-triggered the whole background download pass on every apply (see dl_recently_failed).
 geo_any_pending(){
     local svc af_key key
     for svc in $(geo_union_geoip); do
-        [ -f "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] || return 0
+        [ -f "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] || dl_recently_failed "geoip_${svc}" || return 0
     done
     for af_key in $(geo_union_antifilter); do
         if antifilter_is_domain "$af_key"; then
-            [ -f "$GEO_DIR/domains/antifilter_${af_key}.lst" ] || return 0
+            [ -f "$GEO_DIR/domains/antifilter_${af_key}.lst" ] || dl_recently_failed "af_${af_key}" || return 0
         else
-            [ -f "$GEO_DIR/antifilter/af_${af_key}.cidr" ] || return 0
+            [ -f "$GEO_DIR/antifilter/af_${af_key}.cidr" ] || dl_recently_failed "af_${af_key}" || return 0
         fi
     done
     geo_urls_missing && return 0
@@ -967,7 +1023,8 @@ geo_urls_missing(){
     local u key
     for u in $(geo_union_urls); do
         key=$(echo "$u" | sha256sum | awk '{print $1}' | cut -c1-16)
-        { [ ! -f "$GEO_DIR/domains/userurl_${key}.txt" ] && [ ! -f "$GEO_DIR/geoip/userurl_${key}.cidr" ]; } && return 0
+        { [ ! -f "$GEO_DIR/domains/userurl_${key}.txt" ] && [ ! -f "$GEO_DIR/geoip/userurl_${key}.cidr" ]; } \
+            && ! dl_recently_failed "url_${key}" && return 0
     done
     return 1
 }
@@ -979,8 +1036,9 @@ geo_fetch_missing(){
     local svc af_key
     for svc in $(geo_union_geoip); do
         [ -f "$GEO_DIR/geoip/v2fly_${svc}.cidr" ] && continue
+        dl_recently_failed "geoip_${svc}" && { log_msg "GeoIP: $svc failed recently — skipping until the next full update"; continue; }
         log_msg "GeoIP: downloading $svc..."
-        download_geoip_service "$svc" || log_msg "WARNING: GeoIP $svc failed"
+        download_geoip_service "$svc" || log_msg "WARNING: GeoIP $svc failed (won't re-try for 6h; check the list name exists upstream)"
         update_status
     done
     for af_key in $(geo_union_antifilter); do
@@ -989,8 +1047,9 @@ geo_fetch_missing(){
         else
             [ -f "$GEO_DIR/antifilter/af_${af_key}.cidr" ] && continue
         fi
+        dl_recently_failed "af_${af_key}" && { log_msg "Antifilter: $af_key failed recently — skipping until the next full update"; continue; }
         log_msg "Antifilter: downloading $af_key..."
-        download_antifilter_list "$af_key" || log_msg "WARNING: Antifilter $af_key failed"
+        download_antifilter_list "$af_key" || log_msg "WARNING: Antifilter $af_key failed (won't re-try for 6h)"
         update_status
     done
     geo_urls_missing && download_custom_urls
@@ -1273,12 +1332,29 @@ reload_dnsmasq(){
     (
         # Serialize reload jobs: wait for any prior one (so the last restart loads the
         # current on-disk config), then hold the lock. Avoids ping-ponging restarts.
+        # OWNERSHIP matters here: the old code, after 60s of waiting, BROKE OUT and ran
+        # anyway — unserialized — and its EXIT trap then removed the OTHER job's lock, so
+        # every later job also ran unserialized (two pre-resolve storms in the same second
+        # were seen in a field log). Now: reclaim only a DEAD holder's lock, concede (skip
+        # this reload) if a live one still holds it after the wait — the running job loads
+        # the current on-disk conf anyway, and the watchdog reconcile re-installs the :53
+        # DNAT within 5 min if this call was carrying the interception flag.
         _w=0
         while ! mkdir /tmp/.awg_dnsreload 2>/dev/null; do
-            _w=$((_w + 1)); [ $_w -ge 60 ] && break
+            _hp=$(cat /tmp/.awg_dnsreload/pid 2>/dev/null)
+            if [ -n "$_hp" ] && ! kill -0 "$_hp" 2>/dev/null; then
+                rm -rf /tmp/.awg_dnsreload 2>/dev/null
+                continue
+            fi
+            _w=$((_w + 1))
+            if [ $_w -ge 240 ]; then
+                log_msg "dnsmasq reload: another reload job (pid ${_hp:-?}) still running after 240s — skipping this one"
+                exit 0
+            fi
             sleep 1
         done
-        trap 'rmdir /tmp/.awg_dnsreload 2>/dev/null' EXIT INT TERM
+        echo $$ > /tmp/.awg_dnsreload/pid 2>/dev/null
+        trap 'rm -rf /tmp/.awg_dnsreload 2>/dev/null' EXIT INT TERM
         # Order-independent PID snapshot (sorted): dnsmasq runs as main + a --log-async child, so
         # pidof returns two PIDs — sort them so a mere change in listing order can't masquerade as
         # (or mask) a real restart in the comparison below.
@@ -1371,6 +1447,23 @@ reload_dnsmasq(){
                     pidof dnsmasq >/dev/null 2>&1 && { log_msg "dnsmasq recovered (AWG dnsmasq rules removed)"; break; }
                     _j=$((_j + 1)); sleep 1
                 done
+                # ABSOLUTE last resort: every `service restart_dnsmasq` can be silently DROPPED
+                # by a busy rc_service ("skip the event" — seen in the field while rc waited on
+                # our own start_awgstart), leaving the LAN without DNS/DHCP indefinitely. If the
+                # service path is exhausted and dnsmasq is STILL down, exec it directly the way
+                # the firmware runs it — rc's next real restart will kill+replace this instance
+                # cleanly, so we never end up fighting it.
+                if ! pidof dnsmasq >/dev/null 2>&1 && which dnsmasq >/dev/null 2>&1; then
+                    if dnsmasq --test >/dev/null 2>&1; then
+                        log_msg "EMERGENCY: rc kept skipping restart_dnsmasq — starting dnsmasq directly to restore LAN DNS/DHCP"
+                        dnsmasq --log-async >/dev/null 2>&1
+                        sleep 2
+                        pidof dnsmasq >/dev/null 2>&1 && log_msg "dnsmasq up (direct start)" \
+                            || log_msg "ERROR: direct dnsmasq start failed too — LAN DNS still down"
+                    else
+                        log_msg "ERROR: /etc/dnsmasq.conf itself fails --test — not starting dnsmasq over a broken config"
+                    fi
+                fi
             fi
         fi
         wait_for_dns 10
@@ -1397,7 +1490,10 @@ reload_dnsmasq(){
             wait
             _post_ips=$(geo_ipset_total)
             if [ "$_post_ips" != "$_pre_ips" ]; then
-                log_msg "Geo domain pre-resolve: ipset grew ${_pre_ips} -> ${_post_ips} entries (domains resolving into sets)"
+                # "changed", not "grew": with timeout>0 domain entries the count can legitimately
+                # go DOWN between snapshots (expiry outpacing adds) — the old "grew 24189 -> 22253"
+                # wording confused reports. Both directions mean the resolver IS feeding the sets.
+                log_msg "Geo domain pre-resolve: ipset ${_pre_ips} -> ${_post_ips} entries (resolver feeding the sets$([ "$_post_ips" -lt "$_pre_ips" ] 2>/dev/null && echo '; net shrink = old entries expiring faster than adds'))"
             elif dns_ok; then
                 log_msg "Geo domain pre-resolve: ipset UNCHANGED at ${_pre_ips} — resolver answers real names but domain IPs are NOT landing in the set (geo conf not loaded into dnsmasq, or restart was skipped) — a restart usually fixes it"
             else
@@ -1927,6 +2023,7 @@ update_geo_if_needed(){
 # afterwards, which re-extracts domains and reloads dnsmasq.
 update_geo_lists(){
     [ -n "$GEO_DIR" ] || return 1
+    dl_clear_failed   # explicit update = the user wants everything re-tried, incl. negative-cached lists
     if [ "$(get_setting awg_geo_wipe_update)" = "1" ]; then
         log_msg "Full geo refresh (wipe enabled): clearing old lists..."
         rm -rf "$GEO_DIR/geoip" "$GEO_DIR/domains" "$GEO_DIR/antifilter" 2>/dev/null
@@ -2251,6 +2348,17 @@ do_diag(){
     for _b in /usr/sbin/ipset /sbin/ipset /opt/sbin/ipset; do
         [ -x "$_b" ] && echo "  $_b : $("$_b" version 2>&1 | head -1)"
     done
+    echo "--- shell / coreutils sanity ---"
+    # A corrupted Entware (dying USB) shadows busybox grep/sed/awk with segfaulting binaries and
+    # silently breaks every guard in this script — this section makes that visible in one look.
+    echo "entware coreutils    : $([ "$AWG_PATH_SANE" = 0 ] && echo 'BROKEN — /opt grep/sed/awk failed self-test, firmware busybox in use (CHECK USB / REINSTALL ENTWARE)' || echo 'OK')"
+    echo "PATH                 : $PATH"
+    for _t in grep sed awk sort md5sum curl; do
+        echo "  which $_t : $(which "$_t" 2>/dev/null || echo '(not found)')"
+    done
+    echo "  grep functional : $([ "$(echo probe 2>/dev/null | grep -c probe 2>/dev/null)" = "1" ] && echo yes || echo 'NO (segfault/broken!)')"
+    echo "  sed functional  : $([ "$(echo probe 2>/dev/null | sed -n 's/probe/ok/p' 2>/dev/null)" = "ok" ] && echo yes || echo 'NO (broken!)')"
+    echo "  awk functional  : $([ "$(echo probe 2>/dev/null | awk '{print "ok"}' 2>/dev/null)" = "ok" ] && echo yes || echo 'NO (broken!)')"
     echo "--- live probes (which binary raises Illegal instruction?) ---"
     probe_bin "amneziawg-go --version" "$AWG_GO" --version
     probe_bin "awg (usage)"            "$AWG_BIN"
@@ -2261,6 +2369,23 @@ do_diag(){
     echo "memory (free):"; free 2>/dev/null | sed 's/^/  /'
     echo "amneziawg-go running : $(pidof amneziawg-go 2>/dev/null || echo no)"
     echo "dnsmasq running      : $(pidof dnsmasq 2>/dev/null || echo no)"
+    echo "--- self-heal / background state ---"
+    echo "awg crons (cru l):"
+    _crons=$(cru l 2>/dev/null | grep -i awg)
+    if [ -n "$_crons" ]; then echo "$_crons" | sed 's/^/  /'; else echo "  (NONE — watchdog/status cron not scheduled!)"; fi
+    echo "watchdog last tick   : $([ -f /tmp/.awg_wd_beat ] && cat /tmp/.awg_wd_beat || echo '(never — cron not firing, or pre-1.2.31)')"
+    echo "watchdog fail state  : $([ -f /tmp/.awg_wd_state ] && tr '\n' ' ' < /tmp/.awg_wd_state || echo none)"
+    echo "locks (a DEAD holder = operation crashed mid-flight):"
+    for _L in "$LOCKDIR" "$GEOLOCK" /tmp/.awg_dnsreload; do
+        if [ -d "$_L" ]; then
+            _lp2=$(cat "$_L/pid" 2>/dev/null)
+            if [ -n "$_lp2" ] && kill -0 "$_lp2" 2>/dev/null; then echo "  $_L : held by pid $_lp2 (alive)"
+            elif [ -n "$_lp2" ]; then echo "  $_L : held by pid $_lp2 (DEAD — stale lock!)"
+            else echo "  $_L : held (no pid recorded)"; fi
+        else
+            echo "  $_L : free"
+        fi
+    done
     echo "--- co-resident DPI / coexistence ---"
     _dpi_tool=$(detect_dpi_tool 2>/dev/null)
     echo "co-resident DPI tool : ${_dpi_tool:-none}"
@@ -2296,6 +2421,16 @@ do_diag(){
     echo "ip rule:"; ip rule show 2>/dev/null | sed 's/^/  /'
     echo "ip route table $RT_TABLE:"; ip route show table "$RT_TABLE" 2>/dev/null | sed 's/^/  /'
     echo "mangle marks:"; iptables -t mangle -S 2>/dev/null | grep -iE 'awg|0x100|MARK' | head -30 | sed 's/^/  /'
+    echo "rule copy counts (running tunnel expects TCPMSS=2, ACCEPT/MASQ=1 each; more = duplicates):"
+    echo "  TCPMSS clamp   : $(iptables -t mangle -S FORWARD 2>/dev/null | grep -c TCPMSS)"
+    echo "  INPUT accept   : $(iptables -S INPUT 2>/dev/null | grep -c -- "-i $IFACE -j ACCEPT")"
+    echo "  MASQUERADE     : $(iptables -t nat -S POSTROUTING 2>/dev/null | grep -c -- "-o $IFACE -j MASQUERADE")"
+    echo "geo ipsets (per policy):"
+    for _dgid in $(geo_ids); do
+        _ds=$(geo_ipset "$_dgid")
+        _di=$(ipset list "$_ds" -t 2>/dev/null | grep -E 'Number of entries|Size in memory' | tr '\n' ';' | tr -s ' ')
+        echo "  policy $_dgid ($_ds): ${_di:-(missing)}"
+    done
     echo "--- dnsmasq ---"
     echo "args   : $(tr '\0' ' ' < /proc/$(pidof dnsmasq 2>/dev/null | awk '{print $1}')/cmdline 2>/dev/null)"
     echo "conf.add (our block):"
@@ -2343,6 +2478,31 @@ arm_lan_deadman(){
     ) </dev/null >/dev/null 2>&1 &
 }
 
+# Launch amneziawg-go detached, stdout+stderr into /tmp/awg_daemon.log and — critically — its
+# EXIT STATUS appended as a final "[daemon exited rc=N]" line. A daemon that dies WITHOUT
+# printing anything (SIGILL/SIGSEGV, or a Go runtime that just aborts on an unsupported ancient
+# kernel — RT-AC68U's 2.6.36 is below Go 1.24's Linux 3.2 floor) used to be indistinguishable
+# from a hang; the rc line names it (132=SIGILL, 139=SIGSEGV, plain N = clean error exit).
+# $1 = optional LOG_LEVEL (e.g. "verbose").
+launch_daemon(){
+    # NB: an expanded word is never parsed as an assignment prefix, so LOG_LEVEL is set via an
+    # explicit branch (not `${1:+LOG_LEVEL=$1} cmd`, which would exec "LOG_LEVEL=..." as argv[0]).
+    if [ -n "$1" ]; then
+        ( LOG_LEVEL="$1" "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
+          echo "[daemon exited rc=$? at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log ) &
+    else
+        ( "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
+          echo "[daemon exited rc=$? at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log ) &
+    fi
+}
+
+# Daemon log minus the harmless wireguard-go "kernel has first class support" banner box, so
+# error paths quote the ACTUAL failure lines instead of 10 lines of box-drawing. $1 = max lines.
+daemon_log_gist(){
+    grep -av '─\|│\|┌\|└\|first class support\|amneziawg-linux-kernel-module' /tmp/awg_daemon.log 2>/dev/null \
+        | grep -v '^[[:space:]]*$' | tail -n "${1:-6}"
+}
+
 # --- Start ---
 
 do_start(){
@@ -2385,6 +2545,17 @@ do_start(){
 
     acquire_lock || { log_msg "Cannot acquire lock, aborting start"; update_status; return 1; }
 
+    # Re-check under the lock: the is_running test at the top ran BEFORE the (up to 30s) lock
+    # wait, so a second queued start (double service event, watchdog racing a user click) used
+    # to arrive here with the tunnel ALREADY up — kill the live daemon as "stale", re-launch it
+    # and append a duplicate set of INPUT/FORWARD/TCPMSS/MASQUERADE rules (each stop removes
+    # only one copy → they accumulated; 9x TCPMSS pairs seen in a field report).
+    if is_running; then
+        log_msg "Already running (a concurrent start finished first) — nothing to do"
+        release_lock
+        return 0
+    fi
+
     generate_config || { update_status; release_lock; return 1; }
     [ ! -f "$CONF" ] && { log_msg "ERROR: No config"; update_status; release_lock; return 1; }
     [ ! -f "$AWG_GO" ] && { log_msg "ERROR: amneziawg-go not found"; update_status; release_lock; return 1; }
@@ -2417,12 +2588,39 @@ do_start(){
     # install is visible in the log without running 'diag' separately.
     log_msg "Platform $(uname -m): amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")"
     log_msg "ipset binary: ${AWG_IPSET_BIN:-NONE (no working ipset found — geo will be disabled)}${AWG_IPSET_LIB:+ (LD_LIBRARY_PATH=$AWG_IPSET_LIB)}"
-    "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1 &
+    launch_daemon
     if ! wait_for_iface "$IFACE" 10; then
+        # Name the failure mode from the captured exit status: a SILENT death (banner only, no
+        # error line — the RT-AC68U/kernel-2.6.36 signature) vs a clean error exit vs a hang.
+        local drc dgist
+        drc=$(sed -n 's/^\[daemon exited rc=\([0-9]*\).*/\1/p' /tmp/awg_daemon.log 2>/dev/null | tail -1)
         log_msg "ERROR: amneziawg-go failed to create interface"
-        [ -f /tmp/awg_daemon.log ] && log_msg "Daemon output: $(cat /tmp/awg_daemon.log)"
-        pidof amneziawg-go >/dev/null 2>&1 && kill $(pidof amneziawg-go) 2>/dev/null
-        update_status; release_lock; return 1
+        case "$drc" in
+            "")  log_msg "  daemon is still running but $IFACE never appeared after 10s (hung in TUN create?)" ;;
+            132) log_msg "  daemon exited rc=132 (SIGILL — this CPU can't run this build)" ;;
+            139) log_msg "  daemon exited rc=139 (SIGSEGV — daemon crashed; on kernels older than 3.2 (e.g. RT-AC68U 2.6.36) the Go runtime is unsupported and dies like this)" ;;
+            *)   log_msg "  daemon exited rc=$drc" ;;
+        esac
+        dgist=$(daemon_log_gist 6 | tr '\n' '|')
+        [ -n "$dgist" ] && log_msg "  daemon said: $dgist"
+        # One retry under LOG_LEVEL=verbose: the device layer then narrates each creation step
+        # (TUN open, vnet-hdr, UAPI socket), which names the failing step on exotic kernels.
+        pidof amneziawg-go >/dev/null 2>&1 && { kill $(pidof amneziawg-go) 2>/dev/null; wait_for_pid_exit amneziawg-go 5; }
+        ip link del "$IFACE" 2>/dev/null
+        log_msg "  retrying once with LOG_LEVEL=verbose..."
+        launch_daemon verbose
+        if wait_for_iface "$IFACE" 10; then
+            log_msg "  verbose retry succeeded — continuing start (transient failure)"
+        else
+            drc=$(sed -n 's/^\[daemon exited rc=\([0-9]*\).*/\1/p' /tmp/awg_daemon.log 2>/dev/null | tail -1)
+            dgist=$(daemon_log_gist 8 | tr '\n' '|')
+            log_msg "  verbose retry failed too (rc=${drc:-none}); daemon output: ${dgist:-<nothing after the banner>}"
+            local dmesg_tail
+            dmesg_tail=$(dmesg 2>/dev/null | tail -80 | grep -iE 'amneziawg|potentially unexpected fatal|illegal|segfault|oom' | tail -3 | tr '\n' '|')
+            [ -n "$dmesg_tail" ] && log_msg "  dmesg: $dmesg_tail"
+            pidof amneziawg-go >/dev/null 2>&1 && kill $(pidof amneziawg-go) 2>/dev/null
+            update_status; release_lock; return 1
+        fi
     fi
     log_msg "Userspace daemon started"
 
@@ -2469,7 +2667,7 @@ do_start(){
             #      setconf so the daemon NAMES the offender (e.g. "failed to parse I1: …").
             kill $(pidof amneziawg-go) 2>/dev/null; wait_for_pid_exit amneziawg-go 5
             ip link del "$IFACE" 2>/dev/null
-            LOG_LEVEL=verbose "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1 &
+            launch_daemon verbose
             if wait_for_iface "$IFACE" 5 && wait_for_uapi "$IFACE" 8; then
                 "$AWG_BIN" setconf "$IFACE" "$CONF" >/dev/null 2>&1
                 local vrej
@@ -2509,17 +2707,22 @@ do_start(){
 
     save_and_set_rp_filter
 
-    # Base iptables
-    iptables -I INPUT -i "$IFACE" -j ACCEPT
-    iptables -I FORWARD -i "$IFACE" -j ACCEPT
-    iptables -I FORWARD -o "$IFACE" -j ACCEPT
+    # Base iptables. Every add is -C-guarded (idempotent) so no code path can stack duplicates
+    # — the raw appends used to pile up whenever a start ran over remnants of a previous one.
+    iptables -C INPUT -i "$IFACE" -j ACCEPT 2>/dev/null || iptables -I INPUT -i "$IFACE" -j ACCEPT
+    iptables -C FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD -i "$IFACE" -j ACCEPT
+    iptables -C FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD -o "$IFACE" -j ACCEPT
     setup_ipv6_block
-    iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    iptables -t mangle -C FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
+        || iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
+        || iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     if [ -n "$lan_net" ]; then
-        iptables -t nat -I POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE
+        iptables -t nat -C POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE 2>/dev/null \
+            || iptables -t nat -I POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE
     else
-        iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
+        iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null \
+            || iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
     fi
 
     # Arm the LAN deadman BEFORE the risky part: setup_firewall does the ipset load, DNS
@@ -2538,6 +2741,7 @@ do_start(){
     (
         hc_ok=false
         hc_try=0
+        hc_dns_fails=0
         hc_reason="not passing traffic (probed: $(watchdog_hosts))"
         while [ $hc_try -lt 30 ]; do
             # Reachability: ICMP every round (fast); a TCP/HTTPS connect through the tunnel at
@@ -2550,6 +2754,19 @@ do_start(){
                 # Skip the DNS gate when dnsmasq isn't up (a dnsmasq problem, not the tunnel's
                 # — the 30x2s retry covers a brief restart; don't roll back the VPN for it).
                 if ! dns_intercept_active || ! pidof dnsmasq >/dev/null 2>&1 || dns_ok; then
+                    hc_ok=true
+                    break
+                fi
+                # Tunnel passes traffic; ONLY the DNS layer is failing. Rolling back a working
+                # VPN never fixes DNS (a real field case chased a phantom endpoint problem for
+                # hours: the router's resolver was broken by a corrupted Entware). The lockout
+                # the gate exists for — clients DNAT'd to a resolver that can't answer — is
+                # fully cured by dropping OUR :53 hijack (fail-open), so after a few confirmed
+                # DNS-only failures do that and keep the tunnel.
+                hc_dns_fails=$((hc_dns_fails + 1))
+                if [ $hc_dns_fails -ge 6 ]; then
+                    log_msg "WARNING: tunnel passes traffic but router DNS won't resolve — removing :53 interception (fail-open), tunnel stays up; check the router's upstream DNS/dnsmasq"
+                    cleanup_dns_interception
                     hc_ok=true
                     break
                 fi
@@ -2589,16 +2806,18 @@ do_stop(){
     touch "$STOPPING_FLAG"
     update_status
 
-    iptables -D INPUT -i "$IFACE" -j ACCEPT 2>/dev/null
-    iptables -D FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null
-    iptables -D FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null
+    # Drain-delete (every copy, not just the first): installs that lived through the old
+    # double-start race carry stacked duplicates — one -D per stop never caught them up.
+    ipt_drain -D INPUT -i "$IFACE" -j ACCEPT
+    ipt_drain -D FORWARD -i "$IFACE" -j ACCEPT
+    ipt_drain -D FORWARD -o "$IFACE" -j ACCEPT
     cleanup_ipv6_block
-    iptables -t mangle -D FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
-    iptables -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+    ipt_drain -t mangle -D FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     local lan_net
     lan_net=$(get_lan_net)
-    [ -n "$lan_net" ] && iptables -t nat -D POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE 2>/dev/null
-    iptables -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null
+    [ -n "$lan_net" ] && ipt_drain -t nat -D POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE
+    ipt_drain -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE
 
     cleanup_firewall
     # On a deliberate user stop/uninstall, also drop the self-heal watchdog so the VPN stays
@@ -3245,8 +3464,28 @@ repin_endpoint_route(){
 # --- Watchdog (called by cron every 5 min) ---
 
 do_watchdog(){
-    # Skip if lock held (another operation in progress)
-    [ -d "$LOCKDIR" ] && return 0
+    # Heartbeat FIRST (before any early return): proves in diag that the cron actually fires.
+    # A watchdog that silently never runs is indistinguishable from a healthy one otherwise.
+    date '+%Y-%m-%d %H:%M:%S' > /tmp/.awg_wd_beat 2>/dev/null
+
+    # Skip if another operation is mid-flight — but only if its holder is ALIVE. A leaked lock
+    # (a process killed between acquire and release) used to silence the watchdog FOREVER
+    # (every tick returned here), which is precisely when self-heal matters most. acquire_lock
+    # already knows how to reclaim a dead holder's lock; give the watchdog the same knowledge.
+    if [ -d "$LOCKDIR" ]; then
+        local _lp
+        _lp=$(cat "$LOCKDIR/pid" 2>/dev/null)
+        if [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null; then
+            return 0   # genuinely busy
+        fi
+        if [ -z "$_lp" ]; then
+            # No pid file — either mid-acquire (mkdir happened a moment ago) or a crash in that
+            # window. Only treat as stale once the dir is demonstrably old.
+            [ -n "$(find "$LOCKDIR" -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 0
+        fi
+        log_msg "WATCHDOG: stale operation lock (holder ${_lp:-unknown} is gone) — reclaiming"
+        rm -rf "$LOCKDIR"
+    fi
 
     # DNS-interception coexistence reconcile (only while the tunnel is up). Our one-shot
     # decision at setup_firewall time goes stale when a DPI/proxy tool starts AFTER us, when
@@ -3257,7 +3496,10 @@ do_watchdog(){
         if dns_intercept_active && { zapret_active || fw_dns_redirect_active || [ "$(get_setting awg_no_dns_intercept)" = "1" ]; }; then
             log_msg "WATCHDOG: co-resident DNS owner detected — removing our :53 interception (coexist)"
             cleanup_dns_interception
-        elif ! dns_intercept_active && intercept_wanted; then
+        elif ! dns_intercept_active && intercept_wanted && dns_ok; then
+            # dns_ok gate: only (re)install the hijack when the router actually resolves —
+            # otherwise this would flap against the DNS fail-open below (install → fail-open
+            # remove → install) every 5 minutes while the resolver is broken.
             log_msg "WATCHDOG: DNS interception now warranted (DPI gone / dnsmasq up) — installing"
             setup_dns_interception
         fi
@@ -3279,11 +3521,17 @@ do_watchdog(){
     elif dns_intercept_active && pidof dnsmasq >/dev/null 2>&1 && ! dns_ok; then
         # Confirm before acting: dnsmasq gets bounced by many unrelated events (DHCP lease
         # churn, other addons, our own reload_dnsmasq). Re-probe after a short settle so a
-        # transient resolver blip doesn't trigger a full VPN restart — only a DNS that stays
-        # dead WHILE dnsmasq is up is the tunnel-DNS lockout we want to roll back.
+        # transient resolver blip doesn't trigger anything.
         sleep 5
         if pidof dnsmasq >/dev/null 2>&1 && ! dns_ok; then
-            reason="DNS not resolving through tunnel"
+            # The tunnel itself passes traffic (tunnel_alive above) — only DNS is dead. A VPN
+            # restart never fixes that (the old behavior looped a healthy tunnel through
+            # stop/start every 5 min while the real fault was upstream DNS / a broken local
+            # resolver). The client lockout is OUR :53 DNAT pinning them to the dead resolver
+            # — cure it directly: drop the interception (fail-open) and keep the tunnel. The
+            # reconcile above re-installs it (dns_ok-gated) once the resolver works again.
+            log_msg "WATCHDOG: router DNS not resolving (tunnel passes traffic) — removing :53 interception (fail-open); check upstream DNS/dnsmasq"
+            cleanup_dns_interception
         fi
     fi
 
@@ -3302,6 +3550,10 @@ do_watchdog(){
             return
         fi
         log_msg "WATCHDOG: $reason, restarting"
+        # Triage snapshot BEFORE the teardown wipes it: handshake age + transfer distinguish
+        # "endpoint stopped answering" (stale/no handshake — DPI killed the flow, server down)
+        # from "tunnel up but traffic misrouted" (fresh handshake, RX growing) in the report.
+        is_running && log_msg "  awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer' | tr '\n' '|' | sed 's/|$//')"
         printf '%s\n%s\n' "$((fails + 1))" "$now" > "$wd_state" 2>/dev/null
         do_stop 2>/dev/null
         wait_for_pid_exit amneziawg-go 10
@@ -3654,17 +3906,17 @@ do_firewall_restart(){
     log_msg "Firewall restart detected, re-applying routes and rules"
     acquire_lock || { log_msg "Cannot acquire lock, aborting firewall restart"; return 1; }
 
-    # --- Tear down current routing + firewall (mirror do_stop) ---
-    iptables -D INPUT -i "$IFACE" -j ACCEPT 2>/dev/null
-    iptables -D FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null
-    iptables -D FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null
+    # --- Tear down current routing + firewall (mirror do_stop; drain = remove every copy) ---
+    ipt_drain -D INPUT -i "$IFACE" -j ACCEPT
+    ipt_drain -D FORWARD -i "$IFACE" -j ACCEPT
+    ipt_drain -D FORWARD -o "$IFACE" -j ACCEPT
     cleanup_ipv6_block
-    iptables -t mangle -D FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
-    iptables -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+    ipt_drain -t mangle -D FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     local lan_net_old
     lan_net_old=$(get_lan_net)
-    [ -n "$lan_net_old" ] && iptables -t nat -D POSTROUTING -s "$lan_net_old" -o "$IFACE" -j MASQUERADE 2>/dev/null
-    iptables -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null
+    [ -n "$lan_net_old" ] && ipt_drain -t nat -D POSTROUTING -s "$lan_net_old" -o "$IFACE" -j MASQUERADE
+    ipt_drain -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE
     cleanup_firewall
     ip route flush table $RT_TABLE 2>/dev/null
     local endpoint_old
@@ -3687,16 +3939,20 @@ do_firewall_restart(){
 
     save_and_set_rp_filter
 
-    iptables -I INPUT -i "$IFACE" -j ACCEPT
-    iptables -I FORWARD -i "$IFACE" -j ACCEPT
-    iptables -I FORWARD -o "$IFACE" -j ACCEPT
+    iptables -C INPUT -i "$IFACE" -j ACCEPT 2>/dev/null || iptables -I INPUT -i "$IFACE" -j ACCEPT
+    iptables -C FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD -i "$IFACE" -j ACCEPT
+    iptables -C FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD -o "$IFACE" -j ACCEPT
     setup_ipv6_block
-    iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    iptables -t mangle -C FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
+        || iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
+        || iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     if [ -n "$lan_net" ]; then
-        iptables -t nat -I POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE
+        iptables -t nat -C POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE 2>/dev/null \
+            || iptables -t nat -I POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE
     else
-        iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
+        iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null \
+            || iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
     fi
 
     setup_firewall
