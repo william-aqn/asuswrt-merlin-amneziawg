@@ -40,6 +40,7 @@ Userspace-only: builds `amneziawg-go` (Go) and the static-musl `awg` CLI per arc
 - `/opt/amneziawg/` — daemon (`amneziawg-go`), tool (`awg`), config, client list, geo data
 - `/jffs/addons/amneziawg/` — addon script + ASP page
 - `/jffs/configs/dnsmasq.conf.add` — holds a persistent `conf-file=/opt/amneziawg/dnsmasq_awg.conf` include line; the actual domain→ipset rules live in that included file (header `# AmneziaWG domain routing`), NOT in conf.add itself
+- `/jffs/scripts/dnsmasq.postconf` — one tagged line (marker `amneziawg`): while `/tmp/.awg_tunnel_dns` exists it `pc_delete`s the firmware's `servers-file`/`resolv-file` from the generated dnsmasq conf (the "DNS via tunnel" feature)
 - `/jffs/addons/custom_settings.txt` — Merlin settings store (all keys prefixed `awg_`)
 
 ### Routing model
@@ -76,6 +77,7 @@ All router-side scripts must be POSIX sh (busybox ash) — no bashisms. The rout
 - **dnsmasq honors only the FIRST `ipset=` line per domain.** Domains shared across multiple geo policies must be ONE comma-joined `ipset=/dom/setA,setB` line, not separate per-policy lines.
 - **Removing the persistent `conf-file=` line** from `/jffs/configs/dnsmasq.conf.add` must be robust: a `grep -vF … && mv` skips the `mv` when our line is the *only* line (`grep -v` → 0 lines → exit 1) — leaving a dangling `conf-file` that makes firmware dnsmasq fatally fail at next boot (no DNS/DHCP, survives reboot).
 - A `do_stop` that reloads dnsmasq **in the background** can race a packaging `rm -rf /opt/amneziawg` (uninstall/update) and OOM a low-RAM box — wait for the reload to settle before removing files.
+- **"DNS via tunnel" (`awg_tunnel_dns=1`, off by default; uses the `awg_dns` field, ≤3 IPv4)**: appends a marker block (`# AWG_TUNNEL_DNS_START…END`: `no-resolv` + `server=<ip>@awg0`) to `dnsmasq_awg.conf` and touches `/tmp/.awg_tunnel_dns`, which makes the `dnsmasq.postconf` hook strip the firmware upstreams — so the LAN resolves ONLY through the tunnel (`@awg0` binds the upstream socket to awg0; the prio-100 `from <awg0-ip>` rule routes it). **INVARIANT: flag ⇔ block.** A stray flag without the `server=` lines leaves dnsmasq with NO upstreams (dead LAN DNS) — every conf-removal path (cleanup_firewall, reload_dnsmasq last-resort, `--test`-reject branch, uninstall, prerm) must clear the flag; `disable_tunnel_dns()` is the fail-open (called wherever `cleanup_dns_interception` fail-opens). Intercept-gated: inert in compat mode.
 
 ## Release & coexistence
 

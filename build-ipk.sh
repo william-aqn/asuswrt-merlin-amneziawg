@@ -119,6 +119,12 @@ if [ -f /jffs/configs/dnsmasq.conf.add ]; then
     grep -vF 'conf-file=/opt/amneziawg/' /jffs/configs/dnsmasq.conf.add > /jffs/configs/dnsmasq.conf.add.tmp 2>/dev/null
     mv /jffs/configs/dnsmasq.conf.add.tmp /jffs/configs/dnsmasq.conf.add 2>/dev/null
 fi
+# Same defensive class for "DNS via tunnel": with /opt/amneziawg gone the server=@awg0 lines
+# are gone too, so the flag must fall — a stray flag makes dnsmasq.postconf strip the firmware
+# upstreams and leaves dnsmasq with NO upstreams (dead LAN DNS until reboot). The postconf
+# hook line is removed by uninstall; strip it here too in case uninstall was interrupted.
+rm -f /tmp/.awg_tunnel_dns
+[ -f /jffs/scripts/dnsmasq.postconf ] && sed -i '/amneziawg/d' /jffs/scripts/dnsmasq.postconf 2>/dev/null
 # Wait for any in-flight dnsmasq reload to finish, then confirm the resolver is back, BEFORE
 # deleting files — so a restart can't land mid-teardown and leave the LAN without DNS/DHCP until a
 # hard reboot.

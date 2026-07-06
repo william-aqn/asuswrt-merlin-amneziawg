@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.32"
+AWG_VERSION="1.2.33"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -38,6 +38,13 @@ AWG_UPLOAD_STATUS="/www/user/awg_upload.htm"
 STARTING_FLAG="/tmp/.awg_starting"
 STOPPING_FLAG="/tmp/.awg_stopping"
 GEO_BUSY_FLAG="/tmp/.awg_geo_busy"
+# "DNS via tunnel" active-marker. While it exists, our /jffs/scripts/dnsmasq.postconf hook
+# strips the firmware's upstream directives (servers-file/resolv-file) from the generated
+# dnsmasq conf, leaving ONLY our server=<awg_dns>@awg0 lines — so ISP DNS can't answer at all.
+# INVARIANT: the flag exists ONLY while dnsmasq_awg.conf carries the AWG_TUNNEL_DNS block;
+# a stray flag without those server= lines would leave dnsmasq with NO upstreams (dead LAN
+# DNS) — every path that deletes/regenerates the conf must handle the flag in lockstep.
+TUNNEL_DNS_FLAG="/tmp/.awg_tunnel_dns"
 OWNED_SETS="/tmp/.awg_owned_sets"   # registry: one geo ipset name per line that WE created (own). Exact-name teardown — NO fragile name-pattern matching — so custom/shared base names (awg_ipset_name with '.', a trailing digit, or a prefix shared with another tool) and renames are all handled safely. /tmp is tmpfs, so it shares the ipsets' reboot-volatile lifecycle.
 SETTINGS="/jffs/addons/custom_settings.txt"
 CLIENTS_FILE="$AWG_DIR/clients.list"
@@ -1213,6 +1220,36 @@ setup_dns_interception(){
     log_msg "DNS interception enabled"
 }
 
+# Validated tunnel-DNS servers from awg_dns (comma/space separated): echoes up to 3 IPv4s.
+# IPv6 and hostnames are dropped — the @interface upstream binding + the awg0 policy rule
+# need literal v4 here (a hostname upstream would need resolving, a chicken-and-egg).
+tunnel_dns_ips(){
+    local raw ip out="" n=0
+    raw=$(get_setting awg_dns | tr ',' ' ')
+    for ip in $raw; do
+        ip=$(echo "$ip" | tr -d ' \r')
+        validate_ip "$ip" || continue
+        out="$out $ip"; n=$((n + 1))
+        [ $n -ge 3 ] && break
+    done
+    echo "${out# }"
+}
+
+# Fail-open for "DNS via tunnel": restore the firmware upstreams NOW. Drops the flag (the
+# postconf hook stops stripping servers-file on the next restart), cuts the server=@awg0
+# block out of the live conf and reloads dnsmasq. Called when the router can't resolve while
+# the tunnel itself passes traffic — a dead/unreachable tunnel-DNS must never hold the LAN's
+# resolution hostage. Deliberately NOT auto-re-enabled: the next Apply/start rebuilds it.
+disable_tunnel_dns(){
+    rm -f "$TUNNEL_DNS_FLAG"
+    if [ -f "$DNSMASQ_AWG_CONF" ] && grep -q '^# AWG_TUNNEL_DNS_START' "$DNSMASQ_AWG_CONF" 2>/dev/null; then
+        sed -i '/^# AWG_TUNNEL_DNS_START/,/^# AWG_TUNNEL_DNS_END/d' "$DNSMASQ_AWG_CONF" 2>/dev/null
+        rm -f "$DNSRELOAD_SIG"   # conf changed — force a real dnsmasq restart
+        log_msg "Tunnel DNS disabled (fail-open) — firmware DNS upstreams restored"
+        reload_dnsmasq
+    fi
+}
+
 # True if our LAN DNS interception (:53 DNAT to the router) is currently installed. Checked
 # against the exact rule we add so a stale /tmp/.awg_dns_ip or a foreign :53 DNAT won't match.
 dns_intercept_active(){
@@ -1296,8 +1333,9 @@ cleanup_firewall(){
     # or an unrelated tool's set under a colliding base name is never touched.
     destroy_owned_sets
 
-    # Remove dnsmasq config
+    # Remove dnsmasq config (+ the tunnel-DNS flag in lockstep — see TUNNEL_DNS_FLAG invariant)
     rm -f "$DNSMASQ_AWG_CONF"
+    rm -f "$TUNNEL_DNS_FLAG"
     # Fixed-string removal (the path contains '.', which a sed regex would treat as any-char and
     # could match an unrelated line). Gate the rewrite on the line being PRESENT, then do the
     # strip+mv UNCONDITIONALLY: the old `grep -vF ... > tmp && mv` chained the mv on grep's exit
@@ -1433,6 +1471,7 @@ reload_dnsmasq(){
                 # so the LAN gets its resolver back. Degraded geo beats a dead LAN; conf kept as .bad.
                 log_msg "ERROR: dnsmasq still down — removing AWG dnsmasq rules + restarting to restore DNS/DHCP (conf kept as ${DNSMASQ_AWG_CONF}.bad)"
                 rm -f "$DNSMASQ_AWG_CONF"
+                rm -f "$TUNNEL_DNS_FLAG"   # conf (incl. server=@awg0) gone — flag must fall with it
                 rm -f "$DNSRELOAD_SIG"   # conf unloaded — force a real restart on the next reload
                 # Reliable strip (see cleanup_firewall): a bare `grep -vF ... && mv` skips the mv
                 # when our line is the only one, leaving a dangling conf-file= that breaks dnsmasq.
@@ -1769,6 +1808,38 @@ setup_firewall(){
     fi
     rm -f "$_ds_tmp"
 
+    # --- "DNS via tunnel" (opt-in, awg_tunnel_dns=1) ---
+    # While the VPN is up AND our :53 interception is in play, resolve the WHOLE LAN through
+    # the tunnel's DNS (the awg_dns field — e.g. a provider-internal 100.64.0.1 reachable
+    # only inside the tunnel): `server=<ip>@awg0` binds dnsmasq's upstream socket to awg0,
+    # whose source address the "from <awg0-ip> lookup $RT_TABLE prio 100" rule routes through
+    # the tunnel — the same proven path update-via-VPN and the TCP probe use. `no-resolv`
+    # plus the dnsmasq.postconf hook (strips servers-file/resolv-file while $TUNNEL_DNS_FLAG
+    # exists) shut the firmware upstreams off, so poisoned ISP DNS can't answer first.
+    # Gated on intercept_wanted: interception is the mode where we own LAN DNS and where the
+    # full safety net (deadman, --test gate, dns_ok fail-open via disable_tunnel_dns) applies;
+    # in compatibility mode the toggle is inert (logged). Flag and block toggle TOGETHER.
+    rm -f "$TUNNEL_DNS_FLAG"
+    local _tdns_on=0 _tdns_ips="" _tip
+    if [ "$(get_setting awg_tunnel_dns)" = "1" ]; then
+        _tdns_ips=$(tunnel_dns_ips)
+        if [ -z "$_tdns_ips" ]; then
+            log_msg "Tunnel DNS is on but the DNS field has no valid IPv4 — ignoring"
+        elif ! intercept_wanted; then
+            log_msg "Tunnel DNS is on but DNS interception is off (compat mode / co-resident DNS owner) — ignoring; enable interception to use it"
+        else
+            {
+                echo "# AWG_TUNNEL_DNS_START"
+                echo "no-resolv"
+                for _tip in $_tdns_ips; do echo "server=${_tip}@${IFACE}"; done
+                echo "# AWG_TUNNEL_DNS_END"
+            } >> "$DNSMASQ_AWG_CONF"
+            touch "$TUNNEL_DNS_FLAG"
+            _tdns_on=1
+            log_msg "Tunnel DNS: LAN resolves via ${_tdns_ips} through ${IFACE} (firmware upstreams off while VPN is up)"
+        fi
+    fi
+
     # SAFETY GATE: validate our generated geo conf in ISOLATION before dnsmasq is ever asked to
     # load it. A single directive dnsmasq rejects would make `service restart_dnsmasq` fail to
     # bring dnsmasq up at all — taking DNS/DHCP down for the whole LAN until the self-heal notices.
@@ -1784,11 +1855,16 @@ setup_firewall(){
             cp "$DNSMASQ_AWG_CONF" "${DNSMASQ_AWG_CONF}.bad" 2>/dev/null
             { echo "# AmneziaWG domain routing - DISABLED (config failed dnsmasq --test; kept as ${DNSMASQ_AWG_CONF}.bad)"
               [ "$want_aaaa" = 1 ] && echo "filter-AAAA"; } > "$DNSMASQ_AWG_CONF"
+            # The replacement conf has no server=@awg0 lines — the flag MUST fall with them,
+            # or the postconf hook would strip the firmware upstreams and leave dnsmasq with
+            # no upstreams at all (dead LAN DNS).
+            rm -f "$TUNNEL_DNS_FLAG"
+            _tdns_on=0
         fi
     fi
 
-    # Add conf-file include to dnsmasq (idempotent) — also when only filter-AAAA is set
-    if [ $domain_count -gt 0 ] || [ "$want_aaaa" = 1 ]; then
+    # Add conf-file include to dnsmasq (idempotent) — also when only filter-AAAA / tunnel-DNS is set
+    if [ $domain_count -gt 0 ] || [ "$want_aaaa" = 1 ] || [ "$_tdns_on" = 1 ]; then
         if ! grep -qF "conf-file=$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" 2>/dev/null; then
             echo "conf-file=$DNSMASQ_AWG_CONF" >> "$DNSMASQ_INCLUDE"
         fi
@@ -1951,7 +2027,7 @@ setup_firewall(){
     # When a reload runs, it installs the :53 DNAT itself AFTER dnsmasq is back up, so the DNAT
     # never points at a restarting resolver. When no reload is needed, dnsmasq is already
     # serving the current config, so install the DNAT inline.
-    if [ $domain_count -gt 0 ] || [ "$has_geo" = true ] || [ "$want_aaaa" = 1 ]; then
+    if [ $domain_count -gt 0 ] || [ "$has_geo" = true ] || [ "$want_aaaa" = 1 ] || [ "$_tdns_on" = 1 ]; then
         reload_dnsmasq "$_want_intercept"
     elif [ "$_want_intercept" = 1 ]; then
         setup_dns_interception
@@ -2440,6 +2516,8 @@ do_diag(){
     if [ -f /jffs/configs/dnsmasq.conf.add ]; then
         grep -nE 'AmneziaWG|amneziawg|awg' /jffs/configs/dnsmasq.conf.add 2>/dev/null | head -30 | sed 's/^/  /'
     else echo "  (no dnsmasq.conf.add)"; fi
+    echo "tunnel DNS           : $([ -f "$TUNNEL_DNS_FLAG" ] && echo "ACTIVE — $(grep -c "^server=.*@$IFACE" "$DNSMASQ_AWG_CONF" 2>/dev/null) server(s) via $IFACE, firmware upstreams stripped by postconf" || echo "off")"
+    echo "postconf hook        : $(grep -c amneziawg /jffs/scripts/dnsmasq.postconf 2>/dev/null || echo 0) line(s)"
     echo "--- processes (vpn / dpi / dns) ---"
     ps 2>/dev/null | grep -iE 'amneziawg|awg0| awg |dnsmasq|xray|zapret|/b4| b4 |adguard|tpws|nfqws' | grep -v grep | head -25 | sed 's/^/  /'
     echo "--- system log: awg / tun / OOM / segfault (filtered) ---"
@@ -2781,6 +2859,7 @@ do_start(){
                 hc_dns_fails=$((hc_dns_fails + 1))
                 if [ $hc_dns_fails -ge 6 ]; then
                     log_msg "WARNING: tunnel passes traffic but router DNS won't resolve — removing :53 interception (fail-open), tunnel stays up; check the router's upstream DNS/dnsmasq"
+                    disable_tunnel_dns   # a dead tunnel-DNS must not pin dnsmasq to it (no-op if feature off)
                     cleanup_dns_interception
                     hc_ok=true
                     break
@@ -3320,6 +3399,16 @@ do_install_page(){
         echo '/jffs/addons/amneziawg/amneziawg.sh firewall_restart  # AmneziaWG' >> /jffs/scripts/firewall-start
     fi
 
+    # dnsmasq.postconf hook (Merlin-native): while $TUNNEL_DNS_FLAG exists, strip the
+    # firmware's upstream directives from the freshly generated dnsmasq conf so ONLY our
+    # server=<awg_dns>@awg0 lines answer — the "DNS via tunnel" feature. Single line, tagged
+    # "amneziawg" so do_uninstall's sed removes it like the other hooks.
+    [ ! -f /jffs/scripts/dnsmasq.postconf ] && printf '#!/bin/sh\n' > /jffs/scripts/dnsmasq.postconf
+    chmod +x /jffs/scripts/dnsmasq.postconf 2>/dev/null
+    if ! grep -q "amneziawg" /jffs/scripts/dnsmasq.postconf; then
+        echo '[ -f /tmp/.awg_tunnel_dns ] && { . /usr/sbin/helper.sh; pc_delete "servers-file=" "$1"; pc_delete "resolv-file=" "$1"; }  # amneziawg tunnel-DNS' >> /jffs/scripts/dnsmasq.postconf
+    fi
+
     [ ! -f /jffs/scripts/services-start ] && echo "#!/bin/sh" > /jffs/scripts/services-start
     chmod +x /jffs/scripts/services-start 2>/dev/null
     grep -q "amneziawg" /jffs/scripts/services-start || echo "/jffs/addons/amneziawg/amneziawg.sh mount_ui &" >> /jffs/scripts/services-start
@@ -3374,6 +3463,8 @@ do_uninstall(){
     [ -f /jffs/scripts/services-start ] && sed -i '/amneziawg/d' /jffs/scripts/services-start
     [ -f /jffs/scripts/wan-event ] && sed -i '/amneziawg/d' /jffs/scripts/wan-event
     [ -f /jffs/scripts/firewall-start ] && sed -i '/amneziawg/d' /jffs/scripts/firewall-start
+    [ -f /jffs/scripts/dnsmasq.postconf ] && sed -i '/amneziawg/d' /jffs/scripts/dnsmasq.postconf
+    rm -f "$TUNNEL_DNS_FLAG"
 
     local page=$(ls /www/user/ 2>/dev/null | while read f; do grep -l "AmneziaWG" "/www/user/$f" 2>/dev/null; done | head -1)
     [ -n "$page" ] && rm -f "$page"
@@ -3542,6 +3633,7 @@ do_watchdog(){
     if is_running; then
         if dns_intercept_active && { zapret_active || fw_dns_redirect_active || [ "$(get_setting awg_no_dns_intercept)" = "1" ]; }; then
             log_msg "WATCHDOG: co-resident DNS owner detected — removing our :53 interception (coexist)"
+            disable_tunnel_dns   # tunnel-DNS is intercept-gated — drop it together (no-op if off)
             cleanup_dns_interception
         elif ! dns_intercept_active && intercept_wanted && dns_ok; then
             # dns_ok gate: only (re)install the hijack when the router actually resolves —
@@ -3578,6 +3670,7 @@ do_watchdog(){
             # — cure it directly: drop the interception (fail-open) and keep the tunnel. The
             # reconcile above re-installs it (dns_ok-gated) once the resolver works again.
             log_msg "WATCHDOG: router DNS not resolving (tunnel passes traffic) — removing :53 interception (fail-open); check upstream DNS/dnsmasq"
+            disable_tunnel_dns   # restore firmware upstreams too (no-op if the feature is off)
             cleanup_dns_interception
         fi
     fi
@@ -3620,6 +3713,32 @@ do_watchdog(){
         log_msg "WATCHDOG: routing/marking incomplete, re-applying firewall/routes"
         do_firewall_restart
     fi
+}
+
+# Resolve the opkg PACKAGE ARCH for this box, robust to a broken opkg (corrupted Entware —
+# seen in the field). Ladder: (1) opkg's own db, picking the HIGHEST-priority arch (not the
+# first line); (2) opkg.conf, which usually survives a broken opkg binary; (3) uname — where
+# the KERNEL decides armv7-2.6 vs armv7-3.2 (that's exactly how Entware splits them; the old
+# fallback always said armv7-2.6, which now also means the legacy Go-1.23 daemon). Plus a
+# final guard: an armv7-3.2 pick on a 2.6.x kernel is impossible-to-run (its daemon needs
+# Linux >= 3.2) — force armv7-2.6 there. The reverse (2.6 pkg on a newer kernel) is left
+# alone: it runs fine and may be deliberate. Echoes the arch, or nothing if undecidable.
+resolve_pkg_arch(){
+    local a kver
+    a=$(opkg print-architecture 2>/dev/null | awk '$1=="arch" && $2!="all" {if ($3+0>=p){p=$3+0; n=$2}} END{print n}')
+    [ -z "$a" ] && a=$(awk '$1=="arch" && $2!="all"{print $2; exit}' /opt/etc/opkg.conf 2>/dev/null)
+    kver=$(uname -r)
+    if [ -z "$a" ]; then
+        case "$(uname -m)" in
+            aarch64) a="aarch64-3.10" ;;
+            armv7l|armv6l)
+                case "$kver" in 2.6.*) a="armv7-2.6" ;; *) a="armv7-3.2" ;; esac ;;
+        esac
+    fi
+    case "$a" in
+        armv7-3.2) case "$kver" in 2.6.*) a="armv7-2.6" ;; esac ;;
+    esac
+    echo "$a"
 }
 
 # --- Update check ---
@@ -3809,15 +3928,12 @@ do_update(){
     log_msg "Update: starting (installed v$AWG_VERSION)"
 
     local pkg_arch
-    pkg_arch=$(opkg print-architecture 2>/dev/null | awk '$1=="arch" && $2!="all" {print $2}' | head -1)
+    pkg_arch=$(resolve_pkg_arch)
     if [ -z "$pkg_arch" ]; then
-        local arch=$(uname -m)
-        case "$arch" in
-            aarch64) pkg_arch="aarch64-3.10" ;;
-            armv7l)  pkg_arch="armv7-2.6" ;;
-            *) log_msg "Update: ERROR unsupported architecture: $arch"; update_status; return 1 ;;
-        esac
+        log_msg "Update: ERROR unsupported architecture: $(uname -m) (kernel $(uname -r))"
+        update_status; return 1
     fi
+    log_msg "Update: package architecture $pkg_arch (kernel $(uname -r))"
 
     # Resolve the version and, when api.github.com is reachable, grab the release JSON
     # (it carries the per-asset SHA256 digest we verify against). One API call gives both

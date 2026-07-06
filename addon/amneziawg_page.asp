@@ -581,6 +581,9 @@ en: {
     HINT_WATCHDOG_HTML: "<summary>Addresses the watchdog pings <b>through the tunnel</b> every 5 minutes (if at least one replies, the tunnel is alive). <u>Format and examples</u></summary><b>Format:</b> IP or domain, several allowed — separated by a space or comma (up to 4 addresses).<br><b>Example:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Prefer IPs (no dependency on DNS). Empty = default <b>8.8.8.8</b> and <b>1.1.1.1</b>. Change it if those addresses are blocked/unreachable for you — otherwise the watchdog restarts the VPN needlessly. Which addresses are checked is shown in the log below.",
     TH_ZAPRET_COMPAT: "Compatibility mode",
     LBL_NO_DNS_INTERCEPT: "Compatibility mode — coexist with zapret2 / Xray / b4 (don't intercept DNS)",
+    LBL_TUNNEL_DNS_TH: "DNS via tunnel",
+    LBL_TUNNEL_DNS: "Route the whole LAN's DNS through the tunnel to the servers above while the VPN is up (needs DNS interception ON — inert in compatibility mode; defeats ISP DNS poisoning)",
+    HINT_DNS: "used by “DNS via tunnel” below; empty = firmware DNS",
     HINT_NO_DNS_HTML: "<summary>Compatibility mode: disables AmneziaWG's DNS interception (port :53) so it can't clash with a co-resident DPI/proxy tool. ON by default for new installs. <u>Details</u></summary>Keep it on if <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) or <b>b4</b> runs alongside — otherwise a DNS conflict can leave the network without internet. Geo by IP (GeoIP/antifilter) keeps working; geo by domains keeps working for clients that use the router as their DNS — only clients with a hardcoded external resolver lose domain-geo. A nearby zapret2 / Xray / v2ray / sing-box / b4 or NFQUEUE/TPROXY (iptables or nft) footprint also disables interception automatically even without this checkbox. Note: this only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».",
     TH_START_DELAY: "Startup delay",
     ARIA_START_DELAY: "Startup delay in seconds",
@@ -920,6 +923,9 @@ ru: {
     HINT_WATCHDOG_HTML: "<summary>Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут (ответил хоть один — туннель живой). <u>Формат и примеры</u></summary><b>Формат:</b> IP или домен, можно несколько — через пробел или запятую (до 4 адресов).<br><b>Пример:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Лучше указывать IP (без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны — иначе watchdog зря перезапускает VPN. Какие адреса проверяются — видно в журнале ниже.",
     TH_ZAPRET_COMPAT: "Режим совместимости",
     LBL_NO_DNS_INTERCEPT: "Режим совместимости — сосуществование с zapret2 / Xray / b4 (не перехватывать DNS)",
+    LBL_TUNNEL_DNS_TH: "DNS через туннель",
+    LBL_TUNNEL_DNS: "Пускать DNS-запросы всей сети через туннель на указанные выше серверы, пока VPN запущен (нужен включённый перехват DNS — в режиме совместимости не действует; защищает от DNS-подмены провайдером)",
+    HINT_DNS: "используется опцией «DNS через туннель» ниже; пусто = DNS прошивки",
     HINT_NO_DNS_HTML: "<summary>Режим совместимости: отключает перехват DNS (порт :53) у AmneziaWG, чтобы он не конфликтовал с соседней DPI/прокси-утилитой. Для новых установок включён по умолчанию. <u>Подробнее</u></summary>Держите включённым, если рядом работает <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) или <b>b4</b> — иначе конфликт DNS может оставить сеть без интернета. Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам работает для клиентов, использующих роутер как DNS — только клиенты с жёстко прописанным внешним резолвером теряют geo по доменам. Обнаруженный рядом zapret2 / Xray / v2ray / sing-box / b4 или след NFQUEUE/TPROXY (iptables или nft) тоже отключает перехват автоматически даже без этой галочки. Важно: галочка решает только конфликт по DNS — при политике «VPN — весь трафик» маршрутизация всё равно заберёт трафик прокси, поэтому для совместимости выбирайте «Напрямую» или «VPN — только Geo».",
     TH_START_DELAY: "Задержка запуска",
     ARIA_START_DELAY: "Задержка запуска в секундах",
@@ -1853,6 +1859,7 @@ function applyConfig(actionScript){
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
     custom_settings.awg_no_dns_intercept = document.getElementById('awg_no_dns_intercept').checked ? '1' : '0';
     custom_settings.awg_killswitch = document.getElementById('awg_killswitch').checked ? '1' : '0';
+    custom_settings.awg_tunnel_dns = document.getElementById('awg_tunnel_dns').checked ? '1' : '0';
     var _wfa = document.getElementById('awg_wait_for_agh');
     if(_wfa) custom_settings.awg_wait_for_agh = _wfa.checked ? '1' : '0';
     var _sd = document.getElementById('awg_start_delay');
@@ -2332,6 +2339,8 @@ function loadGeoSettings(){
     // Kill-switch (default off — preserves prior fail-open behavior unless the user opts in)
     var ks = document.getElementById('awg_killswitch');
     if(ks) ks.checked = (custom_settings.awg_killswitch === '1');
+    var tdns = document.getElementById('awg_tunnel_dns');
+    if(tdns) tdns.checked = (custom_settings.awg_tunnel_dns === '1');
     // Wait-for-AdGuardHome on autostart (only meaningful/visible on AGH boxes; default off).
     var wfa = document.getElementById('awg_wait_for_agh');
     if(wfa) wfa.checked = (custom_settings.awg_wait_for_agh === '1');
@@ -3895,7 +3904,12 @@ function initAutocompleteIp(){
                 </tr>
                 <tr>
                     <th>DNS</th>
-                    <td><input type="text" class="input_20_table" id="awg_dns" maxlength="64" placeholder="1.1.1.1" aria-label="DNS"></td>
+                    <td><input type="text" class="input_20_table" id="awg_dns" maxlength="64" placeholder="1.1.1.1" aria-label="DNS">
+                        <span data-i18n="HINT_DNS" style="color:#b6bdc7; font-size:11px; margin-left:6px;">used by “DNS via tunnel” below; empty = firmware DNS</span></td>
+                </tr>
+                <tr>
+                    <th data-i18n="LBL_TUNNEL_DNS_TH">DNS via tunnel</th>
+                    <td><label><input type="checkbox" id="awg_tunnel_dns"> <span data-i18n="LBL_TUNNEL_DNS" style="color:#FFCC00;">Route the whole LAN's DNS through the tunnel to the servers above while the VPN is up (needs DNS interception ON — inert in compatibility mode; defeats ISP DNS poisoning)</span></label></td>
                 </tr>
                 </table>
 

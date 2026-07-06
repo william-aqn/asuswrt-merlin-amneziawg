@@ -28,14 +28,24 @@ echo "Entware: OK"
 echo "Installing coreutils-mktemp..."
 opkg install coreutils-mktemp || { opkg update && opkg install coreutils-mktemp; } || echo "WARNING: coreutils-mktemp not installed; using built-in mktemp"
 
-# Detect architecture from opkg config (matches what opkg actually expects)
-PKG_ARCH=$(opkg print-architecture 2>/dev/null | awk '$1=="arch" && $2!="all" {print $2}' | head -1)
+# Detect the package architecture, robust to a broken opkg (corrupted Entware):
+# 1) opkg's db — pick the HIGHEST-priority arch, not the first listed line;
+# 2) opkg.conf — usually still readable when the opkg binary itself is broken;
+# 3) uname — where the KERNEL splits armv7-2.6 vs armv7-3.2 (that is exactly Entware's
+#    criterion; the old fallback always picked armv7-2.6, wrong for 3.2+/4.x-kernel boxes).
+# Final guard: armv7-3.2 on a 2.6.x kernel can never run (its daemon needs Linux >= 3.2).
+PKG_ARCH=$(opkg print-architecture 2>/dev/null | awk '$1=="arch" && $2!="all" {if ($3+0>=p){p=$3+0; n=$2}} END{print n}')
+[ -z "$PKG_ARCH" ] && PKG_ARCH=$(awk '$1=="arch" && $2!="all"{print $2; exit}' /opt/etc/opkg.conf 2>/dev/null)
+KVER=$(uname -r)
 if [ -z "$PKG_ARCH" ]; then
-    # Fallback to uname-based detection
     ARCH=$(uname -m)
     case "$ARCH" in
         aarch64) PKG_ARCH="aarch64-3.10" ;;
-        armv7l)  PKG_ARCH="armv7-2.6" ;;
+        armv7l|armv6l)
+            case "$KVER" in
+                2.6.*) PKG_ARCH="armv7-2.6" ;;
+                *)     PKG_ARCH="armv7-3.2" ;;
+            esac ;;
         *)
             echo "ERROR: Unsupported architecture: $ARCH"
             echo "Supported: aarch64, armv7l"
@@ -43,7 +53,10 @@ if [ -z "$PKG_ARCH" ]; then
             ;;
     esac
 fi
-echo "Architecture: $PKG_ARCH"
+case "$PKG_ARCH" in
+    armv7-3.2) case "$KVER" in 2.6.*) echo "NOTE: kernel $KVER can't run the armv7-3.2 daemon — using armv7-2.6"; PKG_ARCH="armv7-2.6" ;; esac ;;
+esac
+echo "Architecture: $PKG_ARCH (kernel $KVER)"
 
 # --- Resolve the latest version + download URL ---
 # GitHub's API is the freshest source, but api.github.com is blocked in some regions.
