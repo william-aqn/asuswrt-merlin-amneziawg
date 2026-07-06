@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.33"
+AWG_VERSION="1.2.34"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -504,6 +504,14 @@ wait_for_uapi(){
     return 1
 }
 
+# NB on pids: `$$` inside a `( ) &` subshell is the PARENT shell's pid (POSIX), and several
+# lock takers run exactly there (ensure_geo's rebuild, the health check's do_stop, dnsmasq
+# reload jobs). Writing `echo $$` from those recorded a pid that dies seconds later — every
+# liveness probe (acquire_lock reclaim, watchdog stale-reclaim, reload serialization) then
+# misread a LIVE lock as stale and stole it (observed in the field: two pre-resolve jobs
+# running unserialized with the lock dir gone). `sh -c 'echo $PPID' > file` — a DIRECT child
+# with plain redirection, no command substitution — yields the true pid of the current
+# (sub)shell in every context.
 acquire_lock(){
     local tries=0
     while ! mkdir "$LOCKDIR" 2>/dev/null; do
@@ -519,15 +527,18 @@ acquire_lock(){
         [ $tries -ge 30 ] && { log_msg "ERROR: lock timeout"; return 1; }
         sleep 1
     done
-    echo $$ > "$LOCKDIR/pid"
+    sh -c 'echo $PPID' > "$LOCKDIR/pid" 2>/dev/null
+    # Cache our recorded identity for release_lock — re-deriving it there could legitimately
+    # differ (command-substitution forks), the file read-back cannot.
+    AWG_LOCK_PID=$(cat "$LOCKDIR/pid" 2>/dev/null)
 }
 
 release_lock(){
-    # Owner-aware: only free the lock if WE hold it (pid matches), so a stray release on an
-    # error path can't free a lock another concurrent actor acquired.
+    # Owner-aware: only free the lock if WE hold it (pid matches what WE recorded), so a
+    # stray release on an error path can't free a lock another concurrent actor acquired.
     local p
     p=$(cat "$LOCKDIR/pid" 2>/dev/null)
-    [ -n "$p" ] && [ "$p" != "$$" ] && return 0
+    [ -n "$p" ] && [ "$p" != "${AWG_LOCK_PID:-$$}" ] && return 0
     rm -rf "$LOCKDIR"
 }
 
@@ -1391,7 +1402,9 @@ reload_dnsmasq(){
             fi
             sleep 1
         done
-        echo $$ > /tmp/.awg_dnsreload/pid 2>/dev/null
+        # Real pid of THIS reload subshell — `echo $$` here would record the parent (dead in
+        # seconds) and every waiter would "reclaim" our live lock; see the acquire_lock note.
+        sh -c 'echo $PPID' > /tmp/.awg_dnsreload/pid 2>/dev/null
         trap 'rm -rf /tmp/.awg_dnsreload 2>/dev/null' EXIT INT TERM
         # Order-independent PID snapshot (sorted): dnsmasq runs as main + a --log-async child, so
         # pidof returns two PIDs — sort them so a mere change in listing order can't masquerade as
