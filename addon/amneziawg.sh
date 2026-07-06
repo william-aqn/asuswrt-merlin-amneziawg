@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.31"
+AWG_VERSION="1.2.32"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1473,7 +1473,10 @@ reload_dnsmasq(){
         # passed only by setup_firewall when interception is wanted; every other caller omits
         # it, so they never touch the DNAT. setup_dns_interception self-guards on dnsmasq up.
         [ "$1" = "1" ] && setup_dns_interception
-        if [ -f "$DNSMASQ_AWG_CONF" ]; then
+        # Only when the conf actually carries domain rules: a filter-AAAA-only conf (CIDR-only
+        # geo selection, no domains) has nothing to pre-resolve, and the "ipset UNCHANGED —
+        # domain IPs are NOT landing in the set" warning it produced was pure false alarm.
+        if [ -f "$DNSMASQ_AWG_CONF" ] && grep -q '^ipset=' "$DNSMASQ_AWG_CONF" 2>/dev/null; then
             # Snapshot the LIVE geo ipset entry count before/after the pre-resolve so the log shows
             # whether domains actually landed in the set — not just that the ipset= RULES were
             # written ("Firewall configured: N IPs, M domains" is a build-time snapshot + a rule
@@ -2744,10 +2747,22 @@ do_start(){
         hc_dns_fails=0
         hc_reason="not passing traffic (probed: $(watchdog_hosts))"
         while [ $hc_try -lt 30 ]; do
-            # Reachability: ICMP every round (fast); a TCP/HTTPS connect through the tunnel at
-            # ~10s and ~30s in catches endpoints that pass TCP but DROP ICMP (e.g. Cloudflare WARP)
-            # without slowing the common case or dragging out a genuinely-dead tunnel's rollback.
-            if ping_hosts_once || { { [ $hc_try -eq 5 ] || [ $hc_try -eq 15 ]; } && tunnel_tcp_alive; }; then
+            # Reachability, cheapest first: ICMP every round; a TCP/HTTPS connect through the
+            # tunnel at ~10s and ~30s in (endpoints that pass TCP but DROP ICMP — Cloudflare
+            # WARP); and from ~6s in, a FRESH HANDSHAKE counts as proof of life — the pings we
+            # just sent force a re-key, so a live endpoint refreshes it even when the probe
+            # hosts answer nothing at all (field case: awg_watchdog_hosts=100.64.0.1, a gateway
+            # ignoring ICMP and TCP — a tunnel with 333 KiB received was rolled back while the
+            # journal itself printed "latest handshake: 4 seconds ago").
+            hc_pass=""
+            if ping_hosts_once; then
+                hc_pass="probe"
+            elif { [ $hc_try -eq 5 ] || [ $hc_try -eq 15 ]; } && tunnel_tcp_alive; then
+                hc_pass="tcp"
+            elif [ $hc_try -ge 3 ] && tunnel_handshake_fresh; then
+                hc_pass="handshake"
+            fi
+            if [ -n "$hc_pass" ]; then
                 # ICMP/TCP is up. If we hijacked LAN DNS, also require it to actually resolve:
                 # an ICMP-only "verified" tunnel leaves clients pinned to a dead resolver
                 # (with DoH/DoT REJECTed too) = silent LAN-wide outage that never rolls back.
@@ -2776,7 +2791,11 @@ do_start(){
             sleep 2
         done
         if [ "$hc_ok" = true ]; then
-            log_msg "Tunnel verified: traffic passing"
+            if [ "$hc_pass" = "handshake" ]; then
+                log_msg "Tunnel verified: handshake completing — but the probe hosts ($(watchdog_hosts)) answer neither ICMP nor TCP; point awg_watchdog_hosts at ping-able hosts (e.g. 8.8.8.8) for faster checks"
+            else
+                log_msg "Tunnel verified: traffic passing"
+            fi
             update_status
         else
             log_msg "ERROR: Tunnel $hc_reason after 60s, rolling back to prevent lockout"
@@ -3426,6 +3445,31 @@ tunnel_tcp_alive(){
     return 1
 }
 
+# Latest-handshake age in seconds (first peer), from the machine-readable dump
+# (columns: pubkey psk endpoint allowed-ips latest-handshake rx tx keepalive).
+# Prints nothing / returns 1 when unknown or no handshake has ever completed.
+tunnel_handshake_age(){
+    local hs now
+    hs=$("$AWG_BIN" show "$IFACE" dump 2>/dev/null | awk 'NR==2{print $5}')
+    case "$hs" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$hs" -eq 0 ] && return 1
+    now=$(date +%s)
+    echo $((now - hs))
+}
+
+# Evidence-based liveness: a handshake completed within the last ~150s (WireGuard re-keys every
+# ~120s under send pressure) proves two-way UDP with the peer. Crucially, the probe packets the
+# callers just SENT through the tunnel force that re-key — so a LIVE endpoint always shows a
+# fresh handshake here even when the probe hosts answer neither ICMP nor TCP (field case:
+# awg_watchdog_hosts pointed at a provider gateway that ignores both — a fully-working tunnel
+# with megabytes of RX was rolled back while `awg show` said "latest handshake: 4 seconds ago").
+# A dead endpoint can't refresh the handshake, so genuine failures still fail.
+tunnel_handshake_fresh(){
+    local age
+    age=$(tunnel_handshake_age) || return 1
+    [ -n "$age" ] && [ "$age" -le 150 ]
+}
+
 # Is the tunnel passing traffic? True if ANY configured host replies across a couple of quick
 # rounds. A SINGLE ICMP can be dropped/delayed past its timeout under heavy tunnel load (e.g.
 # streaming) without the tunnel being down — restarting the whole VPN on one miss tore working
@@ -3440,6 +3484,9 @@ tunnel_alive(){
     # ICMP all-miss — confirm via a TCP/HTTPS connect through the tunnel before declaring it dead,
     # so an ICMP-dropping endpoint (e.g. Cloudflare WARP) isn't torn down every watchdog tick.
     tunnel_tcp_alive && return 0
+    # Probes may simply be ignored by this endpoint/hosts — the pings above already forced a
+    # re-key attempt, so accept a fresh handshake as proof of life (see tunnel_handshake_fresh).
+    tunnel_handshake_fresh && return 0
     return 1
 }
 

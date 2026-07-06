@@ -56,8 +56,35 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/output"
           cd amneziawg-go
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64       go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go"
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go-arm5"
           CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go-arm"
+          # NOTE: the GOARM=5 daemon for the armv7-2.6 package is built by the SEPARATE legacy
+          # step below with a pinned Go 1.23 toolchain — Go >= 1.24 does not support the
+          # 2.6.3x kernels those routers run (RT-AC68U class).
+
+      - name: Build amneziawg-go-arm5 (legacy Go 1.23 for 2.6.3x kernels — RT-AC68U class)
+        run: |
+          set -eux
+          # Go >= 1.24 supports only Linux >= 3.2; on the RT-AC68U's 2.6.36 the runtime is
+          # officially unsupported and was seen dying silently right after the wireguard-go
+          # banner ("failed to create interface", daemon exit with no message). Go 1.23
+          # supports Linux >= 2.6.32, so the armv7-2.6 package ships a Go 1.23 build.
+          # amneziawg-go v0.2.19 demands go 1.24 only through dependency pins — the code
+          # compiles clean on 1.23 against the newest 1.23-compatible x/* line (x/sys v0.35,
+          # x/net v0.43, x/crypto v0.41). The mobile-only ./outline subpackage (hard-requires
+          # go 1.24 via outline-sdk) is NOT linked into the daemon, so it doesn't constrain
+          # this build. Verified on a real 2.6.32 kernel (qemu-system-arm versatilepb, Debian
+          # Squeeze armel): TUN creation + obfuscated setconf + UAPI all pass.
+          cp -r amneziawg-go amneziawg-go-legacy
+          cd amneziawg-go-legacy
+          AWG_GO_COMMIT=$(git rev-parse --short HEAD)
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-legacy26 ($AWG_GO_COMMIT)\"|" version.go
+          grep '^const Version' version.go
+          go get golang.org/x/sys@v0.35.0 golang.org/x/net@v0.43.0 golang.org/x/crypto@v0.41.0
+          go mod edit -go=1.23.0 -toolchain=none
+          GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 \
+            go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go-arm5"
+          # Prove the legacy toolchain + pins actually made it into the shipped binary.
+          go version -m "$GITHUB_WORKSPACE/output/amneziawg-go-arm5" | grep -E 'go1\.23|golang.org/x/sys'
 
       - name: Build awg (aarch64, static musl in emulated Alpine)
         run: |
