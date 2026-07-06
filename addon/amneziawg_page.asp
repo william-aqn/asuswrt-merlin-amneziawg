@@ -526,6 +526,8 @@ en: {
     COEX_STEP_POLICY: "<li>Change the <b>Default policy</b> from <b>«VPN — all traffic»</b> to <b>«Direct»</b> or <b>«VPN — Geo only»</b> — otherwise routing will take all traffic away from {0}.</li>",
     COEX_STEP_DNS: "<li>Enable <b>«Compatibility mode»</b> — so intercepting :53 doesn't conflict with {0}.</li>",
     COEX_HEADER: "⚠ Detected <b>{0}</b> on the router. So AmneziaWG doesn't conflict with it and leave the network without internet:",
+    FWVPN_ACTIVE: "⛔ The <b>firmware's own VPN client</b> is routing traffic ahead of AmneziaWG ({0}). Its policy rule outranks ours (ip-rule priority &lt;98), so devices assigned to AmneziaWG actually leave through the firmware VPN. Disable the firmware VPN client (VPN → VPN Client / VPN Fusion) or unbind the devices from it.",
+    FWVPN_ENABLED: "⚠ A <b>firmware VPN client profile is enabled</b> ({0}) but not connected. The moment it connects, its routing rule will outrank AmneziaWG's (ip-rule priority &lt;98) and silently capture the traffic. If the profile is unused — disable it in the router UI (VPN → VPN Client / VPN Fusion).",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">After the changes, click <b>«Apply»</b>. GeoIP routing by IP keeps working in the meantime.</span>",
     XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> is running in <b>transparent-proxy mode (TPROXY, «redirect all traffic»)</b>. Its routing rule sits <b>ahead</b> of AmneziaWG's (ip-rule priority 19 vs 98), so LAN traffic is grabbed by Xray before it reaches the tunnel — <b>devices you assigned to AmneziaWG actually go out through Xray</b>, not the tunnel.",
     XRAY_CAP_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>In <b>XRAYUI</b>, turn off <b>«Redirect all traffic» / transparent routing (TPROXY)</b> — or exclude AmneziaWG's endpoint and the <b>awg0</b> interface from its capture.</li><li>Or keep only <b>one</b> VPN active at a time (XRAYUI <i>or</i> AmneziaWG).</li></ul>",
@@ -868,6 +870,8 @@ ru: {
     COEX_STEP_POLICY: "<li>Смените <b>Политику по умолчанию</b> с <b>«VPN — весь трафик»</b> на <b>«Напрямую»</b> или <b>«VPN — только Geo»</b> — иначе маршрутизация заберёт у {0} весь трафик.</li>",
     COEX_STEP_DNS: "<li>Включите <b>«Режим совместимости»</b> — чтобы перехват :53 не конфликтовал с {0}.</li>",
     COEX_HEADER: "⚠ Обнаружен <b>{0}</b> на роутере. Чтобы AmneziaWG не конфликтовал с ним и не оставил сеть без интернета:",
+    FWVPN_ACTIVE: "⛔ <b>Прошивочный VPN-клиент</b> маршрутизирует трафик раньше AmneziaWG ({0}). Его правило стоит выше нашего (приоритет ip-rule &lt;98) — устройства, назначенные в AmneziaWG, фактически уходят через VPN прошивки. Отключите VPN-клиента прошивки (VPN → VPN-клиент / VPN Fusion) или отвяжите от него устройства.",
+    FWVPN_ENABLED: "⚠ В прошивке <b>включён профиль VPN-клиента</b> ({0}), но он сейчас не подключён. Как только он подключится, его правило маршрутизации встанет выше правил AmneziaWG (приоритет ip-rule &lt;98) и незаметно заберёт трафик. Если профиль не используется — выключите его в интерфейсе роутера (VPN → VPN-клиент / VPN Fusion).",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>",
     XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> работает в режиме <b>прозрачного проксирования (TPROXY, «перенаправить весь трафик»)</b>. Его правило маршрутизации стоит <b>впереди</b> правила AmneziaWG (приоритет ip-rule 19 против 98), поэтому LAN-трафик забирает Xray раньше, чем тот дойдёт до туннеля — <b>устройства, назначенные на AmneziaWG, по факту уходят через Xray</b>, а не в туннель.",
     XRAY_CAP_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>В <b>XRAYUI</b> отключите <b>«Перенаправлять весь трафик» / прозрачную маршрутизацию (TPROXY)</b> — либо исключите из перехвата endpoint AmneziaWG и интерфейс <b>awg0</b>.</li><li>Либо держите включённым только <b>один</b> VPN за раз (XRAYUI <i>или</i> AmneziaWG).</li></ul>",
@@ -3320,6 +3324,7 @@ function updateStatusUI(s){
 
     renderCoexistWarning(s);
     renderXrayCaptureWarning(s);
+    renderFwVpnWarning(s);
 }
 
 // Warn when a co-resident proxy/DPI tool (Xray/XRAYUI, zapret, ...) is running AND the
@@ -3372,6 +3377,28 @@ function renderXrayCaptureWarning(s){
 // "Stop Xray": stop the co-resident XRAYUI through its OWN entry point (backend do_xray_stop ->
 // /jffs/scripts/xrayui stop) so its TPROXY/fwmark rules are cleaned up, not just the process.
 // User-initiated, with a confirm. After firing, refresh status so the banner clears once gone.
+// Firmware VPN client (wgc*/VPN Fusion) banner. Its policy rules sit ABOVE AmneziaWG's
+// (ip-rule prio <98), so a CONNECTED firmware VPN captures traffic before our marking —
+// and an enabled-but-idle profile is the same trap in latent form (field case: wgc_enable=1
+// with a dead endpoint, discovered only by reading ip rule). Backend probe:
+// status.fwvpn_state = "active" (red: capturing NOW) | "enabled" (yellow: will capture when
+// it connects) | "" — plus fwvpn_detail (rule/table or profile names) for the message.
+function renderFwVpnWarning(s){
+    var el = document.getElementById('awg_fwvpn_warn');
+    if(!el) return;
+    var st = (s && s.fwvpn_state) || '';
+    if(st !== 'active' && st !== 'enabled'){ el.style.display = 'none'; el.innerHTML = ''; return; }
+    var detail = escHtml(s.fwvpn_detail || '');
+    if(st === 'active'){
+        el.style.background = '#3a1a1a'; el.style.borderColor = '#d9534f'; el.style.color = '#e8a0a0';
+        el.innerHTML = T('FWVPN_ACTIVE', detail);
+    } else {
+        el.style.background = '#3a331a'; el.style.borderColor = '#d9c34f'; el.style.color = '#e8dca0';
+        el.innerHTML = T('FWVPN_ENABLED', detail);
+    }
+    el.style.display = '';
+}
+
 function awgStopXray(btn){
     if(awgXrayStopping) return;
     if(!confirm(T('XRAY_STOP_CONFIRM'))) return;
@@ -3858,6 +3885,7 @@ function initAutocompleteIp(){
                      tool (Xray/XRAYUI, zapret, ...) is detected AND the config would collide with it -->
                 <div id="awg_coexist_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a2e1a; border:1px solid #f0ad4e; border-radius:5px; color:#f0ad4e; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_xray_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
+                <div id="awg_fwvpn_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; border:1px solid; border-radius:5px; font-size:12px; line-height:1.5;"></div>
 
                 <!-- Peers Table -->
                 <div class="awg-section" data-i18n="SEC_CONNECTED_PEERS">Connected peers</div>

@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.36"
+AWG_VERSION="1.2.37"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1161,6 +1161,51 @@ do_xray_stop(){
     update_status
 }
 
+# Firmware VPN client coexistence probe (WireGuard wgc* / VPN Fusion). The firmware's policy
+# rules sit at priorities ABOVE ours — numerically below our fwmark rule at prio 98 (e.g. VPN
+# Fusion's `20: from all lookup 8437`) — so a CONNECTED firmware VPN client captures traffic
+# BEFORE AmneziaWG's marking can route it, silently overriding every AWG policy. An enabled-
+# but-disconnected profile is the same trap in latent form (field case: wgc_enable=1 with a
+# dead endpoint — harmless until the day it connects).
+# Echoes one line and returns 0 when there is something to report:
+#   "active|<detail>"   — a preempting `from all` rule's table holds a default route NOW
+#   "enabled|<profiles>" — wgc profile(s) enabled in nvram, nothing capturing yet
+# (Per-device `from <ip>` rules of Merlin's VPN Director sit at prio >10000 — numerically
+# BELOW ours — and are fine; only from-all rules above us are the hazard, so only they alarm.)
+fw_vpn_client_state(){
+    local line prio tbl dflt en="" u v
+    while read -r line; do
+        prio=${line%%:*}
+        prio=$(echo "$prio" | tr -d ' ')
+        case "$prio" in ''|*[!0-9]*) continue ;; esac
+        [ "$prio" -gt 0 ] && [ "$prio" -lt 97 ] || continue
+        # Only UNCONDITIONAL from-all rules: a `from all fwmark ... lookup N` (xray's 0x10000,
+        # our own 0x100) captures only traffic ITS owner marked — that's the xray_capture
+        # banner's territory, not this one's.
+        case "$line" in *fwmark*) continue ;; esac
+        case "$line" in *"from all lookup "*) ;; *) continue ;; esac
+        tbl=$(echo "$line" | awk '{print $NF}')
+        case "$tbl" in ''|local|main|default) continue ;; esac
+        dflt=$(ip route show table "$tbl" 2>/dev/null | awk '/^default|^0\.0\.0\.0\/[01]/{print; exit}')
+        if [ -n "$dflt" ]; then
+            echo "active|prio $prio -> table $tbl ($dflt)"
+            return 0
+        fi
+    done <<EOF
+$(ip rule show 2>/dev/null)
+EOF
+    for u in "" 1 2 3 4 5; do
+        v=$(nvram get "wgc${u}_enable" 2>/dev/null)
+        [ "$v" = "1" ] && en="$en wgc${u:-}"
+    done
+    en=$(echo $en)
+    if [ -n "$en" ]; then
+        echo "enabled|$en"
+        return 0
+    fi
+    return 1
+}
+
 # True when a co-resident DNS OWNER is active and we must NOT slam our global :53 DNAT on top of
 # it: AdGuardHome (it becomes the LAN's resolver — clients bypass dnsmasq entirely), or the
 # firmware's own DNSFilter / DNS Director (dnsfilter_enable_x / dns_director_enable), or
@@ -2057,6 +2102,17 @@ setup_firewall(){
         fi
     fi
 
+    # Firmware VPN client (wgc*/VPN Fusion): its policy rules outrank ours (prio < 98), so a
+    # connected client captures traffic BEFORE AmneziaWG's marking — and an enabled-but-idle
+    # profile is the same trap waiting to spring. Named in the journal; the UI shows a banner
+    # (status fields fwvpn_state/fwvpn_detail).
+    local _fwvpn
+    _fwvpn=$(fw_vpn_client_state 2>/dev/null)
+    case "$_fwvpn" in
+        active*)  log_msg "WARNING: firmware VPN client is routing traffic AHEAD of AmneziaWG (${_fwvpn#*|}) — its rule outranks ours (prio < 98); disable the firmware VPN client or unbind devices, or AWG policies won't apply" ;;
+        enabled*) log_msg "NOTE: firmware VPN client profile enabled but not connected (${_fwvpn#*|}) — if it ever connects, its routing will outrank AmneziaWG's; disable the unused profile in the router's VPN UI" ;;
+    esac
+
     # --- Reload dnsmasq if geo active (deferred + retried; see reload_dnsmasq) ---
     # When a reload runs, it installs the :53 DNAT itself AFTER dnsmasq is back up, so the DNAT
     # never points at a restarting resolver. When no reload is needed, dnsmasq is already
@@ -2512,6 +2568,12 @@ do_diag(){
     echo "conntrack count/max  : $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo '?')/$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo '?')"
     echo "ip rule fwmark 0x100 :"; ip rule show 2>/dev/null | grep -i 'fwmark 0x100' | sed 's/^/  /'
     echo "lan_ipaddr           : $(nvram get lan_ipaddr 2>/dev/null)"
+    echo "--- firmware VPN client (wgc / VPN Fusion) ---"
+    echo "wgc profiles         : $(nvram show 2>/dev/null | grep -E '^wgc[0-9]*_enable=' | tr '\n' ' ')"
+    _fwv_diag=$(fw_vpn_client_state 2>/dev/null)
+    echo "verdict              : ${_fwv_diag:-none (no enabled profiles, no preempting from-all rules)}"
+    echo "preempting rules (prio 1-96, the ones that outrank our prio-98 mark rule):"
+    ip rule show 2>/dev/null | awk -F: '$1+0>0 && $1+0<97 {print "  "$0}'
     echo "awg0 link            :"; ip link show "$IFACE" 2>&1 | sed 's/^/  /'
     echo "awg0 inet            : $(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2}')"
     echo "tun module loaded    : $(lsmod 2>/dev/null | grep -q '^tun ' && echo yes || echo no)"
@@ -3125,6 +3187,14 @@ EOF
     # the router's own egress, which breaks the tunnel (up but no traffic). Page renders a banner.
     local xray_capture=false
     xray_redirect_active && xray_capture=true
+    # Firmware VPN client (wgc*/VPN Fusion) probe — "active" (its from-all rule outranks ours
+    # and captures traffic NOW) or "enabled" (latent: profile on, not connected). UI banner.
+    local fwvpn_state="" fwvpn_detail="" _fwv
+    _fwv=$(fw_vpn_client_state 2>/dev/null)
+    if [ -n "$_fwv" ]; then
+        fwvpn_state=${_fwv%%|*}
+        fwvpn_detail=$(printf '%s' "${_fwv#*|}" | sed 's/"/\\"/g')
+    fi
     # Can we offer a "Stop Xray" button? Only if XRAYUI's own entry point is present (so the stop
     # goes through its cleanup_firewall and actually removes the TPROXY rules).
     local xray_ctl=false
@@ -3143,7 +3213,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
