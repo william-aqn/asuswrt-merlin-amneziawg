@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.34"
+AWG_VERSION="1.2.35"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -400,14 +400,35 @@ get_endpoint(){
 }
 
 flush_conntrack(){
-    # Drop ONLY conntrack entries with our fwmark, so marked devices reconnect
-    # through the tunnel. Never fall back to a full 'conntrack -F': a zero-match
-    # targeted delete returns 1, which used to wipe the whole table (killing every
-    # LAN connection) on any Apply that had no currently-marked flows.
+    # Re-route the EXISTING flows of VPN-policied devices by deleting their conntrack entries,
+    # so they re-establish through the tunnel right after an Apply/start instead of stalling
+    # on the old path until they time out. History of footguns in this exact spot:
+    #  - a full `conntrack -F` (pre-1.2.9) killed every LAN connection on any Apply;
+    #  - `conntrack -D --mark 0x100/0x100` (until 1.2.35) NEVER matched our flows — our fwmark
+    #    is per-PACKET (mangle MARK, deliberately no CONNMARK), so it never lands in the
+    #    conntrack mark — but it DID match unrelated flows on AiProtection/QoS firmwares whose
+    #    OWN conntrack marks carry bit 0x100 (tdts marks like 195040=0x2F9E0). Live-confirmed
+    #    collateral on a GT-AX6000: random established LAN sessions cut on every Apply, with
+    #    every deleted entry dumped to stdout mid-start.
+    # So: delete precisely by SOURCE IP, only for devices explicitly routed via VPN, quietly.
+    # Unlisted devices under a VPN default policy are NOT flushed (that would be the old
+    # kill-everything problem again); their new connections route correctly immediately, and
+    # stale direct-path flows just age out — same behavior they always had.
     # NB: `command -v` is NOT available on Asuswrt-Merlin's trimmed busybox (no CONFIG_ASH_CMDCMD)
     # — it returns 127, so a `command -v X` guard silently disables the code it gates. Use `which`.
     which conntrack >/dev/null 2>&1 || return 0
-    conntrack -D --mark "$FWMARK"/"$FWMARK" 2>/dev/null
+    [ -f "$CLIENTS_FILE" ] || return 0
+    local dev_id name policy mac
+    while IFS=',' read -r dev_id name policy mac || [ -n "$dev_id" ]; do
+        dev_id=$(echo "$dev_id" | tr -d ' ')
+        policy=$(echo "$policy" | tr -d ' ')
+        case "$policy" in vpn_all|vpn_geo|vpn_geo_*) ;; *) continue ;; esac
+        # IPv4-keyed entries only (MAC-keyed clients have no address to flush by).
+        case "$dev_id" in
+            *[!0-9.]*) ;;
+            *.*.*.*) conntrack -D -s "$dev_id" >/dev/null 2>&1 ;;
+        esac
+    done < "$CLIENTS_FILE"
     return 0
 }
 
@@ -2457,6 +2478,7 @@ do_diag(){
     probe_bin "awg genkey (crypto)"    "$AWG_BIN" genkey
     echo "--- last amneziawg-go output (/tmp/awg_daemon.log) ---"
     [ -f /tmp/awg_daemon.log ] && sed 's/^/  /' /tmp/awg_daemon.log || echo "  (none)"
+    echo "  last daemon exit (this launch): $(cat /tmp/awg_daemon.rc 2>/dev/null || echo '(none — daemon still running or never exited)')"
     echo "--- runtime / network / TUN ---"
     echo "memory (free):"; free 2>/dev/null | sed 's/^/  /'
     echo "amneziawg-go running : $(pidof amneziawg-go 2>/dev/null || echo no)"
@@ -2579,14 +2601,24 @@ arm_lan_deadman(){
 # from a hang; the rc line names it (132=SIGILL, 139=SIGSEGV, plain N = clean error exit).
 # $1 = optional LOG_LEVEL (e.g. "verbose").
 launch_daemon(){
+    # Exit status goes to a PER-LAUNCH file (/tmp/awg_daemon.rc, truncated here): parsing the
+    # rc out of awg_daemon.log was ambiguous during restarts — the PREVIOUS daemon's wrapper
+    # could append its "[daemon exited rc=0]" a beat after this launch truncated the log, and
+    # a later create-failure would then misreport a stale rc for a daemon that actually hung.
+    # The log line stays for humans; code reads the rc file.
+    rm -f /tmp/awg_daemon.rc 2>/dev/null
     # NB: an expanded word is never parsed as an assignment prefix, so LOG_LEVEL is set via an
     # explicit branch (not `${1:+LOG_LEVEL=$1} cmd`, which would exec "LOG_LEVEL=..." as argv[0]).
     if [ -n "$1" ]; then
         ( LOG_LEVEL="$1" "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
-          echo "[daemon exited rc=$? at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log ) &
+          _rc=$?
+          echo "rc=$_rc at $(date '+%H:%M:%S')" > /tmp/awg_daemon.rc
+          echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log ) &
     else
         ( "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
-          echo "[daemon exited rc=$? at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log ) &
+          _rc=$?
+          echo "rc=$_rc at $(date '+%H:%M:%S')" > /tmp/awg_daemon.rc
+          echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log ) &
     fi
 }
 
@@ -2687,7 +2719,7 @@ do_start(){
         # Name the failure mode from the captured exit status: a SILENT death (banner only, no
         # error line — the RT-AC68U/kernel-2.6.36 signature) vs a clean error exit vs a hang.
         local drc dgist
-        drc=$(sed -n 's/^\[daemon exited rc=\([0-9]*\).*/\1/p' /tmp/awg_daemon.log 2>/dev/null | tail -1)
+        drc=$(sed -n 's/^rc=\([0-9]*\).*/\1/p' /tmp/awg_daemon.rc 2>/dev/null)
         log_msg "ERROR: amneziawg-go failed to create interface"
         case "$drc" in
             "")  log_msg "  daemon is still running but $IFACE never appeared after 10s (hung in TUN create?)" ;;
@@ -2706,7 +2738,7 @@ do_start(){
         if wait_for_iface "$IFACE" 10; then
             log_msg "  verbose retry succeeded — continuing start (transient failure)"
         else
-            drc=$(sed -n 's/^\[daemon exited rc=\([0-9]*\).*/\1/p' /tmp/awg_daemon.log 2>/dev/null | tail -1)
+            drc=$(sed -n 's/^rc=\([0-9]*\).*/\1/p' /tmp/awg_daemon.rc 2>/dev/null)
             dgist=$(daemon_log_gist 8 | tr '\n' '|')
             log_msg "  verbose retry failed too (rc=${drc:-none}); daemon output: ${dgist:-<nothing after the banner>}"
             local dmesg_tail

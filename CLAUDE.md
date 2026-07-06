@@ -75,6 +75,7 @@ All router-side scripts must be POSIX sh (busybox ash) — no bashisms. The rout
 ## DNS, firewall & geo
 
 - **`:53` DNAT (DNS interception) must be installed AFTER the dnsmasq restart, never before** — installing it first locks every LAN device out of DNS/DHCP until reboot (LAN-critical). Check `setup_dns_interception` vs `reload_dnsmasq` ordering.
+- **Never flush conntrack by `--mark`** — our fwmark is per-PACKET (mangle MARK, deliberately no CONNMARK) so it never lands in the conntrack mark, while AiProtection/QoS firmwares set their OWN ctmarks that often carry bit 0x100 (tdts marks like 195040=0x2F9E0): a `-D --mark 0x100/0x100` cut random established LAN sessions on every Apply and dumped each deleted entry to stdout (live-confirmed on GT-AX6000, fixed 1.2.35). `flush_conntrack` deletes by SOURCE IP of explicitly VPN-policied clients only, quietly.
 - **dnsmasq honors only the FIRST `ipset=` line per domain.** Domains shared across multiple geo policies must be ONE comma-joined `ipset=/dom/setA,setB` line, not separate per-policy lines.
 - **Removing the persistent `conf-file=` line** from `/jffs/configs/dnsmasq.conf.add` must be robust: a `grep -vF … && mv` skips the `mv` when our line is the *only* line (`grep -v` → 0 lines → exit 1) — leaving a dangling `conf-file` that makes firmware dnsmasq fatally fail at next boot (no DNS/DHCP, survives reboot).
 - A `do_stop` that reloads dnsmasq **in the background** can race a packaging `rm -rf /opt/amneziawg` (uninstall/update) and OOM a low-RAM box — wait for the reload to settle before removing files.
