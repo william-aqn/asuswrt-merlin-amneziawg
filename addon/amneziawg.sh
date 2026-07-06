@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.35"
+AWG_VERSION="1.2.36"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2607,15 +2607,21 @@ launch_daemon(){
     # a later create-failure would then misreport a stale rc for a daemon that actually hung.
     # The log line stays for humans; code reads the rc file.
     rm -f /tmp/awg_daemon.rc 2>/dev/null
-    # NB: an expanded word is never parsed as an assignment prefix, so LOG_LEVEL is set via an
-    # explicit branch (not `${1:+LOG_LEVEL=$1} cmd`, which would exec "LOG_LEVEL=..." as argv[0]).
+    # WG_PROCESS_FOREGROUND=1: without it amneziawg-go DAEMONIZES — the process we launch is
+    # only a short-lived parent that forks the real daemon and exits 0 once the device is up.
+    # The wrapper then recorded THAT exit ("[daemon exited rc=0]" on every successful start —
+    # live-confirmed), and a crash of the forked child would surface as the parent's generic
+    # rc=1 instead of the real signal (SIGSEGV=139 — the RT-AC68U telemetry this exists for).
+    # Foreground keeps the daemon as our direct child, so rc below is the DAEMON's real exit.
+    # NB: an expanded word is never parsed as an assignment prefix, so the env vars are set via
+    # literal prefixes in explicit branches (not `${1:+LOG_LEVEL=$1} cmd`).
     if [ -n "$1" ]; then
-        ( LOG_LEVEL="$1" "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
+        ( WG_PROCESS_FOREGROUND=1 LOG_LEVEL="$1" "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
           _rc=$?
           echo "rc=$_rc at $(date '+%H:%M:%S')" > /tmp/awg_daemon.rc
           echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log ) &
     else
-        ( "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
+        ( WG_PROCESS_FOREGROUND=1 "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
           _rc=$?
           echo "rc=$_rc at $(date '+%H:%M:%S')" > /tmp/awg_daemon.rc
           echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log ) &
