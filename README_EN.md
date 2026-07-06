@@ -302,6 +302,15 @@ Important: this only resolves the DNS-layer conflict. With the default **"VPN --
 
 **Reverse case — XRAYUI captures AmneziaWG's traffic.** If XRAYUI runs in transparent-proxy "redirect all traffic" mode (TPROXY), it also grabs the router's own egress — including AmneziaWG's handshake — so the tunnel comes up but passes no traffic (the health check rolls it back after ~60s). The addon detects this and shows a **red banner** on the page. Fix: in XRAYUI turn off "redirect all" / transparent routing, or exclude AmneziaWG's endpoint and the `awg0` interface from its capture, or keep only one VPN active at a time.
 
+**Q: Is the addon compatible with QoS (Adaptive QoS / Cake / Traditional)?**
+
+A: Yes. Live-tested on a GT-AX6000 with Adaptive QoS (Trend Micro): to QoS the tunnel is a single encrypted UDP flow from the router — it gets classified and shaped as a whole (the bwdpi mark shows up right on the tunnel's conntrack entry), and tunnel throughput did not change with QoS on (22.7 → 22.2 MB/s — within noise). Toggling QoS restarts the firewall — the addon's rules are re-applied automatically (the firewall-start hook), the tunnel stays up.
+
+Honest limitations:
+- **per-app and per-device QoS priorities do not apply to traffic inside the tunnel** — QoS can't see that it's YouTube from the TV in there; that's a property of any router-side VPN, not of the addon. Prioritizing/limiting the tunnel as a whole works; direct devices are classified as usual;
+- on weaker routers mind the combined CPU load: the QoS DPI engine plus amneziawg-go's userspace crypto;
+- an unlikely-but-possible packet-mark conflict applies mainly to **Traditional QoS** (Adaptive on HND platforms marks at the kernel/conntrack level and doesn't insert iptables rules ahead of our chain). The symptom is unambiguous: geo devices stop going through the tunnel right after enabling QoS — grab the diag report (it shows the AWG chain and its counters) and report it.
+
 **Q: `ipset` prints `Warning: Kernel support protocol versions 6-6 while userspace supports protocol versions 6-7`?**
 
 A: It's a harmless warning, not an error. The `ipset` userspace tool (both the firmware's `/usr/sbin/ipset` and Entware's `/opt/sbin/ipset`) is built from newer sources and supports protocol versions 6 and 7, while the ipset module in the router's old kernel (4.1.51) implements only version 6. The ranges overlap at version 6, so the tool automatically falls back to it and works fine. Nothing to do here; geo routing via ipset (`awg_dst` and the geo ipsets) works fully on version 6.
