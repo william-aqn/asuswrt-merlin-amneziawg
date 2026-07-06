@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.37"
+AWG_VERSION="1.2.38"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1194,9 +1194,18 @@ fw_vpn_client_state(){
     done <<EOF
 $(ip rule show 2>/dev/null)
 EOF
-    for u in "" 1 2 3 4 5; do
+    # Latent (yellow) case: a REAL Merlin profile (wgc1..wgc5 — numbered keys only; the bare
+    # unit-less `wgc_enable` on gnuton/stock builds is a leftover of VPN Fusion's edit buffer,
+    # NOT a profile — field-confirmed false positive: the VPN Director UI showed everything
+    # off while `wgc_enable=1` lingered in nvram) that is enabled but has NO interface up.
+    # An enabled profile WITH its interface up routes via VPN Director rules (prio >10000 —
+    # numerically below ours, no conflict) and stays silent here; if anything of its ever
+    # captures for real, the from-all scan above turns red on its own.
+    for u in 1 2 3 4 5; do
         v=$(nvram get "wgc${u}_enable" 2>/dev/null)
-        [ "$v" = "1" ] && en="$en wgc${u:-}"
+        [ "$v" = "1" ] || continue
+        ip link show "wgc${u}" >/dev/null 2>&1 && continue
+        en="$en wgc${u}"
     done
     en=$(echo $en)
     if [ -n "$en" ]; then
