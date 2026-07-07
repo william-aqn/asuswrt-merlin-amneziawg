@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.39"
+AWG_VERSION="1.2.40"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -383,8 +383,24 @@ prune_orphan_policies(){
     done
 }
 
+# Does a network interface exist? Read the KERNEL's own netdev registry (/sys/class/net)
+# instead of `ip link show`, which depends on which iproute2 is on PATH and whether that
+# build's netlink dump is accepted by the running kernel. Field case (RT-AC68U, kernel
+# 2.6.36): amneziawg-go created awg0 and brought it Up (daemon log + successful SIOCGIFINDEX
+# prove the netdev exists and is named awg0), yet `ip link show awg0` returned non-zero for
+# 10s straight — an Entware iproute2 built against modern headers issuing a RTM_GETLINK the
+# old kernel rejects — so do_start killed the live daemon as "failed to create interface".
+# /sys/class/net is the ground truth the kernel maintains regardless of userspace tooling;
+# /proc/net/dev is the fallback for the (theoretical) box without sysfs, and `ip` is the last
+# resort so nothing regresses on an exotic setup.
+iface_exists(){
+    [ -e "/sys/class/net/$1" ] && return 0
+    grep -q "^[[:space:]]*$1:" /proc/net/dev 2>/dev/null && return 0
+    ip link show "$1" >/dev/null 2>&1
+}
+
 is_running(){
-    ip link show "$IFACE" >/dev/null 2>&1
+    iface_exists "$IFACE"
 }
 
 get_lan_net(){
@@ -498,10 +514,12 @@ wait_for_iface_ip(){
 }
 
 # Wait for interface to appear. Usage: wait_for_iface <iface> <timeout>
+# Kernel-native existence check (see iface_exists) — NOT `ip link show`, which false-negatived
+# a live awg0 on an old kernel with a mismatched Entware iproute2 and got the daemon killed.
 wait_for_iface(){
     local iface="$1" max="${2:-10}" i=0
     while [ $i -lt $max ]; do
-        ip link show "$iface" >/dev/null 2>&1 && return 0
+        iface_exists "$iface" && return 0
         sleep 1
         i=$((i + 1))
     done
@@ -1204,7 +1222,7 @@ EOF
     for u in 1 2 3 4 5; do
         v=$(nvram get "wgc${u}_enable" 2>/dev/null)
         [ "$v" = "1" ] || continue
-        ip link show "wgc${u}" >/dev/null 2>&1 && continue
+        iface_exists "wgc${u}" && continue
         en="$en wgc${u}"
     done
     en=$(echo $en)
@@ -2583,7 +2601,17 @@ do_diag(){
     echo "verdict              : ${_fwv_diag:-none (no enabled profiles, no preempting from-all rules)}"
     echo "preempting rules (prio 1-96, the ones that outrank our prio-98 mark rule):"
     ip rule show 2>/dev/null | awk -F: '$1+0>0 && $1+0<97 {print "  "$0}'
-    echo "awg0 link            :"; ip link show "$IFACE" 2>&1 | sed 's/^/  /'
+    # Interface detection cross-check: /sys/class/net is the kernel's ground truth (what
+    # is_running/wait_for_iface now read); `ip link show` is shown alongside so a divergence
+    # (device present in /sys but `ip` says "does not exist") pinpoints a broken/mismatched
+    # iproute2 — the RT-AC68U/2.6.36 failure where a live awg0 was killed as "not created".
+    echo "iface detect (awg0)  : /sys/class/net=$([ -e /sys/class/net/$IFACE ] && echo present || echo absent) proc-net-dev=$(grep -qE "^[[:space:]]*$IFACE:" /proc/net/dev 2>/dev/null && echo yes || echo no) iface_exists=$(iface_exists "$IFACE" && echo yes || echo no)"
+    echo "ip binaries          :"
+    for _ipb in /opt/sbin/ip /opt/bin/ip /usr/sbin/ip /sbin/ip; do
+        [ -x "$_ipb" ] && echo "  $_ipb : $("$_ipb" -V 2>&1 | head -1)"
+    done
+    echo "  ip resolved to     : $(which ip 2>/dev/null)"
+    echo "awg0 link (ip)       :"; ip link show "$IFACE" 2>&1 | sed 's/^/  /'
     echo "awg0 inet            : $(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{print $2}')"
     echo "tun module loaded    : $(lsmod 2>/dev/null | grep -q '^tun ' && echo yes || echo no)"
     echo "modprobe tun         : $(modprobe tun 2>&1; echo rc=$?)"
@@ -3806,7 +3834,7 @@ do_watchdog(){
     fi
 
     local reason=""
-    if ! ip link show "$IFACE" >/dev/null 2>&1; then
+    if ! iface_exists "$IFACE"; then
         reason="interface $IFACE missing"
     elif ! pidof amneziawg-go >/dev/null 2>&1; then
         reason="amneziawg-go process dead"
