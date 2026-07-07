@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.38"
+AWG_VERSION="1.2.39"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3204,6 +3204,37 @@ EOF
         fwvpn_state=${_fwv%%|*}
         fwvpn_detail=$(printf '%s' "${_fwv#*|}" | sed 's/"/\\"/g')
     fi
+    # Domain-geo vs DNS-interception mismatch (yellow page banner): domain lists are loaded
+    # into dnsmasq and a device/default policy routes via geo, but our :53 interception is not
+    # in place — domains then populate the sets ONLY for clients that voluntarily use the
+    # router's dnsmasq, so devices with DoH/private DNS silently bypass the domain routing
+    # (field case: "traffic didn't move until I enabled interception" — the compat-mode
+    # default on fresh installs plus domain lists). Cause-aware value:
+    #   "user"        — compatibility mode (awg_no_dns_intercept=1), the user's own switch;
+    #   "dpi:<tool>"  — interception auto-disabled for a co-resident DPI/proxy tool;
+    #   "fwdns:<who>" — a firmware DNS owner (AGH/DNSFilter/Director) redirects clients past
+    #                   dnsmasq. DoT is deliberately NOT warned (dnsmasq stays the resolver),
+    #                   and neither is the transient mid-start window (empty fwdns name).
+    # Gated on running — with the tunnel down nothing routes anyway.
+    local dnsgeo_warn=""
+    if [ "$running" = "true" ] && [ "$geo_domains" -gt 0 ] 2>/dev/null && ! dns_intercept_active; then
+        local _georouted=0 _fwdnsn
+        case "$default_policy" in *geo*) _georouted=1 ;; esac
+        case "$(get_setting awg_clients)" in *vpn_geo*) _georouted=1 ;; esac
+        if [ "$_georouted" = 1 ]; then
+            if [ "$(get_setting awg_no_dns_intercept)" = "1" ]; then
+                dnsgeo_warn="user"
+            elif zapret_active; then
+                dnsgeo_warn="dpi:$(detect_dpi_tool)"
+            else
+                _fwdnsn=$(fw_dns_redirect_name)
+                case "$_fwdnsn" in
+                    ""|*DoT*) ;;
+                    *) dnsgeo_warn="fwdns:${_fwdnsn%% (*}" ;;
+                esac
+            fi
+        fi
+    fi
     # Can we offer a "Stop Xray" button? Only if XRAYUI's own entry point is present (so the stop
     # goes through its cleanup_firewall and actually removes the TPROXY rules).
     local xray_ctl=false
@@ -3222,7 +3253,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","dnsgeo_warn":"${dnsgeo_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }

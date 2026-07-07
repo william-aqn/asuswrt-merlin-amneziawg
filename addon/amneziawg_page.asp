@@ -528,6 +528,8 @@ en: {
     COEX_HEADER: "⚠ Detected <b>{0}</b> on the router. So AmneziaWG doesn't conflict with it and leave the network without internet:",
     FWVPN_ACTIVE: "⛔ The <b>firmware's own VPN client</b> is routing traffic ahead of AmneziaWG ({0}). Its policy rule outranks ours (ip-rule priority &lt;98), so devices assigned to AmneziaWG actually leave through the firmware VPN. Disable the firmware VPN client (VPN → VPN Client / VPN Fusion) or unbind the devices from it.",
     FWVPN_ENABLED: "⚠ A <b>firmware VPN client profile is enabled</b> ({0}) but not connected. The moment it connects, its routing rule will outrank AmneziaWG's (ip-rule priority &lt;98) and silently capture the traffic. If the profile is unused — disable it in the router UI (VPN → VPN Client / VPN Fusion).",
+    DNSGEO_USER: "⚠ Domain-based geo lists are active ({0} domains in dnsmasq), but <b>DNS interception is off</b> (compatibility mode). Domains feed the routing only for clients that use the router's DNS — devices with DoH/private DNS bypass the VPN, so in practice mostly the IP lists (GeoIP/Antifilter) route. Not running zapret/Xray/b4? Turn compatibility mode off to re-enable interception.",
+    DNSGEO_AUTO: "⚠ Domain-based geo lists are active ({1} domains), but DNS interception is <b>disabled automatically because of {0}</b>. Domains populate only for clients that use the router's DNS; IP lists keep working.",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">After the changes, click <b>«Apply»</b>. GeoIP routing by IP keeps working in the meantime.</span>",
     XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> is running in <b>transparent-proxy mode (TPROXY, «redirect all traffic»)</b>. Its routing rule sits <b>ahead</b> of AmneziaWG's (ip-rule priority 19 vs 98), so LAN traffic is grabbed by Xray before it reaches the tunnel — <b>devices you assigned to AmneziaWG actually go out through Xray</b>, not the tunnel.",
     XRAY_CAP_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>In <b>XRAYUI</b>, turn off <b>«Redirect all traffic» / transparent routing (TPROXY)</b> — or exclude AmneziaWG's endpoint and the <b>awg0</b> interface from its capture.</li><li>Or keep only <b>one</b> VPN active at a time (XRAYUI <i>or</i> AmneziaWG).</li></ul>",
@@ -872,6 +874,8 @@ ru: {
     COEX_HEADER: "⚠ Обнаружен <b>{0}</b> на роутере. Чтобы AmneziaWG не конфликтовал с ним и не оставил сеть без интернета:",
     FWVPN_ACTIVE: "⛔ <b>Прошивочный VPN-клиент</b> маршрутизирует трафик раньше AmneziaWG ({0}). Его правило стоит выше нашего (приоритет ip-rule &lt;98) — устройства, назначенные в AmneziaWG, фактически уходят через VPN прошивки. Отключите VPN-клиента прошивки (VPN → VPN-клиент / VPN Fusion) или отвяжите от него устройства.",
     FWVPN_ENABLED: "⚠ В прошивке <b>включён профиль VPN-клиента</b> ({0}), но он сейчас не подключён. Как только он подключится, его правило маршрутизации встанет выше правил AmneziaWG (приоритет ip-rule &lt;98) и незаметно заберёт трафик. Если профиль не используется — выключите его в интерфейсе роутера (VPN → VPN-клиент / VPN Fusion).",
+    DNSGEO_USER: "⚠ Выбраны доменные гео-списки ({0} доменов в dnsmasq), но <b>перехват DNS выключен</b> (режим совместимости). Домены наполняют маршрутизацию только у устройств, использующих DNS роутера, — устройства с DoH/приватным DNS пройдут мимо VPN, т.е. фактически работают в основном IP-списки (GeoIP/Antifilter). Если zapret/Xray/b4 не используются — выключите режим совместимости, и перехват включится.",
+    DNSGEO_AUTO: "⚠ Выбраны доменные гео-списки ({1} доменов), но перехват DNS <b>отключён автоматически из-за {0}</b>. Домены будут наполняться только у устройств, использующих DNS роутера; IP-списки работают как обычно.",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>",
     XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> работает в режиме <b>прозрачного проксирования (TPROXY, «перенаправить весь трафик»)</b>. Его правило маршрутизации стоит <b>впереди</b> правила AmneziaWG (приоритет ip-rule 19 против 98), поэтому LAN-трафик забирает Xray раньше, чем тот дойдёт до туннеля — <b>устройства, назначенные на AmneziaWG, по факту уходят через Xray</b>, а не в туннель.",
     XRAY_CAP_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>В <b>XRAYUI</b> отключите <b>«Перенаправлять весь трафик» / прозрачную маршрутизацию (TPROXY)</b> — либо исключите из перехвата endpoint AmneziaWG и интерфейс <b>awg0</b>.</li><li>Либо держите включённым только <b>один</b> VPN за раз (XRAYUI <i>или</i> AmneziaWG).</li></ul>",
@@ -3325,6 +3329,7 @@ function updateStatusUI(s){
     renderCoexistWarning(s);
     renderXrayCaptureWarning(s);
     renderFwVpnWarning(s);
+    renderDnsGeoWarning(s);
 }
 
 // Warn when a co-resident proxy/DPI tool (Xray/XRAYUI, zapret, ...) is running AND the
@@ -3395,6 +3400,26 @@ function renderFwVpnWarning(s){
     } else {
         el.style.background = '#3a331a'; el.style.borderColor = '#d9c34f'; el.style.color = '#e8dca0';
         el.innerHTML = T('FWVPN_ENABLED', detail);
+    }
+    el.style.display = '';
+}
+
+// Domain-geo vs DNS-interception mismatch (yellow): domain lists are loaded and geo is
+// routed, but the :53 interception is not in place — domains then populate only for clients
+// that voluntarily use the router's dnsmasq (field case: "traffic didn't move until I
+// enabled interception"). Backend: status.dnsgeo_warn = "user" (compat mode) | "dpi:<tool>"
+// | "fwdns:<owner>" | "" — DoT and the transient mid-start window are deliberately excluded.
+function renderDnsGeoWarning(s){
+    var el = document.getElementById('awg_dnsgeo_warn');
+    if(!el) return;
+    var w = (s && s.dnsgeo_warn) || '';
+    if(!w){ el.style.display = 'none'; el.innerHTML = ''; return; }
+    var doms = escHtml(String(s.geo_domains != null ? s.geo_domains : '?'));
+    if(w === 'user'){
+        el.innerHTML = T('DNSGEO_USER', doms);
+    } else {
+        var cause = escHtml(w.indexOf(':') > 0 ? w.slice(w.indexOf(':') + 1) : w);
+        el.innerHTML = T('DNSGEO_AUTO', cause, doms);
     }
     el.style.display = '';
 }
@@ -3886,6 +3911,7 @@ function initAutocompleteIp(){
                 <div id="awg_coexist_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a2e1a; border:1px solid #f0ad4e; border-radius:5px; color:#f0ad4e; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_xray_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_fwvpn_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; border:1px solid; border-radius:5px; font-size:12px; line-height:1.5;"></div>
+                <div id="awg_dnsgeo_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
 
                 <!-- Peers Table -->
                 <div class="awg-section" data-i18n="SEC_CONNECTED_PEERS">Connected peers</div>
