@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.40"
+AWG_VERSION="1.2.41"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2789,7 +2789,34 @@ do_start(){
 
     generate_config || { update_status; release_lock; return 1; }
     [ ! -f "$CONF" ] && { log_msg "ERROR: No config"; update_status; release_lock; return 1; }
-    [ ! -f "$AWG_GO" ] && { log_msg "ERROR: amneziawg-go not found"; update_status; release_lock; return 1; }
+    # Both userspace binaries must EXIST and be NON-EMPTY before we launch anything.
+    # An interrupted opkg update on a low-RAM box (power-cycle mid-write, then an e2fsck
+    # truncation on the next boot) or a failing USB drive can leave amneziawg-go / awg as
+    # 0-byte files (field-confirmed on RT-AC68U). The daemon then "exits rc=0" and awg0 never
+    # appears, surfacing downstream as a baffling "failed to create interface". Name the real
+    # cause + the fix here instead of launching an empty binary. No opkg is invoked from the
+    # start path (deliberately — running opkg mid-start on a memory-pressured box is the very
+    # hazard that caused this).
+    local _b _b_bad=""
+    for _b in "$AWG_GO" "$AWG_BIN"; do
+        if [ ! -f "$_b" ]; then
+            _b_bad="$_b_bad $_b(missing)"
+        elif [ ! -s "$_b" ]; then
+            _b_bad="$_b_bad $_b(0 bytes)"
+        elif [ ! -x "$_b" ]; then
+            chmod +x "$_b" 2>/dev/null
+            [ -x "$_b" ] || _b_bad="$_b_bad $_b(not executable)"
+        fi
+    done
+    if [ -n "$_b_bad" ]; then
+        log_msg "ERROR: userspace binaries are damaged:$_b_bad"
+        log_msg "  sizes: amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")"
+        log_msg "  Likely an interrupted update or a failing USB drive left them truncated to 0"
+        log_msg "  bytes (e.g. a power-cycle mid-opkg + e2fsck). Fix: reinstall the package —"
+        log_msg "    curl -sfL https://raw.githubusercontent.com/william-aqn/asuswrt-merlin-amneziawg/main/install-online.sh | sh"
+        log_msg "  or, if you kept the .ipk: opkg install --force-reinstall <pkg>.ipk"
+        update_status; release_lock; return 1
+    fi
 
     # Ensure the TUN module is loaded + device node exists. Older routers (e.g.
     # RT-AC68U) don't autoload tun, and modprobe lives in /sbin — which is why
@@ -3127,6 +3154,12 @@ update_status(){
     local listen_port=""
     local iface_addr=""
     local peers_json="[]"
+    # Freshest latest-handshake epoch across peers, summed from the SAME `awg show dump` the peer
+    # loop below already parses (no extra fork). 0 = no peer has ever handshaked. Feeds the
+    # top-level "no_handshake" signal so the UI can tell "daemon up but the tunnel never
+    # handshaked" (endpoint unreachable / obfuscation mismatch — and with kill-switch ON all geo
+    # traffic is blackholed, so "connected but nothing opens") from a tunnel actually passing data.
+    local peer_hs_max=0
     local log_text=""
 
     if is_running; then
@@ -3149,6 +3182,11 @@ update_status(){
                     elif [ $ago -lt 3600 ]; then hs_text="$(( ago / 60 )) min ago"
                     else hs_text="$(( ago / 3600 )) h ago"; fi
                 fi
+                # Track the freshest handshake across all peers (0 = a peer that never handshaked).
+                case "$handshake" in
+                    ''|*[!0-9]*) : ;;
+                    *) [ "$handshake" -gt "$peer_hs_max" ] && peer_hs_max=$handshake ;;
+                esac
                 local rx_h=$(human_size "${rx:-0}")
                 local tx_h=$(human_size "${tx:-0}")
                 # Emit RAW machine values (hs_epoch / rx_bytes / tx_bytes) alongside the
@@ -3167,6 +3205,16 @@ EOF
     fi
 
     log_text=$(grep "amneziawg" /tmp/syslog.log 2>/dev/null | tail -20 | sed 's/"/\\"/g' | tr '\n' '|' | sed 's/|/\\n/g')
+
+    # "Daemon up but the tunnel isn't established" flag for the UI. True only while running and NO
+    # peer has EVER completed a handshake (peer_hs_max==0 → endpoint unreachable / obfuscation
+    # mismatch). The page uses this to replace a bare "Connected" with an honest "no handshake"
+    # state — critical with kill-switch ON, where geo traffic is silently blackholed. The
+    # "handshaked once, then went stale" case needs no new field: the page derives age client-side
+    # from each peer's hs_epoch. The page must gate any banner on !starting && !stopping (the brief
+    # post-start window before the first handshake legitimately reads true).
+    local no_handshake=false
+    [ "$running" = "true" ] && [ "$peer_hs_max" -eq 0 ] && no_handshake=true
 
     local default_policy=$(get_setting awg_default_policy)
     [ -z "$default_policy" ] && default_policy="direct"
@@ -3281,7 +3329,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","dnsgeo_warn":"${dnsgeo_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","dnsgeo_warn":"${dnsgeo_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
@@ -3999,6 +4047,27 @@ finalize_ipk_install(){
         rm -f "$tmp" /tmp/.awg_no_autostart
         if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
         update_status; return 1
+    fi
+    # Post-install integrity gate: opkg can exit 0 yet write a 0-byte binary under memory
+    # pressure on a low-RAM box (or a flaky USB truncates the write). The prerm already
+    # removed the OLD package (see top of this function), so a silently-truncated install
+    # would leave the router with NO working binary and do_start failing cryptically
+    # (field-confirmed on RT-AC68U: a hung update + power-cycle left amneziawg-go=0B awg=0B).
+    # Verify both are non-empty; if not, force-reinstall the SAME .ipk exactly once ($tmp is
+    # still on disk — we haven't rm'd it yet), then re-verify.
+    if [ ! -s "$AWG_GO" ] || [ ! -s "$AWG_BIN" ]; then
+        log_msg "Update: WARNING binaries 0-byte/missing after install (amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")) — retrying once with --force-reinstall"
+        local _reout
+        _reout=$(opkg install --force-reinstall --force-downgrade "$tmp" 2>&1)
+        [ -n "$_reout" ] && log_msg "  opkg: $(echo "$_reout" | tr '\n' '|')"
+        if [ ! -s "$AWG_GO" ] || [ ! -s "$AWG_BIN" ]; then
+            log_msg "Update: ERROR install left binaries truncated (amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")) — likely an interrupted write on a low-RAM box or a failing USB drive."
+            log_msg "  Reinstall to recover: curl -sfL https://raw.githubusercontent.com/william-aqn/asuswrt-merlin-amneziawg/main/install-online.sh | sh"
+            rm -f "$tmp" /tmp/.awg_no_autostart
+            if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
+            update_status; return 1
+        fi
+        log_msg "Update: force-reinstall recovered the binaries"
     fi
     rm -f "$tmp"
     # Stop VPN if opkg's init script started it

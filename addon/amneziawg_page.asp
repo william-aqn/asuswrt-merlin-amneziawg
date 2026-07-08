@@ -528,6 +528,8 @@ en: {
     COEX_HEADER: "⚠ Detected <b>{0}</b> on the router. So AmneziaWG doesn't conflict with it and leave the network without internet:",
     FWVPN_ACTIVE: "⛔ The <b>firmware's own VPN client</b> is routing traffic ahead of AmneziaWG ({0}). Its policy rule outranks ours (ip-rule priority &lt;98), so devices assigned to AmneziaWG actually leave through the firmware VPN. Disable the firmware VPN client (VPN → VPN Client / VPN Fusion) or unbind the devices from it.",
     FWVPN_ENABLED: "⚠ A <b>firmware VPN client profile is enabled</b> ({0}) but not connected. The moment it connects, its routing rule will outrank AmneziaWG's (ip-rule priority &lt;98) and silently capture the traffic. If the profile is unused — disable it in the router UI (VPN → VPN Client / VPN Fusion).",
+    NOHS: "⚠ The tunnel is up but <b>has not completed a handshake</b> — the server (endpoint) is not responding. Usual causes: wrong/unreachable endpoint, the server is down, or the obfuscation parameters don't match the server. Nothing is actually being tunnelled yet{0}. Check the endpoint and re-import the config from the provider if needed.",
+    NOHS_KS: " — and with the <b>kill-switch ON</b>, all VPN-routed traffic is blocked, so those devices have no internet until the handshake succeeds",
     DNSGEO_USER: "⚠ Domain-based geo lists are active ({0} domains in dnsmasq), but <b>DNS interception is off</b> (compatibility mode). Domains feed the routing only for clients that use the router's DNS — devices with DoH/private DNS bypass the VPN, so in practice mostly the IP lists (GeoIP/Antifilter) route. Not running zapret/Xray/b4? Turn compatibility mode off to re-enable interception.",
     DNSGEO_AUTO: "⚠ Domain-based geo lists are active ({1} domains), but DNS interception is <b>disabled automatically because of {0}</b>. Domains populate only for clients that use the router's DNS; IP lists keep working.",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">After the changes, click <b>«Apply»</b>. GeoIP routing by IP keeps working in the meantime.</span>",
@@ -874,6 +876,8 @@ ru: {
     COEX_HEADER: "⚠ Обнаружен <b>{0}</b> на роутере. Чтобы AmneziaWG не конфликтовал с ним и не оставил сеть без интернета:",
     FWVPN_ACTIVE: "⛔ <b>Прошивочный VPN-клиент</b> маршрутизирует трафик раньше AmneziaWG ({0}). Его правило стоит выше нашего (приоритет ip-rule &lt;98) — устройства, назначенные в AmneziaWG, фактически уходят через VPN прошивки. Отключите VPN-клиента прошивки (VPN → VPN-клиент / VPN Fusion) или отвяжите от него устройства.",
     FWVPN_ENABLED: "⚠ В прошивке <b>включён профиль VPN-клиента</b> ({0}), но он сейчас не подключён. Как только он подключится, его правило маршрутизации встанет выше правил AmneziaWG (приоритет ip-rule &lt;98) и незаметно заберёт трафик. Если профиль не используется — выключите его в интерфейсе роутера (VPN → VPN-клиент / VPN Fusion).",
+    NOHS: "⚠ Туннель поднят, но <b>рукопожатие не проходит</b> — сервер (endpoint) не отвечает. Обычные причины: неверный/недоступный endpoint, сервер выключен, либо параметры обфускации не совпадают с сервером. Трафик в туннель фактически ещё не идёт{0}. Проверьте endpoint и при необходимости переимпортируйте конфиг от провайдера.",
+    NOHS_KS: " — а с <b>включённым килл-свичом</b> весь VPN-трафик блокируется, поэтому на этих устройствах интернета не будет, пока рукопожатие не пройдёт",
     DNSGEO_USER: "⚠ Выбраны доменные гео-списки ({0} доменов в dnsmasq), но <b>перехват DNS выключен</b> (режим совместимости). Домены наполняют маршрутизацию только у устройств, использующих DNS роутера, — устройства с DoH/приватным DNS пройдут мимо VPN, т.е. фактически работают в основном IP-списки (GeoIP/Antifilter). Если zapret/Xray/b4 не используются — выключите режим совместимости, и перехват включится.",
     DNSGEO_AUTO: "⚠ Выбраны доменные гео-списки ({1} доменов), но перехват DNS <b>отключён автоматически из-за {0}</b>. Домены будут наполняться только у устройств, использующих DNS роутера; IP-списки работают как обычно.",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>",
@@ -3330,6 +3334,7 @@ function updateStatusUI(s){
     renderXrayCaptureWarning(s);
     renderFwVpnWarning(s);
     renderDnsGeoWarning(s);
+    renderNoHandshakeWarning(s);
 }
 
 // Warn when a co-resident proxy/DPI tool (Xray/XRAYUI, zapret, ...) is running AND the
@@ -3421,6 +3426,22 @@ function renderDnsGeoWarning(s){
         var cause = escHtml(w.indexOf(':') > 0 ? w.slice(w.indexOf(':') + 1) : w);
         el.innerHTML = T('DNSGEO_AUTO', cause, doms);
     }
+    el.style.display = '';
+}
+
+// "Tunnel up but no handshake" banner. Backend status.no_handshake is true only while
+// running AND no peer ever handshaked (peer_hs_max==0 → server unreachable / obfuscation
+// mismatch). Gated here on !starting && !stopping so the brief post-start window (running
+// true, first handshake pending) doesn't flash it. Extra-loud when the kill-switch is on,
+// where a dead tunnel is a total blackout ("connected but nothing opens").
+function renderNoHandshakeWarning(s){
+    var el = document.getElementById('awg_nohs_warn');
+    if(!el) return;
+    if(!s || !s.no_handshake || s.starting || s.stopping || !s.running){
+        el.style.display = 'none'; el.innerHTML = ''; return;
+    }
+    var ksNote = s.killswitch ? T('NOHS_KS') : '';
+    el.innerHTML = T('NOHS', ksNote);
     el.style.display = '';
 }
 
@@ -3912,6 +3933,7 @@ function initAutocompleteIp(){
                 <div id="awg_xray_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_fwvpn_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; border:1px solid; border-radius:5px; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_dnsgeo_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
+                <div id="awg_nohs_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
 
                 <!-- Peers Table -->
                 <div class="awg-section" data-i18n="SEC_CONNECTED_PEERS">Connected peers</div>
