@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.42"
+AWG_VERSION="1.2.43"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -125,6 +125,22 @@ log_msg(){
 # Clear the on-page log at the start of a user-facing operation
 ui_log_reset(){
     : > "$UI_LOG" 2>/dev/null
+}
+
+# Persistent incident breadcrumb — survives a reboot (unlike the RAM logs /tmp/syslog.log +
+# $UI_LOG). Called ONLY on rare, LAN-critical incidents (auto-rollback, dnsmasq-down recovery,
+# damaged binaries) so a box that goes "unreachable then gets power-cycled" — leaving NO logs
+# of the actual failure moment — still records WHY across the reboot; diag prints it. Lives on
+# /jffs (always mounted, unlike /opt on USB). Flash-wear-safe: written only on incidents (never
+# on the per-minute status cron or normal starts), capped to the last 40 lines. `uptime` is
+# logged too because these boxes often have an unsynced clock (Dec-1970/2023 dates).
+AWG_INCIDENTS="/jffs/addons/amneziawg/incidents.log"
+awg_incident(){
+    { echo "$(date '+%Y-%m-%d %H:%M:%S') (up $(cut -d. -f1 /proc/uptime 2>/dev/null)s) $1"; } >> "$AWG_INCIDENTS" 2>/dev/null
+    # Trim to the last 40 lines (append-then-trim; cheap, rare).
+    if [ -f "$AWG_INCIDENTS" ]; then
+        tail -n 40 "$AWG_INCIDENTS" > "${AWG_INCIDENTS}.t" 2>/dev/null && mv "${AWG_INCIDENTS}.t" "$AWG_INCIDENTS" 2>/dev/null
+    fi
 }
 
 get_setting(){
@@ -1576,6 +1592,7 @@ reload_dnsmasq(){
                 # Still down (or the conf genuinely failed --test) — LAST RESORT: drop our include
                 # so the LAN gets its resolver back. Degraded geo beats a dead LAN; conf kept as .bad.
                 log_msg "ERROR: dnsmasq still down — removing AWG dnsmasq rules + restarting to restore DNS/DHCP (conf kept as ${DNSMASQ_AWG_CONF}.bad)"
+                awg_incident "dnsmasq stayed DOWN after reload — stripped AWG dnsmasq rules to restore LAN DNS/DHCP"
                 rm -f "$DNSMASQ_AWG_CONF"
                 rm -f "$TUNNEL_DNS_FLAG"   # conf (incl. server=@awg0) gone — flag must fall with it
                 rm -f "$DNSRELOAD_SIG"   # conf unloaded — force a real restart on the next reload
@@ -2566,6 +2583,8 @@ do_diag(){
     echo "memory (free):"; free 2>/dev/null | sed 's/^/  /'
     echo "amneziawg-go running : $(pidof amneziawg-go 2>/dev/null || echo no)"
     echo "dnsmasq running      : $(pidof dnsmasq 2>/dev/null || echo no)"
+    echo "--- persistent incident log (survives reboot; last LAN-critical events) ---"
+    if [ -s "$AWG_INCIDENTS" ]; then sed 's/^/  /' "$AWG_INCIDENTS"; else echo "  (none — no auto-rollback / dnsmasq-down / damaged-binary incident recorded)"; fi
     echo "--- self-heal / background state ---"
     echo "awg crons (cru l):"
     _crons=$(cru l 2>/dev/null | grep -i awg)
@@ -2692,6 +2711,7 @@ arm_lan_deadman(){
         [ -n "$gen" ] && ! pidof amneziawg-go 2>/dev/null | grep -qw "$gen" && exit 0
         logger -t "$SCRIPT_NAME" "DEADMAN: dnsmasq still down ~90s after start — rolling back VPN to restore LAN/DHCP"
         echo "$(date '+%Y-%m-%d %H:%M:%S') DEADMAN: dnsmasq down, rolling back to restore LAN access" >> "$UI_LOG" 2>/dev/null
+        awg_incident "DEADMAN: dnsmasq still down ~90s after start — auto-rolling back VPN (LAN DNS/DHCP was lost)"
         # Auto-rollback (NOT a user stop) — keep the watchdog cron so recovery can continue.
         "$ADDON_DIR/amneziawg.sh" stop_auto >/dev/null 2>&1
         # Bounce dnsmasq only if it's actually still dead (do_stop's reload_dnsmasq may have
@@ -2817,6 +2837,7 @@ do_start(){
     done
     if [ -n "$_b_bad" ]; then
         log_msg "ERROR: userspace binaries are damaged:$_b_bad"
+        awg_incident "start aborted: userspace binaries damaged (${_b_bad# }) — interrupted update / failing USB; reinstall needed"
         log_msg "  sizes: amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")"
         log_msg "  Likely an interrupted update or a failing USB drive left them truncated to 0"
         log_msg "  bytes (e.g. a power-cycle mid-opkg + e2fsck). Fix: reinstall the package —"
@@ -3069,6 +3090,7 @@ do_start(){
             # got a reply (endpoint unreachable, obfuscation mismatch, or egress hijacked). The diag
             # runs after rollback so `awg show` there is empty — capture it here while it's alive.
             log_msg "  awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer|endpoint' | tr '\n' '|' | sed 's/|$//')"
+            awg_incident "health-check rollback: $hc_reason (awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer' | tr '\n' '|' | sed 's/|$//'))"
             xray_redirect_active && log_msg "  HINT: XRAYUI transparent-proxy (TPROXY 'redirect all') is active — it captures the router's egress incl. our handshake; turn off XRAYUI's redirect-all mode or run one VPN at a time"
             do_stop 2>/dev/null
             log_msg "VPN stopped automatically. Check server config and endpoint reachability."
@@ -3725,6 +3747,7 @@ do_uninstall(){
     rm -f "$STATUS_FILE" /www/user/awg_widget.js /www/user/v2fly_categories.htm /www/user/awg_changelog.htm /www/user/awg_update.htm /www/user/awg_log.htm /www/user/awg_diag.htm
     rm -f "$ANALYZE_FILE" "$ANALYZE_DNS_CONF" "$ANALYZE_DNS_LOG" /tmp/.awg_analyze_*
 
+    rm -f "$AWG_INCIDENTS"
     rm -rf "$ADDON_DIR"
 
     if [ -f /tmp/menuTree.js ]; then
