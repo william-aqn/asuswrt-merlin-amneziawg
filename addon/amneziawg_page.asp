@@ -164,6 +164,9 @@
 #awg_analyze_table th { text-align:left; padding:5px 8px; border-bottom:1px solid #444; color:#b6bdc7; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; position:sticky; top:0; background:#2b3338; }
 #awg_analyze_table td { padding:4px 8px; border-bottom:1px solid #353d43; vertical-align:top; word-break:break-all; }
 #awg_analyze_table td.awg-an-mono { font-family:"Courier New","Lucida Console",monospace; color:#9aa3ad; white-space:nowrap; }
+#awg_analyze_table td.awg-an-owner { color:#8a929c; font-size:11px; }
+#awg_analyze_table td.awg-an-owner .awg-own-link { cursor:pointer; border-bottom:1px dotted #5a636b; }
+#awg_analyze_table td.awg-an-owner .awg-own-link:hover { color:#cfd5db; border-bottom-color:#8fb7de; }
 .awg-add-btn, .awg-import-btn {
     cursor: pointer;
     font-size: 12px;
@@ -330,7 +333,19 @@ var awgPoll = null;
 var awgActionGen = 0;
 var awgLastPeers = [];      // last peers array from the status poll — read by the live handshake ticker
 var awgTickTimer = null;    // singleton interval for awgTickHandshakes (started once)
-var v2flyList = [];
+// GeoSite category autocomplete source. Seeded with a static fallback of common v2fly
+// categories so suggestions work even when /user/v2fly_categories.htm is 404 — which happens
+// on a fresh /opt whose v2fly DB hasn't downloaded yet, or when the DB download (a GitHub
+// RELEASE asset, dlc.dat_plain.yml) is region-blocked. loadV2flyCategories() REPLACES this with
+// the full ~1500-entry list once the DB is present. These are real v2fly category names, so a
+// fallback pick still routes correctly; the full list just adds the long tail.
+var v2flyList = ['google','youtube','telegram','twitter','facebook','instagram','whatsapp','tiktok',
+    'netflix','spotify','twitch','discord','github','gitlab','steam','epicgames','apple','microsoft',
+    'amazon','openai','cloudflare','reddit','wikipedia','disney','hbo','primevideo','soundcloud',
+    'deezer','viber','signal','snapchat','pinterest','linkedin','medium','paypal','speedtest','adobe',
+    'nvidia','docker','stackoverflow','playstation','xbox','nintendo','roblox','ubisoft','oracle',
+    'zoom','slack','dropbox','protonmail','mozilla','category-ads-all','category-porn','category-games',
+    'category-media','category-dev','category-ai-!cn'];
 var v2flyIpList = ['telegram','google','facebook','twitter','netflix','cloudflare','fastly','cloudfront'];
 function escHtml(s){
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -462,12 +477,22 @@ en: {
     ANALYZE_COL_NAME: "Request",
     ANALYZE_COL_DEST: "Destination",
     ANALYZE_COL_VERDICT: "Route",
+    ANALYZE_COL_OWNER: "Owner",
+    OWNER_CLICK_HINT: "click: add this network · Shift-click: whole AS",
+    OWNER_PFX: "AS: {0} IPv4 prefixes",
+    OWNER_LOOKING: "Looking up the network…",
+    OWNER_NO_PREFIX: "Couldn't determine the network.",
+    OWNER_NO_ASN: "No ASN for this owner.",
+    OWNER_CONFIRM_NET: "Add {0} — network {1} — to this policy's custom IPs?",
+    OWNER_CONFIRM_AS: "Add ALL {2} IPv4 prefixes of {0} ({1}) to custom IPs? This can be a lot.",
+    OWNER_ADDED_NET: "Added network {0} ({1} new). Don't forget Apply.",
+    OWNER_ADDED_AS: "Added {0} ranges of {1}. Don't forget Apply.",
     VERDICT_VPN: "VPN",
     VERDICT_GEO: "VPN (Geo)",
     VERDICT_DIRECT: "Direct",
     VERDICT_PENDING: "resolving…",
     ANALYZE_NOTE_SUMMARY: "What does this analysis show?",
-    ANALYZE_NOTE: "Diagnostic. Shows the device's DNS requests (tagged DNS — what it's trying to reach) and its actual connections, each labeled Direct or VPN/Geo. Starting briefly restarts DNS to capture queries; only devices that use the router as DNS are visible. Verdict reflects the device's applied policy and the current geo lists.",
+    ANALYZE_NOTE: "Diagnostic. Shows the device's DNS requests (tagged DNS — what it's trying to reach) and its actual connections, each labeled Direct or VPN/Geo. Starting briefly restarts DNS to capture queries; only devices that use the router as DNS are visible. Verdict reflects the device's applied policy and the current geo lists. Owner (ASN) is resolved in your browser via an external service (ipwho.is).",
     ANALYZE_ADD_SELECTED: "+ To custom domains/IPs",
     ANALYZE_ADDED_ACK: "Added: {0} domains, {1} IPs (don't forget to Apply)",
     ANALYZE_NONE_SELECTED: "Nothing selected",
@@ -810,12 +835,22 @@ ru: {
     ANALYZE_COL_NAME: "Запрос",
     ANALYZE_COL_DEST: "Назначение",
     ANALYZE_COL_VERDICT: "Маршрут",
+    ANALYZE_COL_OWNER: "Владелец",
+    OWNER_CLICK_HINT: "клик: добавить эту подсеть · Shift+клик: весь AS",
+    OWNER_PFX: "AS: {0} IPv4-префиксов",
+    OWNER_LOOKING: "Определяю подсеть…",
+    OWNER_NO_PREFIX: "Не удалось определить подсеть.",
+    OWNER_NO_ASN: "У этого владельца нет ASN.",
+    OWNER_CONFIRM_NET: "Добавить {0} — подсеть {1} — в «Свои IP» этой политики?",
+    OWNER_CONFIRM_AS: "Добавить ВСЕ {2} IPv4-префиксов {0} ({1}) в «Свои IP»? Это может быть много.",
+    OWNER_ADDED_NET: "Добавлена подсеть {0} ({1} нов.). Не забудьте «Применить».",
+    OWNER_ADDED_AS: "Добавлено {0} диапазонов {1}. Не забудьте «Применить».",
     VERDICT_VPN: "VPN",
     VERDICT_GEO: "VPN (Geo)",
     VERDICT_DIRECT: "Напрямую",
     VERDICT_PENDING: "резолв…",
     ANALYZE_NOTE_SUMMARY: "Что показывает этот анализ?",
-    ANALYZE_NOTE: "Диагностика. Показывает DNS-запросы устройства (метка DNS — что оно пытается вызвать) и его реальные соединения, у каждого — вердикт «напрямую» или «VPN/Geo». При старте кратко перезапускается DNS для захвата запросов; видны только устройства, использующие роутер как DNS. Вердикт отражает применённую политику устройства и текущие гео-списки.",
+    ANALYZE_NOTE: "Диагностика. Показывает DNS-запросы устройства (метка DNS — что оно пытается вызвать) и его реальные соединения, у каждого — вердикт «напрямую» или «VPN/Geo». При старте кратко перезапускается DNS для захвата запросов; видны только устройства, использующие роутер как DNS. Вердикт отражает применённую политику устройства и текущие гео-списки. Владелец (ASN) резолвится в вашем браузере через внешний сервис (ipwho.is).",
     ANALYZE_ADD_SELECTED: "+ В свои домены/IP",
     ANALYZE_ADDED_ACK: "Добавлено: {0} доменов, {1} IP (не забудьте «Применить»)",
     ANALYZE_NONE_SELECTED: "Ничего не отмечено",
@@ -1125,8 +1160,12 @@ function loadV2flyCategories(){
     var xhr = new XMLHttpRequest();
     xhr.open('GET', '/user/v2fly_categories.htm?_=' + Date.now(), true);
     xhr.onload = function(){
-        if(xhr.status === 200 && xhr.responseText.length > 0){
-            v2flyList = xhr.responseText.trim().split('\n').filter(function(s){ return s; });
+        // Replace the static fallback with the full list ONLY when the DB file is present and
+        // non-empty; on 404 (fresh /opt / region-blocked v2fly DB) keep the seeded fallback so
+        // autocomplete still offers the common categories instead of going silent.
+        if(xhr.status === 200 && xhr.responseText.trim().length > 0){
+            var full = xhr.responseText.trim().split('\n').filter(function(s){ return s; });
+            if(full.length) v2flyList = full;
         }
     };
     xhr.send();
@@ -2962,11 +3001,256 @@ function awgAnalyzeRender(data){
             '<td class="awg-an-mono">' + escHtml(String(e.t || '')) + '</td>' +
             '<td>' + req + '</td>' +
             '<td class="awg-an-mono">' + dest + '</td>' +
+            '<td class="awg-an-owner" data-ip="' + escHtml(String(e.ip || '')) + '">' + awgOwnerCell(e.ip) + '</td>' +
             '<td><span class="awg-verdict ' + vi.cls + '">' + escHtml(vi.label) + '</span></td>' +
             '</tr>';
     }
     rows.innerHTML = html;
     awgAnalyzeSyncSelAll();
+    awgOwnerResolveVisible();
+}
+// ---- IP → owner (ASN / org) resolution for the analyzer table ----
+// Resolved in the admin's browser (NOT on the router) via a free CORS API (ipwho.is), cached per
+// IP for the page's lifetime. Only public IPv4 destinations are looked up; private / LAN / reserved
+// and IPv6 show "—". Cells carry data-ip, so a late reply patches every matching row even after the
+// capture (and its polling) has stopped. Concurrency is capped to stay gentle with the free API.
+var awgOwnerCache = {};      // ip -> {t:'ok',v,full} | {t:'err'} | {t:'pending'}
+var awgOwnerQueue = [];
+var awgOwnerInflight = 0;
+var AWG_OWNER_MAX = 3;
+var awgOwnerLsLoaded = false;
+var awgAsnCount = {};        // asn -> IPv4 prefix count | 'pending' | -1 (errored)
+var awgCountQueue = [];
+var awgCountInflight = 0;
+var AWG_COUNT_MAX = 2;
+function awgOwnerIsPublic(ip){
+    if(!ip || ip.indexOf(':') >= 0) return false;          // empty or IPv6 -> skip
+    var p = ip.split('.'); if(p.length !== 4) return false;
+    var a = +p[0], b = +p[1];
+    if(a === 0 || a === 10 || a === 127) return false;
+    if(a === 192 && b === 168) return false;
+    if(a === 172 && b >= 16 && b <= 31) return false;
+    if(a === 169 && b === 254) return false;
+    if(a === 100 && b >= 64 && b <= 127) return false;     // CGNAT
+    if(a >= 224) return false;                             // multicast / reserved
+    return true;
+}
+function awgOwnerTrunc(s, n){ s = String(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+function awgOwnerCell(ip){
+    if(!awgOwnerIsPublic(ip)) return '—';
+    var c = awgOwnerCache[ip];
+    if(c && c.t === 'ok'){
+        var cnt = c.asn ? awgAsnCount[c.asn] : undefined;
+        var ttl = c.full + ((typeof cnt === 'number' && cnt >= 0) ? ' · ' + T('OWNER_PFX', cnt) : '') + ' · ' + T('OWNER_CLICK_HINT');
+        return '<span class="awg-own-link" title="' + escHtml(ttl) + '" onclick="awgOwnerClick(\'' + escHtml(ip) + '\', event)">' + escHtml(c.v) + '</span>';
+    }
+    if(c && c.t === 'err') return '<span style="color:#6b7480;">?</span>';
+    return '<span style="color:#6b7480;">…</span>';        // pending / not requested yet
+}
+function awgOwnerResolveVisible(){
+    if(!awgOwnerLsLoaded){ awgOwnerLsLoaded = true; awgOwnerLsLoad(); }
+    var cells = document.querySelectorAll('#awg_analyze_rows .awg-an-owner');
+    var seen = {};
+    for(var i = 0; i < cells.length; i++){
+        var ip = cells[i].getAttribute('data-ip');
+        if(!ip || seen[ip] || !awgOwnerIsPublic(ip)) continue;
+        seen[ip] = 1;
+        var c = awgOwnerCache[ip];
+        if(!c){ awgOwnerCache[ip] = { t: 'pending' }; awgOwnerQueue.push(ip); }
+        else if(c.t === 'ok' && c.asn){ awgAsnCountResolve(c.asn); }   // seed the tooltip count for cached owners
+    }
+    awgOwnerPump();
+}
+function awgOwnerPump(){
+    while(awgOwnerInflight < AWG_OWNER_MAX && awgOwnerQueue.length){
+        awgOwnerFetch(awgOwnerQueue.shift());
+    }
+}
+function awgOwnerFetch(ip){
+    awgOwnerInflight++;
+    var x = new XMLHttpRequest();
+    x.open('GET', 'https://ipwho.is/' + encodeURIComponent(ip) + '?fields=success,connection,country_code', true);
+    x.timeout = 8000;
+    x.onload = function(){
+        awgOwnerInflight--;
+        var v = null, full = null, asn = 0;
+        try {
+            var d = JSON.parse(x.responseText);
+            if(d && d.success !== false && d.connection){
+                var org = d.connection.org || d.connection.isp || '';
+                asn = d.connection.asn || 0;
+                var asns = asn ? ('AS' + asn) : '';
+                v = org || asns || null;
+                if(v) full = ((asns ? asns + ' ' : '') + org + (d.country_code ? ' [' + d.country_code + ']' : '')).replace(/\s+$/, '');
+            }
+        } catch(e){}
+        awgOwnerCache[ip] = v ? { t: 'ok', v: awgOwnerTrunc(v, 28), full: full || v, asn: asn, ts: Date.now() } : { t: 'err' };
+        if(v){ awgOwnerLsSaveSoon(); if(asn) awgAsnCountResolve(asn); }
+        awgOwnerApply(ip);
+        awgOwnerPump();
+    };
+    x.onerror = x.ontimeout = function(){
+        awgOwnerInflight--;
+        awgOwnerCache[ip] = { t: 'err' };
+        awgOwnerApply(ip);
+        awgOwnerPump();
+    };
+    x.send();
+}
+function awgOwnerApply(ip){
+    var cells = document.querySelectorAll('#awg_analyze_rows .awg-an-owner');
+    for(var i = 0; i < cells.length; i++){
+        if(cells[i].getAttribute('data-ip') === ip) cells[i].innerHTML = awgOwnerCell(ip);
+    }
+}
+// Owner cache persistence in localStorage — owner/ASN is stable, so it survives page reloads (and
+// the whole session). Only resolved ('ok') entries are stored, each with a timestamp; on load,
+// entries older than the TTL are dropped and the rest seed awgOwnerCache so cells fill instantly.
+var AWG_OWNER_LS = 'awg_owner_cache_v1';
+var AWG_ASN_LS = 'awg_asn_count_v1';
+var AWG_OWNER_TTL = 45 * 24 * 3600 * 1000;   // 45 days
+var awgOwnerSaveTimer = null;
+function awgOwnerLsLoad(){
+    awgAsnLsLoad();
+    try {
+        var raw = localStorage.getItem(AWG_OWNER_LS); if(!raw) return;
+        var o = JSON.parse(raw), now = Date.now();
+        for(var ip in o){
+            if(!o.hasOwnProperty(ip)) continue;
+            var e = o[ip];
+            if(e && e.v && e.ts && (now - e.ts) < AWG_OWNER_TTL && !awgOwnerCache[ip])
+                awgOwnerCache[ip] = { t: 'ok', v: e.v, full: e.full || e.v, asn: e.asn || 0, ts: e.ts };
+        }
+    } catch(e){}
+}
+function awgOwnerLsSave(){
+    try {
+        var o = {}, n = 0;
+        for(var ip in awgOwnerCache){
+            if(!awgOwnerCache.hasOwnProperty(ip)) continue;
+            var c = awgOwnerCache[ip];
+            if(c && c.t === 'ok'){ o[ip] = { v: c.v, full: c.full, asn: c.asn || 0, ts: c.ts || Date.now() }; if(++n >= 3000) break; }
+        }
+        localStorage.setItem(AWG_OWNER_LS, JSON.stringify(o));
+    } catch(e){}
+}
+function awgOwnerLsSaveSoon(){
+    if(awgOwnerSaveTimer) return;
+    awgOwnerSaveTimer = setTimeout(function(){ awgOwnerSaveTimer = null; awgOwnerLsSave(); awgAsnLsSave(); }, 1500);
+}
+// Click an owner -> add its network to the selected policy's custom IPs. Plain click adds the
+// announced prefix that CONTAINS this IP (targeted — catches the provider's rotating IPs in that
+// block, e.g. a CDN); Shift-click adds EVERY IPv4 prefix of the AS, behind a count confirm so an
+// Amazon-scale AS can't be added by accident. Prefixes come from RIPEstat (browser-side, CORS).
+function awgOwnerTargetPidx(){
+    var picker = document.getElementById('awg_an_policy');
+    var pid = picker ? parseInt(picker.value, 10) : NaN;
+    return isNaN(pid) ? -1 : geoPolicyIndexById(pid);
+}
+function awgOwnerRipe(url, cb){
+    var x = new XMLHttpRequest();
+    x.open('GET', url, true);
+    x.timeout = 12000;
+    x.onload = function(){ var d = null; try { d = JSON.parse(x.responseText); } catch(e){} cb(d); };
+    x.onerror = x.ontimeout = function(){ cb(null); };
+    x.send();
+}
+function awgOwnerClick(ip, ev){
+    if(ev && ev.stopPropagation) ev.stopPropagation();
+    var c = awgOwnerCache[ip];
+    if(!c || c.t !== 'ok') return;
+    var pidx = awgOwnerTargetPidx();
+    if(pidx === -1){ awgAnalyzeShowAck(T('ANALYZE_NEED_POLICY'), false); return; }
+    if(ev && ev.shiftKey){
+        if(!c.asn){ awgAnalyzeShowAck(T('OWNER_NO_ASN'), false); return; }
+        awgAnalyzeShowAck(T('OWNER_LOOKING'), true);
+        awgOwnerRipe('https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS' + encodeURIComponent(c.asn), function(d){
+            var pfx = [], a = (d && d.data && d.data.prefixes) || [], i;
+            for(i = 0; i < a.length; i++){ if(a[i].prefix && a[i].prefix.indexOf(':') < 0) pfx.push(a[i].prefix); }
+            if(!pfx.length){ awgAnalyzeShowAck(T('OWNER_NO_PREFIX'), false); return; }
+            if(!confirm(T('OWNER_CONFIRM_AS', c.v, 'AS' + c.asn, pfx.length))){ awgAnalyzeClearAck(); return; }
+            var res = geoAddToPolicy(pidx, [], pfx);
+            awgAnalyzeShowAck(T('OWNER_ADDED_AS', res.nIp, 'AS' + c.asn), true);
+        });
+    } else {
+        awgAnalyzeShowAck(T('OWNER_LOOKING'), true);
+        awgOwnerRipe('https://stat.ripe.net/data/network-info/data.json?resource=' + encodeURIComponent(ip), function(d){
+            var cidr = (d && d.data && d.data.prefix) || '';
+            if(!cidr){ awgAnalyzeShowAck(T('OWNER_NO_PREFIX'), false); return; }
+            if(!confirm(T('OWNER_CONFIRM_NET', c.v, cidr))){ awgAnalyzeClearAck(); return; }
+            var res = geoAddToPolicy(pidx, [], [cidr]);
+            awgAnalyzeShowAck(T('OWNER_ADDED_NET', cidr, res.nIp), true);
+        });
+    }
+}
+// AS IPv4-prefix count for the owner tooltip — so the scale of an AS is visible BEFORE Shift-click
+// (e.g. Amazon = 1000+ prefixes vs a small provider = a couple dozen). Cached per ASN (not per IP),
+// persisted, throttled. Uses RIPEstat routing-status (a single summary number, not the full list).
+function awgAsnCountResolve(asn){
+    if(!asn || awgAsnCount[asn] !== undefined) return;
+    awgAsnCount[asn] = 'pending';
+    awgCountQueue.push(asn);
+    awgCountPump();
+}
+function awgCountPump(){
+    while(awgCountInflight < AWG_COUNT_MAX && awgCountQueue.length){
+        awgCountFetch(awgCountQueue.shift());
+    }
+}
+function awgCountFetch(asn){
+    awgCountInflight++;
+    var x = new XMLHttpRequest();
+    x.open('GET', 'https://stat.ripe.net/data/routing-status/data.json?resource=AS' + encodeURIComponent(asn), true);
+    x.timeout = 10000;
+    x.onload = function(){
+        awgCountInflight--;
+        var n = null;
+        try {
+            var d = JSON.parse(x.responseText);
+            if(d && d.data && d.data.announced_space && d.data.announced_space.v4 && typeof d.data.announced_space.v4.prefixes === 'number')
+                n = d.data.announced_space.v4.prefixes;
+        } catch(e){}
+        awgAsnCount[asn] = (n === null) ? -1 : n;   // -1 = errored (kept, so we don't refetch every render)
+        if(n !== null) awgOwnerLsSaveSoon();
+        awgOwnerApplyAsn(asn);
+        awgCountPump();
+    };
+    x.onerror = x.ontimeout = function(){
+        awgCountInflight--;
+        awgAsnCount[asn] = -1;
+        awgCountPump();
+    };
+    x.send();
+}
+function awgOwnerApplyAsn(asn){
+    var cells = document.querySelectorAll('#awg_analyze_rows .awg-an-owner');
+    for(var i = 0; i < cells.length; i++){
+        var ip = cells[i].getAttribute('data-ip'), c = awgOwnerCache[ip];
+        if(c && c.t === 'ok' && c.asn === asn) cells[i].innerHTML = awgOwnerCell(ip);
+    }
+}
+function awgAsnLsLoad(){
+    try {
+        var raw = localStorage.getItem(AWG_ASN_LS); if(!raw) return;
+        var o = JSON.parse(raw), now = Date.now();
+        for(var k in o){
+            if(!o.hasOwnProperty(k)) continue;
+            var e = o[k];
+            if(e && typeof e.n === 'number' && e.n >= 0 && e.ts && (now - e.ts) < AWG_OWNER_TTL && awgAsnCount[k] === undefined)
+                awgAsnCount[k] = e.n;
+        }
+    } catch(e){}
+}
+function awgAsnLsSave(){
+    try {
+        var o = {}, n = 0;
+        for(var k in awgAsnCount){
+            if(!awgAsnCount.hasOwnProperty(k)) continue;
+            var c = awgAsnCount[k];
+            if(typeof c === 'number' && c >= 0){ o[k] = { n: c, ts: Date.now() }; if(++n >= 2000) break; }
+        }
+        localStorage.setItem(AWG_ASN_LS, JSON.stringify(o));
+    } catch(e){}
 }
 function awgCloseAnalyze(){
     if(awgAnalyzeActive) awgAnalyzeStop();
@@ -4502,6 +4786,7 @@ function initAutocompleteIp(){
                     <th style="width:60px;" data-i18n="ANALYZE_COL_TIME">Time</th>
                     <th data-i18n="ANALYZE_COL_NAME">Request</th>
                     <th style="width:160px;" data-i18n="ANALYZE_COL_DEST">Destination</th>
+                    <th style="width:150px;" data-i18n="ANALYZE_COL_OWNER">Owner</th>
                     <th style="width:96px;" data-i18n="ANALYZE_COL_VERDICT">Route</th>
                 </tr></thead>
                 <tbody id="awg_analyze_rows"></tbody>
