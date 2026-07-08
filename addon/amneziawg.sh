@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.41"
+AWG_VERSION="1.2.42"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2652,6 +2652,13 @@ do_diag(){
     else echo "  (no dnsmasq.conf.add)"; fi
     echo "tunnel DNS           : $([ -f "$TUNNEL_DNS_FLAG" ] && echo "ACTIVE — $(grep -c "^server=.*@$IFACE" "$DNSMASQ_AWG_CONF" 2>/dev/null) server(s) via $IFACE, firmware upstreams stripped by postconf" || echo "off")"
     echo "postconf hook        : $(grep -c amneziawg /jffs/scripts/dnsmasq.postconf 2>/dev/null || echo 0) line(s)"
+    # Dangling-include check: our conf-file= is in the firmware-owned conf.add but points at /opt
+    # (removable USB). If the include is present while the target is MISSING, firmware dnsmasq
+    # fatally fails to start (LAN-wide DNS/DHCP loss) — the postconf guard above neutralizes it,
+    # but flag the condition here so a bricked-DNS report is instantly recognizable.
+    if grep -q "conf-file=$DNSMASQ_AWG_CONF" "$DNSMASQ_INCLUDE" 2>/dev/null && [ ! -f "$DNSMASQ_AWG_CONF" ]; then
+        echo "  DANGLING INCLUDE     : conf-file present but $DNSMASQ_AWG_CONF MISSING (/opt unmounted?) — would brick dnsmasq without the postconf guard"
+    fi
     echo "--- processes (vpn / dpi / dns) ---"
     ps 2>/dev/null | grep -iE 'amneziawg|awg0| awg |dnsmasq|xray|zapret|/b4| b4 |adguard|tpws|nfqws' | grep -v grep | head -25 | sed 's/^/  /'
     echo "--- system log: awg / tun / OOM / segfault (filtered) ---"
@@ -3636,15 +3643,25 @@ do_install_page(){
         echo '/jffs/addons/amneziawg/amneziawg.sh firewall_restart  # AmneziaWG' >> /jffs/scripts/firewall-start
     fi
 
-    # dnsmasq.postconf hook (Merlin-native): while $TUNNEL_DNS_FLAG exists, strip the
-    # firmware's upstream directives from the freshly generated dnsmasq conf so ONLY our
-    # server=<awg_dns>@awg0 lines answer — the "DNS via tunnel" feature. Single line, tagged
-    # "amneziawg" so do_uninstall's sed removes it like the other hooks.
+    # dnsmasq.postconf hook (Merlin-native), ONE tagged "amneziawg" line, two guards:
+    #   1. tunnel-DNS — while $TUNNEL_DNS_FLAG exists, strip the firmware's upstream directives
+    #      so ONLY our server=<awg_dns>@awg0 lines answer (the "DNS via tunnel" feature).
+    #   2. missing-conf guard — if our /opt include target is ABSENT, pc_delete its `conf-file=`
+    #      directive from the generated conf ($1). Our persistent `conf-file=` lines live in the
+    #      firmware-owned /jffs/configs/dnsmasq.conf.add, but the files they point at live on /opt
+    #      (often a REMOVABLE/late-mounting USB). When /opt is unavailable — USB pulled/dying, or
+    #      simply not mounted yet at early boot while start_dnsmasq already fires — dnsmasq treats
+    #      a missing `conf-file=` as FATAL and won't start at all: the whole LAN loses DNS/DHCP
+    #      and the router goes "unreachable" (field-confirmed on RT-AC68U, USB /opt). This guard
+    #      makes a missing /opt non-fatal — dnsmasq starts clean. No-op when the files exist.
+    # UPGRADE: rewrite the tagged line every install_page (idempotent) — do NOT gate on
+    # grep-not-found, or existing installs that carry only the older tunnel-DNS-only line never
+    # gain the missing-conf guard. The paths are LITERAL (the hook runs standalone with no access
+    # to $AWG_DIR/$DNSMASQ_AWG_CONF/$ANALYZE_DNS_CONF — keep them in sync with lines ~9/50/30).
     [ ! -f /jffs/scripts/dnsmasq.postconf ] && printf '#!/bin/sh\n' > /jffs/scripts/dnsmasq.postconf
     chmod +x /jffs/scripts/dnsmasq.postconf 2>/dev/null
-    if ! grep -q "amneziawg" /jffs/scripts/dnsmasq.postconf; then
-        echo '[ -f /tmp/.awg_tunnel_dns ] && { . /usr/sbin/helper.sh; pc_delete "servers-file=" "$1"; pc_delete "resolv-file=" "$1"; }  # amneziawg tunnel-DNS' >> /jffs/scripts/dnsmasq.postconf
-    fi
+    sed -i '/# amneziawg/d' /jffs/scripts/dnsmasq.postconf 2>/dev/null
+    echo '. /usr/sbin/helper.sh; [ -f /tmp/.awg_tunnel_dns ] && { pc_delete "servers-file=" "$1"; pc_delete "resolv-file=" "$1"; }; [ -f /opt/amneziawg/dnsmasq_awg.conf ] || pc_delete "conf-file=/opt/amneziawg/dnsmasq_awg.conf" "$1"; [ -f /opt/amneziawg/dnsmasq_analyze.conf ] || pc_delete "conf-file=/opt/amneziawg/dnsmasq_analyze.conf" "$1"  # amneziawg dnsmasq guard' >> /jffs/scripts/dnsmasq.postconf
 
     [ ! -f /jffs/scripts/services-start ] && echo "#!/bin/sh" > /jffs/scripts/services-start
     chmod +x /jffs/scripts/services-start 2>/dev/null
