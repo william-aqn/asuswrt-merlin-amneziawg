@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.46"
+AWG_VERSION="1.2.47"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2621,6 +2621,9 @@ do_diag(){
     echo "--- last amneziawg-go output (/tmp/awg_daemon.log) ---"
     [ -f /tmp/awg_daemon.log ] && sed 's/^/  /' /tmp/awg_daemon.log || echo "  (none)"
     echo "  last daemon exit (this launch): $(cat /tmp/awg_daemon.rc 2>/dev/null || echo '(none — daemon still running or never exited)')"
+    echo "  Go runtime cap (computed now): GOMEMLIMIT=$(compute_go_memlimit) GOGC=$AWG_GOGC"
+    grep -qiF 'out of memory' /tmp/awg_daemon.log 2>/dev/null && \
+        echo "  >>> last daemon exit was a Go runtime OUT-OF-MEMORY: heap hit the ceiling under load (box low on RAM for this throughput) <<<"
     echo "--- runtime / network / TUN ---"
     echo "memory (free):"; free 2>/dev/null | sed 's/^/  /'
     echo "amneziawg-go running : $(pidof amneziawg-go 2>/dev/null || echo no)"
@@ -2762,6 +2765,47 @@ arm_lan_deadman(){
     ) </dev/null >/dev/null 2>&1 &
 }
 
+# GOGC for the daemon: lower than Go's default 100, so the heap is collected after +50%
+# growth rather than +100% — a smaller sawtooth leaves more absolute headroom before a
+# burst can outrun the collector on a RAM-starved box. Paired with GOMEMLIMIT below.
+AWG_GOGC=50
+# Percentage of the RAM free AT LAUNCH to hand the Go runtime as its soft memory ceiling.
+AWG_GOMEMLIMIT_PCT=55
+
+# Compute a GOMEMLIMIT for amneziawg-go from the RAM free right now (/proc/meminfo
+# MemAvailable, falling back to MemFree on pre-3.14 kernels like the RT-AC68U's 2.6.36),
+# as an integer MiB clamped to [64, 448]. Empty output (parse failure) => launch_daemon
+# leaves the env unset and behaviour is exactly as before.
+#
+# WHY THIS EXISTS: amneziawg-go inherits wireguard-go's message-buffer pool, which is
+# UNBOUNDED (`const PreallocatedBuffersPerPool = 0` — literally "allow infinite memory
+# growth"). Under a heavy INBOUND burst the receive routine pulls 64KB buffers from that
+# pool faster than they drain; with Go's default GOGC=100 the live heap is allowed to
+# DOUBLE before a GC runs, so on a 32-bit low-RAM router the kernel refuses to commit the
+# next heap-arena page and the runtime aborts the WHOLE daemon with
+# `fatal error: runtime: out of memory` (rc=2). The watchdog then restarts it — so the
+# tunnel "collapses whenever the load gets serious" while light traffic (a chat app)
+# never trips it. Field: RT-AX82U, 512MB, the daemon OOM-died 91 min in under streaming
+# and crash-looped all day (v1.2.45 diag). NB this is a GENUINE daemon OOM printed by the
+# Go runtime — NOT the 1.2.42 dangling-dnsmasq-conf LAN brick (a different box/symptom).
+#
+# GOMEMLIMIT is a SOFT limit: it makes the GC run hard as the heap nears the ceiling,
+# reclaiming the pool's idle buffers (they are ordinary GC-collectable garbage), which
+# caps the peak below what the box can give. If the genuine live set ever needs more, the
+# runtime EXCEEDS the limit (Go bounds GC at 50% CPU, no death-spiral) instead of
+# deadlocking — so it is never worse than the unbounded status quo, only safer. Supported
+# on the legacy Go-1.23 daemon too (GOMEMLIMIT landed in Go 1.19).
+compute_go_memlimit(){
+    _avail_kb=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+    [ -z "$_avail_kb" ] && _avail_kb=$(awk '/^MemFree:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+    case "$_avail_kb" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$_avail_kb" -le 0 ] && return 0
+    _lim_mib=$(( _avail_kb * AWG_GOMEMLIMIT_PCT / 100 / 1024 ))
+    [ "$_lim_mib" -lt 64 ]  && _lim_mib=64
+    [ "$_lim_mib" -gt 448 ] && _lim_mib=448
+    printf '%dMiB' "$_lim_mib"
+}
+
 # Launch amneziawg-go detached, stdout+stderr into /tmp/awg_daemon.log and — critically — its
 # EXIT STATUS appended as a final "[daemon exited rc=N]" line. A daemon that dies WITHOUT
 # printing anything (SIGILL/SIGSEGV, or a Go runtime that just aborts on an unsupported ancient
@@ -2775,6 +2819,12 @@ launch_daemon(){
     # a later create-failure would then misreport a stale rc for a daemon that actually hung.
     # The log line stays for humans; code reads the rc file.
     rm -f /tmp/awg_daemon.rc 2>/dev/null
+    # Soft heap ceiling for the Go runtime (see compute_go_memlimit): caps the unbounded
+    # message-buffer pool so a heavy inbound burst can't drive the daemon into
+    # `fatal error: runtime: out of memory` and crash-loop the tunnel on a low-RAM box.
+    # Exported INSIDE the subshell (not as a literal prefix) so it never leaks to the
+    # parent and so an empty value simply leaves the env untouched.
+    _glim=$(compute_go_memlimit)
     # WG_PROCESS_FOREGROUND=1: without it amneziawg-go DAEMONIZES — the process we launch is
     # only a short-lived parent that forks the real daemon and exits 0 once the device is up.
     # The wrapper then recorded THAT exit ("[daemon exited rc=0]" on every successful start —
@@ -2784,15 +2834,40 @@ launch_daemon(){
     # NB: an expanded word is never parsed as an assignment prefix, so the env vars are set via
     # literal prefixes in explicit branches (not `${1:+LOG_LEVEL=$1} cmd`).
     if [ -n "$1" ]; then
-        ( WG_PROCESS_FOREGROUND=1 LOG_LEVEL="$1" "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
+        ( [ -n "$_glim" ] && export GOMEMLIMIT="$_glim" GOGC="$AWG_GOGC"
+          WG_PROCESS_FOREGROUND=1 LOG_LEVEL="$1" "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
           _rc=$?
           echo "rc=$_rc at $(date '+%H:%M:%S')" > /tmp/awg_daemon.rc
-          echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log ) &
+          echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log
+          record_daemon_oom "$_rc" "$_glim" ) &
     else
-        ( WG_PROCESS_FOREGROUND=1 "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
+        ( [ -n "$_glim" ] && export GOMEMLIMIT="$_glim" GOGC="$AWG_GOGC"
+          WG_PROCESS_FOREGROUND=1 "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
           _rc=$?
           echo "rc=$_rc at $(date '+%H:%M:%S')" > /tmp/awg_daemon.rc
-          echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log ) &
+          echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log
+          record_daemon_oom "$_rc" "$_glim" ) &
+    fi
+}
+
+# Called from the launch wrapper after the daemon exits: if it aborted with a Go-runtime
+# out-of-memory (heavy-load heap blowout), drop a persistent breadcrumb so the cause is
+# still visible in the diag after the watchdog restarts it and after a reboot (RAM logs
+# don't survive). Gated on the exact `out of memory` string, which ONLY the Go runtime's
+# fatal-OOM prints — an intentional kill (SIGTERM/SIGKILL on stop/restart) never matches,
+# so this can't false-fire on a normal teardown.
+record_daemon_oom(){
+    if grep -qiF 'out of memory' /tmp/awg_daemon.log 2>/dev/null; then
+        # The Go runtime's OWN fatal-OOM (heap-commit refused). rc is typically 2.
+        awg_incident "amneziawg-go OOM-crashed (rc=${1:-?}) — Go heap hit its ceiling under load (GOMEMLIMIT=${2:-unset}); box is low on RAM for this throughput"
+    elif [ "${1:-}" = 137 ] && dmesg 2>/dev/null | grep -iE 'killed process|out of memory' | grep -qi 'amneziawg-go'; then
+        # rc=137 = 128+SIGKILL. That's ALSO how do_stop/do_start's `kill -9` fallback exits
+        # the daemon, so rc alone must NOT be trusted — only record when the kernel log shows
+        # the OOM-KILLER named amneziawg-go (a box-wide-pressure kill, a DIFFERENT OOM than the
+        # Go-runtime one above and invisible in the daemon's own log). Without that corroboration
+        # a plain forced teardown would false-flag an incident. This catches the failure mode
+        # GOMEMLIMIT can shift residual crashes toward (per-daemon cap holds, box still starves).
+        awg_incident "amneziawg-go killed by the KERNEL oom-killer (rc=137) under box-wide memory pressure — not a Go-runtime OOM; free RAM / reduce co-resident load (GOMEMLIMIT=${2:-unset})"
     fi
 }
 
@@ -2916,6 +2991,7 @@ do_start(){
     # install is visible in the log without running 'diag' separately.
     log_msg "Platform $(uname -m): amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")"
     log_msg "ipset binary: ${AWG_IPSET_BIN:-NONE (no working ipset found — geo will be disabled)}${AWG_IPSET_LIB:+ (LD_LIBRARY_PATH=$AWG_IPSET_LIB)}"
+    log_msg "Go runtime cap: GOMEMLIMIT=$(compute_go_memlimit) GOGC=$AWG_GOGC (bounds heap growth under load — prevents daemon OOM on low-RAM boxes)"
     launch_daemon
     if ! wait_for_iface "$IFACE" 10; then
         # Name the failure mode from the captured exit status: a SILENT death (banner only, no
@@ -2927,7 +3003,11 @@ do_start(){
             "")  log_msg "  daemon is still running but $IFACE never appeared after 10s (hung in TUN create?)" ;;
             132) log_msg "  daemon exited rc=132 (SIGILL — this CPU can't run this build)" ;;
             139) log_msg "  daemon exited rc=139 (SIGSEGV — daemon crashed; on kernels older than 3.2 (e.g. RT-AC68U 2.6.36) the Go runtime is unsupported and dies like this)" ;;
-            *)   log_msg "  daemon exited rc=$drc" ;;
+            *)   if grep -qiF 'out of memory' /tmp/awg_daemon.log 2>/dev/null; then
+                     log_msg "  daemon exited rc=$drc (Go runtime OUT OF MEMORY — box too low on RAM even with GOMEMLIMIT=$(compute_go_memlimit); free some memory or reduce load)"
+                 else
+                     log_msg "  daemon exited rc=$drc"
+                 fi ;;
         esac
         dgist=$(daemon_log_gist 6 | tr '\n' '|')
         [ -n "$dgist" ] && log_msg "  daemon said: $dgist"
@@ -4100,6 +4180,32 @@ check_update(){
 finalize_ipk_install(){
     local tmp="$1" label="$2"
 
+    # Resolve a RUNNABLE opkg BEFORE we touch anything. opkg is an Entware-only binary in
+    # /opt/bin; when the coreutils self-test failed (AWG_PATH_SANE=0) PATH was forced to
+    # firmware-only, so /opt is off PATH and a bare `opkg` is "not found" (rc 127). THIS is
+    # why "update via the web UI fails but SSH works": the httpd context inherits a poisoned
+    # LD_LIBRARY_PATH that segfaults Entware grep/sed/awk (cured by the `unset` at the top of
+    # this script since 1.2.46), an interactive SSH login doesn't — so over SSH the self-test
+    # passes, /opt stays on PATH, and opkg runs. Resolve an absolute path (works even with
+    # /opt off PATH) and, if opkg genuinely can't run, bail HERE — before stopping the VPN or
+    # moving geo — so a doomed update never tears down a working tunnel for 60s+ then fails.
+    local opkg_bin
+    opkg_bin=$(which opkg 2>/dev/null)
+    [ -x "$opkg_bin" ] || opkg_bin=/opt/bin/opkg
+    [ -x "$opkg_bin" ] || opkg_bin=/opt/sbin/opkg
+    if [ ! -x "$opkg_bin" ]; then
+        log_msg "Update: ERROR opkg is not available in this context — cannot install (nothing changed; VPN left running)."
+        if [ "$AWG_PATH_SANE" = 0 ]; then
+            log_msg "  Cause: Entware coreutils failed the self-test, so /opt is off PATH (opkg lives in /opt/bin)."
+            log_msg "  This is the httpd LD_LIBRARY_PATH quirk fixed in 1.2.46+ — that is why the web-UI update fails while SSH works."
+        else
+            log_msg "  Is the Entware USB mounted? (/opt/bin/opkg missing)."
+        fi
+        log_msg "  Update once over SSH to break the loop: curl -sfL https://raw.githubusercontent.com/william-aqn/asuswrt-merlin-amneziawg/main/install-online.sh | sh"
+        rm -f "$tmp"
+        update_status; return 1
+    fi
+
     # Preserve geo lists across the upgrade unless "wipe before update" is on. The
     # package prerm runs 'rm -rf /opt/amneziawg', so move geo to a sibling dir (same
     # filesystem = instant rename, no extra space) that survives, and restore it after.
@@ -4124,8 +4230,14 @@ finalize_ipk_install(){
     # install looked successful but left the old version in place. The UI version picker
     # (awg_update_version) and manual .ipk upload both legitimately request a specific
     # (possibly older) version, so force it. For upgrades/reinstalls the flag is a no-op.
-    if ! opkg install --force-downgrade "$tmp" && ! opkg install --force-downgrade --force-architecture "$tmp"; then
+    local _oout
+    if ! _oout=$("$opkg_bin" install --force-downgrade "$tmp" 2>&1) \
+       && ! _oout=$("$opkg_bin" install --force-downgrade --force-architecture "$tmp" 2>&1); then
         log_msg "Update: ERROR opkg install failed — staying on v$AWG_VERSION"
+        # Capture opkg's OWN output — a bare exit code hid the real reason (opkg not found,
+        # a dependency error, a segfaulting maintainer script, a failing USB) and cost a
+        # tester a debugging session. Collapse to one line, cap length for the log.
+        [ -n "$_oout" ] && log_msg "  opkg: $(echo "$_oout" | tr '\n' '|' | cut -c1-400)"
         rm -f "$tmp" /tmp/.awg_no_autostart
         if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
         update_status; return 1
@@ -4140,7 +4252,7 @@ finalize_ipk_install(){
     if [ ! -s "$AWG_GO" ] || [ ! -s "$AWG_BIN" ]; then
         log_msg "Update: WARNING binaries 0-byte/missing after install (amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")) — retrying once with --force-reinstall"
         local _reout
-        _reout=$(opkg install --force-reinstall --force-downgrade "$tmp" 2>&1)
+        _reout=$("$opkg_bin" install --force-reinstall --force-downgrade "$tmp" 2>&1)
         [ -n "$_reout" ] && log_msg "  opkg: $(echo "$_reout" | tr '\n' '|')"
         if [ ! -s "$AWG_GO" ] || [ ! -s "$AWG_BIN" ]; then
             log_msg "Update: ERROR install left binaries truncated (amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")) — likely an interrupted write on a low-RAM box or a failing USB drive."
