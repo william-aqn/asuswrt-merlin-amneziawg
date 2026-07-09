@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.45"
+AWG_VERSION="1.2.46"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -65,26 +65,56 @@ GEOLOCK="/tmp/.awg_geolock"   # long-running background geo-download mutex (sepa
 V2FLY_GEOIP_BASE="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text"
 GEOIP_SERVICES="telegram google facebook twitter netflix cloudflare fastly cloudfront"
 
+# ROOT-CAUSE FIX for "Entware coreutils broken" false alarms: the firmware's httpd exports
+# LD_LIBRARY_PATH=/lib:/usr/lib and EVERY child inherits it (httpd → service-event → this script
+# → /opt/bin/*). Recent Entware binaries bake /opt/lib into DT_RUNPATH, which the dynamic loader
+# searches AFTER LD_LIBRARY_PATH — so the firmware's incompatible glibc (/usr/lib/libc.so.6) is
+# loaded ahead of Entware's own /opt/lib/libc, and grep/sed/awk (and the Entware ipset — same
+# mechanism) SIGSEGV / fail to link the instant they start. From an interactive SSH login the var
+# isn't poisoned, so the same binary works there — the "crashes from the addon, fine over SSH"
+# signature two TUF-AX3000_V2 users hit (both reformatted USBs for nothing). Our own static
+# awg/amneziawg-go are immune (no ELF interpreter, no libc.so lookup). Clearing the inherited
+# value lets Entware's own RUNPATH win; firmware binaries default-search /lib:/usr/lib so they're
+# unaffected. Keep the original for diag. (This must precede the PATH export + self-test below.)
+AWG_ORIG_LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+unset LD_LIBRARY_PATH
+
 # Ensure Entware binaries are in PATH (not set when called from httpd/service-event)
 export PATH="/opt/bin:/opt/sbin:/sbin:/usr/sbin:$PATH"
 
 # Coreutils sanity: Entware installs GNU grep/sed/awk into /opt/bin, which SHADOWS the firmware's
-# busybox applets (opt is first in PATH) — and a dying USB stick / corrupted Entware then breaks
-# every guard in this script SILENTLY (field case: segfaulting /opt grep made the br0-IP check
-# "fail", skipped the dnsmasq include strip → dangling conf-file → dnsmasq fatal → LAN without
-# DNS/DHCP). Probe the three; if ANY is broken, fall back to the firmware-only PATH (busybox
-# lives in squashfs — it can't be corrupted by a bad USB) and say so once per boot. Entware-only
-# tools (opkg) become unavailable for this run — on a box in this state that's the lesser evil.
+# busybox applets (opt is first in PATH). With the LD_LIBRARY_PATH poisoning cleared above they
+# normally work now; but a genuinely dying USB / corrupted or wrong-arch Entware can still break
+# them SILENTLY (field case: a segfaulting /opt grep made the br0-IP check "fail", skipped the
+# dnsmasq include strip → dangling conf-file → dnsmasq fatal → LAN without DNS/DHCP). So keep the
+# guard: probe the three; if ANY is broken, fall back to the firmware-only PATH (busybox lives in
+# squashfs — it can't be corrupted by a bad USB). CACHE the verdict per boot in /tmp so the
+# possibly-crashing probe runs at most ONCE per boot, not on every invocation — the per-minute
+# status cron re-running a segfaulting /opt grep logged a kernel oops every 60s on affected boxes.
 AWG_PATH_SANE=1
-if [ "$(echo probe 2>/dev/null | grep -c probe 2>/dev/null)" != "1" ] \
-   || [ "$(echo probe 2>/dev/null | sed -n 's/probe/ok/p' 2>/dev/null)" != "ok" ] \
-   || [ "$(echo probe 2>/dev/null | awk '{print "ok"}' 2>/dev/null)" != "ok" ]; then
-    AWG_PATH_SANE=0
+AWG_PATH_SANE_CACHE=/tmp/.awg_path_sane
+if [ -f "$AWG_PATH_SANE_CACHE" ]; then
+    # Cached 0/1 from this boot's first invocation. Read with the `read`/`[` ash builtins (never
+    # shadowed by /opt), so the hot path NEVER re-runs the probe. Garbage → assume sane (1).
+    read AWG_PATH_SANE < "$AWG_PATH_SANE_CACHE" 2>/dev/null
+    [ "$AWG_PATH_SANE" = 0 ] || [ "$AWG_PATH_SANE" = 1 ] || AWG_PATH_SANE=1
+else
+    # First invocation this boot: pay the probe cost ONCE (the only place /opt coreutils can crash).
+    if [ "$(echo probe 2>/dev/null | grep -c probe 2>/dev/null)" != "1" ] \
+       || [ "$(echo probe 2>/dev/null | sed -n 's/probe/ok/p' 2>/dev/null)" != "ok" ] \
+       || [ "$(echo probe 2>/dev/null | awk '{print "ok"}' 2>/dev/null)" != "ok" ]; then
+        AWG_PATH_SANE=0
+    fi
+    echo "$AWG_PATH_SANE" > "$AWG_PATH_SANE_CACHE" 2>/dev/null
+fi
+if [ "$AWG_PATH_SANE" = 0 ]; then
+    # Fall back to firmware-only PATH. Runs on EVERY invocation (PATH is per-process), cache-hit or
+    # not. Entware-only tools (opkg) become unavailable for this run — the lesser evil here.
     export PATH="/bin:/usr/bin:/sbin:/usr/sbin"
     if [ ! -f /tmp/.awg_path_warned ]; then
         touch /tmp/.awg_path_warned
-        logger -t "amneziawg" "WARNING: grep/sed/awk from Entware (/opt) are BROKEN (corrupted USB/Entware install?) — falling back to firmware busybox for this run. Check the USB drive / reinstall Entware."
-        echo "$(date '+%Y-%m-%d %H:%M:%S') WARNING: Entware coreutils broken (grep/sed/awk) — using firmware busybox; check USB / reinstall Entware" >> "$UI_LOG" 2>/dev/null
+        logger -t "amneziawg" "NOTICE: Entware /opt grep/sed/awk failed the self-test — using firmware busybox for this boot. The addon works FULLY this way. This is often just a library-path/env quirk, NOT necessarily a bad USB; if '/opt/bin/grep --version' works from an SSH shell, ignore it. Suspect the USB/Entware install only if it ALSO crashes in SSH. Run diag for a detailed probe."
+        echo "$(date '+%Y-%m-%d %H:%M:%S') NOTICE: Entware /opt grep/sed/awk failed self-test — using firmware busybox (addon works fully; often a lib-path/env quirk, not necessarily a bad USB). If '/opt/bin/grep --version' works over SSH, ignore. See diag." >> "$UI_LOG" 2>/dev/null
     fi
 fi
 
@@ -2564,7 +2594,8 @@ do_diag(){
     echo "--- shell / coreutils sanity ---"
     # A corrupted Entware (dying USB) shadows busybox grep/sed/awk with segfaulting binaries and
     # silently breaks every guard in this script — this section makes that visible in one look.
-    echo "entware coreutils    : $([ "$AWG_PATH_SANE" = 0 ] && echo 'BROKEN — /opt grep/sed/awk failed self-test, firmware busybox in use (CHECK USB / REINSTALL ENTWARE)' || echo 'OK')"
+    echo "entware coreutils    : $([ "$AWG_PATH_SANE" = 0 ] && echo 'firmware busybox in use — /opt grep/sed/awk failed the addon self-test. The addon works FULLY this way; often just a lib-path/env quirk in the addon minimal env, NOT necessarily a bad USB. If /opt/bin/grep --version works over SSH, ignore it; suspect the Entware install/USB only if it also crashes in SSH. See the /opt/bin/grep probe below.' || echo 'OK')"
+    echo "inherited LD_LIBRARY_PATH (httpd) : ${AWG_ORIG_LD_LIBRARY_PATH:-(empty — good)}"
     echo "PATH                 : $PATH"
     for _t in grep sed awk sort md5sum curl; do
         echo "  which $_t : $(which "$_t" 2>/dev/null || echo '(not found)')"
@@ -2572,6 +2603,17 @@ do_diag(){
     echo "  grep functional : $([ "$(echo probe 2>/dev/null | grep -c probe 2>/dev/null)" = "1" ] && echo yes || echo 'NO (segfault/broken!)')"
     echo "  sed functional  : $([ "$(echo probe 2>/dev/null | sed -n 's/probe/ok/p' 2>/dev/null)" = "ok" ] && echo yes || echo 'NO (broken!)')"
     echo "  awk functional  : $([ "$(echo probe 2>/dev/null | awk '{print "ok"}' 2>/dev/null)" = "ok" ] && echo yes || echo 'NO (broken!)')"
+    # When the /opt coreutils failed the self-test, pin down WHY (diag runs on demand, so a
+    # deliberate re-run of the possibly-crashing /opt/bin/grep is acceptable and itself telling):
+    #   (a) default env works                  -> no real problem (the LD_LIBRARY_PATH unset fixed it)
+    #   (b) only with LD_LIBRARY_PATH=/opt/lib  -> library-path quirk (NOT a bad USB)
+    #   (c) only with /opt/etc/profile sourced  -> broader env quirk
+    #   (none work / "Segmentation fault")      -> genuinely broken -> then check USB / reinstall
+    if [ "$AWG_PATH_SANE" = 0 ] && [ -x /opt/bin/grep ]; then
+        echo "  /opt/bin/grep (a) default env               : $(echo probe 2>/dev/null | /opt/bin/grep -c probe 2>&1 | head -1)   (expect 1)"
+        echo "  /opt/bin/grep (b) +LD_LIBRARY_PATH=/opt/lib  : $(LD_LIBRARY_PATH=/opt/lib /opt/bin/grep --version 2>&1 | head -1)"
+        echo "  /opt/bin/grep (c) +/opt/etc/profile sourced : $( ( . /opt/etc/profile >/dev/null 2>&1; echo probe | /opt/bin/grep -c probe ) 2>&1 | head -1 )   (expect 1)"
+    fi
     echo "--- live probes (which binary raises Illegal instruction?) ---"
     probe_bin "amneziawg-go --version" "$AWG_GO" --version
     probe_bin "awg (usage)"            "$AWG_BIN"
