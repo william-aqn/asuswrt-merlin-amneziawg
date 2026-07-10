@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.47"
+AWG_VERSION="1.2.48"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2769,39 +2769,49 @@ arm_lan_deadman(){
 # growth rather than +100% — a smaller sawtooth leaves more absolute headroom before a
 # burst can outrun the collector on a RAM-starved box. Paired with GOMEMLIMIT below.
 AWG_GOGC=50
-# Percentage of the RAM free AT LAUNCH to hand the Go runtime as its soft memory ceiling.
-AWG_GOMEMLIMIT_PCT=55
+# The soft heap ceiling is the LARGER of two bases (see compute_go_memlimit): a STABLE
+# fraction of TOTAL RAM, and a fraction of what's AVAILABLE right now. Taking the max means
+# a transiently-starved launch window can't depress it below the daemon's own working set.
+AWG_GOMEMLIMIT_TOTAL_PCT=38   # stable floor from MemTotal (survives churn)
+AWG_GOMEMLIMIT_AVAIL_PCT=60   # opportunistic ceiling from MemAvailable when the box is roomy
 
-# Compute a GOMEMLIMIT for amneziawg-go from the RAM free right now (/proc/meminfo
-# MemAvailable, falling back to MemFree on pre-3.14 kernels like the RT-AC68U's 2.6.36),
-# as an integer MiB clamped to [64, 448]. Empty output (parse failure) => launch_daemon
-# leaves the env unset and behaviour is exactly as before.
+# Compute a GOMEMLIMIT for amneziawg-go as an integer MiB clamped to [96, 448].
+# Empty output (parse failure) => launch_daemon leaves the env unset (behaviour as before).
 #
 # WHY THIS EXISTS: amneziawg-go inherits wireguard-go's message-buffer pool, which is
 # UNBOUNDED (`const PreallocatedBuffersPerPool = 0` — literally "allow infinite memory
-# growth"). Under a heavy INBOUND burst the receive routine pulls 64KB buffers from that
-# pool faster than they drain; with Go's default GOGC=100 the live heap is allowed to
-# DOUBLE before a GC runs, so on a 32-bit low-RAM router the kernel refuses to commit the
-# next heap-arena page and the runtime aborts the WHOLE daemon with
-# `fatal error: runtime: out of memory` (rc=2). The watchdog then restarts it — so the
-# tunnel "collapses whenever the load gets serious" while light traffic (a chat app)
-# never trips it. Field: RT-AX82U, 512MB, the daemon OOM-died 91 min in under streaming
-# and crash-looped all day (v1.2.45 diag). NB this is a GENUINE daemon OOM printed by the
-# Go runtime — NOT the 1.2.42 dangling-dnsmasq-conf LAN brick (a different box/symptom).
+# growth"), buffers are 64KB (`MaxSegmentSize`), and the inbound/outbound queues are 1024
+# deep. Under heavy traffic the receive routine pulls 64KB buffers faster than the (slow,
+# software-crypto) consumer drains them; with Go's default GOGC=100 the heap is allowed to
+# DOUBLE before a GC, so on a 32-bit low-RAM router the kernel refuses the next heap-arena
+# page and the runtime aborts the WHOLE daemon with `fatal error: runtime: out of memory`
+# (rc=2); the watchdog then crash-loops it — the tunnel "collapses under serious load"
+# while a chat app never trips it. Field: RT-AX82U, 512MB (v1.2.45/1.2.47 diags). NB a
+# GENUINE Go-runtime OOM — NOT the 1.2.42 dangling-dnsmasq-conf LAN brick.
 #
-# GOMEMLIMIT is a SOFT limit: it makes the GC run hard as the heap nears the ceiling,
-# reclaiming the pool's idle buffers (they are ordinary GC-collectable garbage), which
-# caps the peak below what the box can give. If the genuine live set ever needs more, the
-# runtime EXCEEDS the limit (Go bounds GC at 50% CPU, no death-spiral) instead of
-# deadlocking — so it is never worse than the unbounded status quo, only safer. Supported
-# on the legacy Go-1.23 daemon too (GOMEMLIMIT landed in Go 1.19).
+# GOMEMLIMIT is a SOFT limit and only reclaims the pool's IDLE buffers (ordinary GC garbage).
+# It CANNOT reclaim buffers still queued in the 1024-deep inbound path — so on a box whose
+# genuine live working set under load exceeds the ceiling, it reduces crash frequency but is
+# not a full cure; the real cure is bounding the daemon's buffers (a rebuild — see the
+# release.yml queueconstants patch discussion). It still degrades gracefully (Go bounds GC
+# at 50% CPU, no death-spiral) and is never worse than the unbounded status quo. Works on the
+# legacy Go-1.23 daemon too (GOMEMLIMIT landed in Go 1.19).
+#
+# EARLIER BUG (1.2.47): the ceiling was 55% of MemAvailable *at launch only*. A daemon that
+# (re)started during post-update churn — geo re-download + repeated dnsmasq reloads — read a
+# transiently low MemAvailable and got a 110MiB ceiling BELOW its own working set, guaranteeing
+# the OOM. Now the MemTotal floor keeps it stable across such windows.
 compute_go_memlimit(){
+    _total_kb=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
     _avail_kb=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
     [ -z "$_avail_kb" ] && _avail_kb=$(awk '/^MemFree:/{print $2; exit}' /proc/meminfo 2>/dev/null)
-    case "$_avail_kb" in ''|*[!0-9]*) return 0 ;; esac
-    [ "$_avail_kb" -le 0 ] && return 0
-    _lim_mib=$(( _avail_kb * AWG_GOMEMLIMIT_PCT / 100 / 1024 ))
-    [ "$_lim_mib" -lt 64 ]  && _lim_mib=64
+    # Take the LARGER of the stable MemTotal-based floor and the opportunistic MemAvailable
+    # ceiling, so a transiently-starved launch (post-update churn) can't set it too low.
+    _lim_mib=0
+    case "$_total_kb" in ''|*[!0-9]*) : ;; *) _t=$(( _total_kb * AWG_GOMEMLIMIT_TOTAL_PCT / 100 / 1024 )); [ "$_t" -gt "$_lim_mib" ] && _lim_mib=$_t ;; esac
+    case "$_avail_kb" in ''|*[!0-9]*) : ;; *) _a=$(( _avail_kb * AWG_GOMEMLIMIT_AVAIL_PCT / 100 / 1024 )); [ "$_a" -gt "$_lim_mib" ] && _lim_mib=$_a ;; esac
+    [ "$_lim_mib" -le 0 ] && return 0
+    [ "$_lim_mib" -lt 96 ]  && _lim_mib=96
     [ "$_lim_mib" -gt 448 ] && _lim_mib=448
     printf '%dMiB' "$_lim_mib"
 }
