@@ -4045,6 +4045,26 @@ do_watchdog(){
     # A watchdog that silently never runs is indistinguishable from a healthy one otherwise.
     date '+%Y-%m-%d %H:%M:%S' > /tmp/.awg_wd_beat 2>/dev/null
 
+    # An update in progress deliberately stops the VPN (finalize_ipk_install: stop → wait →
+    # opkg remove+install → restart). The watchdog must NOT self-heal into that window — a tick
+    # here would see awg0 missing and race a VPN restart against the installer (field-reported:
+    # "auto-update kills the connection, the watchdog brings the service back up, THEN it gets
+    # removed and reinstalled"). The same flag that blocks do_start's opkg-triggered S99 auto-
+    # start gates us; finalize_ipk_install now sets it BEFORE its first teardown and clears it on
+    # every exit path, so this covers the whole update, not just the opkg step.
+    # Stale-flag guard: since the watchdog is the SELF-HEAL safety net, a flag leaked by an
+    # updater that died mid-flight (crash / power-cut) must not disable it forever. The flag is
+    # normally held only a few minutes (stop→opkg→install); older than 15 min ⇒ the updater is
+    # gone — reclaim it (like a stale lock) and proceed. NB the long post-install geo re-download
+    # runs AFTER the flag is cleared, so a slow box can't legitimately hold it that long.
+    if [ -f /tmp/.awg_no_autostart ]; then
+        if [ -z "$(find /tmp/.awg_no_autostart -mmin +15 2>/dev/null)" ]; then
+            return 0   # fresh flag — a genuine update is in progress; stand down
+        fi
+        log_msg "WATCHDOG: stale update flag (>15 min) — updater likely died mid-flight; reclaiming"
+        rm -f /tmp/.awg_no_autostart
+    fi
+
     # Skip if another operation is mid-flight — but only if its holder is ALIVE. A leaked lock
     # (a process killed between acquire and release) used to silence the watchdog FOREVER
     # (every tick returned here), which is precisely when self-heal matters most. acquire_lock
@@ -4246,6 +4266,15 @@ finalize_ipk_install(){
         update_status; return 1
     fi
 
+    # COMMIT POINT: from here we WILL stop the VPN and run opkg. Block auto-start NOW — before
+    # the first teardown — so the watchdog (*/5 cron) can't catch the stopped awg0 and race a
+    # restart against the installer (do_watchdog early-returns on this flag; do_start blocks the
+    # opkg-triggered S99 on it too). Previously this was set only just before opkg, leaving a
+    # do_stop→(up to 60s dnsreload wait)→touch window in which the watchdog DID restart the VPN
+    # mid-update. Every error/success path below clears it. (The opkg-not-found bail above is
+    # BEFORE this point — it leaves the VPN running, so no flag to clear there.)
+    touch /tmp/.awg_no_autostart
+
     # Preserve geo lists across the upgrade unless "wipe before update" is on. The
     # package prerm runs 'rm -rf /opt/amneziawg', so move geo to a sibling dir (same
     # filesystem = instant rename, no extra space) that survives, and restore it after.
@@ -4262,8 +4291,6 @@ finalize_ipk_install(){
     # off its OWN teardown + reload). Two concurrent `service restart_dnsmasq` storms during a
     # memory-pressured opkg can OOM/blackout the LAN on a low-RAM box (RT-AC68U, 256MB).
     _i=0; while [ -d /tmp/.awg_dnsreload ] && [ $_i -lt 60 ]; do sleep 1; _i=$((_i + 1)); done
-    # Block auto-start during opkg install (S99amneziawg is triggered by opkg)
-    touch /tmp/.awg_no_autostart
     log_msg "Update: installing package via opkg"
     # --force-downgrade: opkg refuses to install an older version by default and, worse,
     # exits 0 while doing nothing ("Not downgrading package ... from X to Y") — so the
