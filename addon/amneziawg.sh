@@ -1462,17 +1462,47 @@ cleanup_dns_interception(){
     rm -f /tmp/.awg_dns_ip 2>/dev/null
 }
 
+# --- ip rule idempotency ---
+# `ip rule add` has NO idempotent form (no -C/replace like iptables), so any code path that
+# (re)applies our policy rules without a preceding full teardown stacks DUPLICATES. Field-
+# seen after an OOM→watchdog restart loop: prio 97/98/99/100 each doubled — because
+# setup_firewall runs a SECOND pass once geo finishes downloading (pass 1 has 0 domains) and
+# that pass re-adds every `ip rule` on top of pass 1's. Duplicates are harmless to routing
+# (identical rules) but confuse diagnosis and grow unbounded across restarts. Our rules live
+# at fixed priorities 97-100.
+
+# Drain EVERY copy of our policy ip rules — used by cleanup_firewall for a complete teardown
+# (also removes rules orphaned by a since-removed client). Bounded loops: `ip rule del`
+# removes ONE copy per call. Priority-scoped to our documented 97-100 range.
+drain_ip_rules(){
+    local _pr _i
+    for _pr in 97 98 99 100; do
+        _i=0; while [ $_i -lt 100 ] && ip rule del prio "$_pr" 2>/dev/null; do _i=$((_i+1)); done
+    done
+    # Fallbacks for a rule that somehow lost its priority tag.
+    _i=0; while [ $_i -lt 100 ] && ip rule del lookup $RT_TABLE 2>/dev/null; do _i=$((_i+1)); done
+    _i=0; while [ $_i -lt 100 ] && ip rule del fwmark "$FWMARK" 2>/dev/null; do _i=$((_i+1)); done
+}
+
+# Idempotent single-rule add: drain every existing copy of THIS exact rule, then add exactly
+# one. Used at the setup_firewall add sites so a second setup pass can't duplicate — and,
+# unlike draining everything up-front, each rule is absent only for the microseconds between
+# its own drain and re-add, so a live re-apply never opens a policy-routing gap across the
+# whole rebuild. $@ = the spec after `ip rule` (e.g. `from 1.2.3.4 lookup main prio 97`).
+ip_rule_replace(){
+    local _i=0
+    while [ $_i -lt 100 ] && ip rule del "$@" 2>/dev/null; do _i=$((_i+1)); done
+    ip rule add "$@"
+}
+
 cleanup_firewall(){
     # Unhook from PREROUTING, flush and delete custom chain
     iptables -t mangle -D PREROUTING -j "$AWG_CHAIN" 2>/dev/null
     iptables -t mangle -F "$AWG_CHAIN" 2>/dev/null
     iptables -t mangle -X "$AWG_CHAIN" 2>/dev/null
 
-    # Remove all ip rules for our table/fwmark
-    local _i=0; while [ $_i -lt 100 ] && ip rule del lookup $RT_TABLE 2>/dev/null; do _i=$((_i+1)); done
-    _i=0; while [ $_i -lt 100 ] && ip rule del fwmark "$FWMARK" 2>/dev/null; do _i=$((_i+1)); done
-    # Direct-policy rules use "lookup main prio 97" — not matched by the deletes above
-    _i=0; while [ $_i -lt 100 ] && ip rule del prio 97 2>/dev/null; do _i=$((_i+1)); done
+    # Remove every copy of our policy ip rules (prio 97-100 + table/fwmark fallback)
+    drain_ip_rules
 
     # Remove the global :53 DNS-interception rules (DNAT + DoH/DoT REJECTs)
     cleanup_dns_interception
@@ -2054,7 +2084,7 @@ setup_firewall(){
                 if [ -n "$mac" ]; then
                     iptables -t mangle -A "$AWG_CHAIN" -m mac --mac-source "$mac" -j RETURN
                 else
-                    ip rule add from "$dev_id" lookup main prio 97
+                    ip_rule_replace from "$dev_id" lookup main prio 97
                 fi
                 log_msg "Route: $dev_id ($name) -> Direct (excluded)"
             else
@@ -2074,7 +2104,7 @@ setup_firewall(){
                     if [ -n "$mac" ]; then
                         iptables -t mangle -A "$AWG_CHAIN" -m mac --mac-source "$mac" -j MARK --set-mark "$FWMARK"
                     else
-                        ip rule add from "$dev_id" lookup $RT_TABLE prio 99
+                        ip_rule_replace from "$dev_id" lookup $RT_TABLE prio 99
                     fi
                     log_msg "Route: $dev_id ($name) -> VPN (all)"
                     ;;
@@ -2126,7 +2156,7 @@ setup_firewall(){
         iptables -t mangle -A PREROUTING -j "$AWG_CHAIN"
 
     # --- Single fwmark rule for all marked traffic ---
-    ip rule add fwmark "$FWMARK" lookup $RT_TABLE prio 98
+    ip_rule_replace fwmark "$FWMARK" lookup $RT_TABLE prio 98
 
     # --- Force DNS through dnsmasq whenever VPN is active ---
     # The global :53 DNAT + DoH/DoT REJECT is the one piece that collides with a co-resident
@@ -2208,7 +2238,7 @@ setup_firewall(){
     #     setup_firewall directly after cleanup_firewall removed it ---
     local awg_self
     awg_self=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
-    [ -n "$awg_self" ] && ip rule add from "$awg_self" lookup $RT_TABLE prio 100 2>/dev/null
+    [ -n "$awg_self" ] && ip_rule_replace from "$awg_self" lookup $RT_TABLE prio 100
 
     # --- Cron: optional geo auto-update + route self-heal watchdog. The watchdog is
     #     (re)added here so it survives firewall-restart/Apply — cleanup_firewall drops
