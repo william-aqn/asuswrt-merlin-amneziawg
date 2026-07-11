@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.50"
+AWG_VERSION="1.2.51"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -48,6 +48,12 @@ TUNNEL_DNS_FLAG="/tmp/.awg_tunnel_dns"
 OWNED_SETS="/tmp/.awg_owned_sets"   # registry: one geo ipset name per line that WE created (own). Exact-name teardown — NO fragile name-pattern matching — so custom/shared base names (awg_ipset_name with '.', a trailing digit, or a prefix shared with another tool) and renames are all handled safely. /tmp is tmpfs, so it shares the ipsets' reboot-volatile lifecycle.
 SETTINGS="/jffs/addons/custom_settings.txt"
 CLIENTS_FILE="$AWG_DIR/clients.list"
+# Connection uptime & history (page/widget "uptime" + «последние 5 подключений»). Both live in
+# $AWG_DIR (NOT tmpfs) so a session cut by a power-loss/reboot is still closed into history on
+# the next start instead of silently vanishing. Written only on connect/disconnect — flash-safe.
+CONN_CURRENT="$AWG_DIR/conn_current"   # OPEN session marker: "<start_epoch> <start_uptime_s> <boot_id>"
+CONN_HISTORY="$AWG_DIR/conn_history"   # last 5 CLOSED sessions, oldest first: start_epoch|end_epoch|dur_s|reason (dur -1 = unknown)
+CONN_HIST_BAK="${AWG_DIR}_connhist"    # stash surviving the package prerm's rm -rf of $AWG_DIR during updates (sibling path, like the geo backup)
 GEO_DIR="$AWG_DIR/geo"
 IPSET_NAME="awg_dst"
 # ipset capacity. Raised above the old 131072 so antifilter.download lists fit
@@ -2660,6 +2666,9 @@ do_diag(){
     echo "dnsmasq running      : $(pidof dnsmasq 2>/dev/null || echo no)"
     echo "--- persistent incident log (survives reboot; last LAN-critical events) ---"
     if [ -s "$AWG_INCIDENTS" ]; then sed 's/^/  /' "$AWG_INCIDENTS"; else echo "  (none — no auto-rollback / dnsmasq-down / damaged-binary incident recorded)"; fi
+    echo "--- connection history (last 5: start_epoch|end_epoch|dur_s|reason) ---"
+    if [ -s "$CONN_HISTORY" ]; then sed 's/^/  /' "$CONN_HISTORY"; else echo "  (none recorded yet)"; fi
+    [ -f "$CONN_CURRENT" ] && echo "  open session (start_epoch start_uptime_s): $(cat "$CONN_CURRENT" 2>/dev/null)"
     echo "--- self-heal / background state ---"
     echo "awg crons (cru l):"
     _crons=$(cru l 2>/dev/null | grep -i awg)
@@ -2917,6 +2926,91 @@ record_daemon_oom(){
 daemon_log_gist(){
     grep -av '─\|│\|┌\|└\|first class support\|amneziawg-linux-kernel-module' /tmp/awg_daemon.log 2>/dev/null \
         | grep -v '^[[:space:]]*$' | tail -n "${1:-6}"
+}
+
+# --- Connection uptime & history (последние 5 сессий для UI) ---
+# conn_current holds the OPEN session ("<start_epoch> <uptime_s_at_start> <boot_id>");
+# conn_history the closed ones. Duration is measured as a /proc/uptime DELTA (monotonic) so the
+# NTP step at early boot can't skew it — the wall epoch is carried only for display. Reasons are
+# machine tokens (user/restart/rollback/watchdog/update/deadman/reboot/interrupted/auto); the
+# page localizes known ones and shows unknown ones as-is.
+
+# Seconds since boot (integer). Empty output if /proc/uptime is unreadable — callers must treat
+# non-numeric as "unknown" (every arithmetic test below is 2>/dev/null-guarded for that).
+sys_uptime_s(){
+    local _u _r
+    read _u _r < /proc/uptime 2>/dev/null
+    echo "${_u%%.*}"
+}
+
+# Kernel boot id (uuid, regenerated each boot; present on every kernel in the fleet incl.
+# 2.6.36). Empty if unreadable — callers fall back to the uptime-comparison heuristic.
+sys_boot_id(){
+    cat /proc/sys/kernel/random/boot_id 2>/dev/null
+}
+
+# Append one CLOSED session, keeping only the last 5 lines (atomic temp+rename, like the other
+# small state files). Args: start_epoch end_epoch dur_s reason.
+conn_history_append(){
+    local _t="${CONN_HISTORY}.$$"
+    { tail -n 4 "$CONN_HISTORY" 2>/dev/null; echo "$1|$2|$3|$4"; } > "$_t" 2>/dev/null \
+        && mv -f "$_t" "$CONN_HISTORY" 2>/dev/null
+    rm -f "$_t" 2>/dev/null
+}
+
+# Close a session the previous run left OPEN (no clean do_stop ever ran): the box rebooted
+# mid-session (boot id changed — exact; uptime-went-backwards as the fallback signal) or the
+# stop path crashed within the same boot. End time and duration are unknowable — recorded as
+# 0/-1, shown as "—" by the UI. NB: `read a b c` puts the REST of the line into the last var,
+# so every reader takes a trailing slot for the boot id.
+conn_close_stale(){
+    [ -f "$CONN_CURRENT" ] || return 0
+    local _se _su _sb _nu _nb _r="interrupted"
+    read _se _su _sb < "$CONN_CURRENT" 2>/dev/null
+    rm -f "$CONN_CURRENT"
+    case "$_se" in ''|*[!0-9]*) return 0 ;; esac
+    _nu=$(sys_uptime_s)
+    _nb=$(sys_boot_id)
+    if [ -n "$_sb" ] && [ -n "$_nb" ]; then
+        [ "$_sb" != "$_nb" ] && _r="reboot"
+    elif [ -n "$_su" ] && [ -n "$_nu" ] && [ "$_su" -gt "$_nu" ] 2>/dev/null; then
+        _r="reboot"
+    fi
+    conn_history_append "$_se" 0 -1 "$_r"
+}
+
+# Mark the session OPEN — called at the single point in do_start where the tunnel is actually up.
+conn_record_start(){
+    conn_close_stale
+    echo "$(date +%s) $(sys_uptime_s) $(sys_boot_id)" > "$CONN_CURRENT" 2>/dev/null
+}
+
+# Put back the history stashed by finalize_ipk_install across the package prerm's rm -rf of
+# /opt/amneziawg (same idea as the geo backup). Safe no-op when no stash exists; never
+# overwrites a history file that already exists.
+conn_history_restore(){
+    [ -f "$CONN_HIST_BAK" ] || return 0
+    mkdir -p "$AWG_DIR" 2>/dev/null
+    [ -f "$CONN_HISTORY" ] || mv -f "$CONN_HIST_BAK" "$CONN_HISTORY" 2>/dev/null
+    rm -f "$CONN_HIST_BAK" 2>/dev/null
+}
+
+# Close the OPEN session into history. $1 = reason token; anything the page doesn't know is
+# displayed as-is, so new tokens are safe to add. No-op when no session is open (double stop,
+# stop of a tunnel that predates this version).
+conn_record_stop(){
+    [ -f "$CONN_CURRENT" ] || return 0
+    local _se _su _sb _nu _dur
+    read _se _su _sb < "$CONN_CURRENT" 2>/dev/null
+    rm -f "$CONN_CURRENT"
+    case "$_se" in ''|*[!0-9]*) return 0 ;; esac
+    _nu=$(sys_uptime_s)
+    if [ -n "$_su" ] && [ -n "$_nu" ] && [ "$_nu" -ge "$_su" ] 2>/dev/null; then
+        _dur=$((_nu - _su))                     # monotonic — immune to NTP stepping the clock
+    else
+        _dur=$(( $(date +%s) - _se )); [ "$_dur" -ge 0 ] || _dur=-1
+    fi
+    conn_history_append "$_se" "$(date +%s)" "$_dur" "${1:-auto}"
 }
 
 # --- Start ---
@@ -3199,6 +3293,7 @@ do_start(){
     arm_lan_deadman "$(pidof amneziawg-go 2>/dev/null | awk '{print $1}')"
     setup_firewall
 
+    conn_record_start
     log_msg "Started, verifying tunnel connectivity (probing: $(watchdog_hosts))..."
     update_status
     release_lock
@@ -3274,7 +3369,7 @@ do_start(){
             log_msg "  awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer|endpoint' | tr '\n' '|' | sed 's/|$//')"
             awg_incident "health-check rollback: $hc_reason (awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer' | tr '\n' '|' | sed 's/|$//'))"
             xray_redirect_active && log_msg "  HINT: XRAYUI transparent-proxy (TPROXY 'redirect all') is active — it captures the router's egress incl. our handshake; turn off XRAYUI's redirect-all mode or run one VPN at a time"
-            do_stop 2>/dev/null
+            do_stop "" rollback 2>/dev/null
             log_msg "VPN stopped automatically. Check server config and endpoint reachability."
             update_status
         fi
@@ -3285,11 +3380,18 @@ do_start(){
 
 do_stop(){
     local user_stop="$1"   # "user" = deliberate user stop/uninstall; removes the watchdog cron
+    local stop_reason="$2" # connection-history token; empty → derived from $1 (user/auto)
     acquire_lock || { log_msg "Cannot acquire lock, aborting stop"; return 1; }
     rm -f "$STARTING_FLAG"
     do_analyze_stop quiet   # never leave a capture (or its dnsmasq query logging) running past a stop
     # Mark stop-in-progress so the UI shows "Stopping..." even across a page refresh
     touch "$STOPPING_FLAG"
+    # Close the connection-history session first, so the status write below (and everything
+    # after) already shows it. No-op if no session is open.
+    if [ -z "$stop_reason" ]; then
+        [ "$user_stop" = "user" ] && stop_reason="user" || stop_reason="auto"
+    fi
+    conn_record_stop "$stop_reason"
     update_status
 
     # Drain-delete (every copy, not just the first): installs that lived through the old
@@ -3350,7 +3452,7 @@ do_stop(){
 # steady poll, header widget, watchdog) see "stopped" and surface a clickable «Запустить» that
 # raced the restart's own start. do_start re-touches the flag; its EXIT trap clears it at the end.
 do_restart(){
-    do_stop
+    do_stop "" restart
     touch "$STARTING_FLAG"
     update_status
     wait_for_pid_exit amneziawg-go 10
@@ -3426,6 +3528,40 @@ EOF
     # post-start window before the first handshake legitimately reads true).
     local no_handshake=false
     [ "$running" = "true" ] && [ "$peer_hs_max" -eq 0 ] && no_handshake=true
+
+    # Current-session uptime + start epoch for the UI (0 = none: stopped, or the marker predates
+    # this version — it appears on the next start). Uptime is the /proc/uptime delta (monotonic);
+    # wall-clock fallback only if the marker lacks a start-uptime (older/corrupt marker).
+    local conn_start=0 conn_uptime=0 _cse _csu _csb _cnu
+    if [ "$running" = "true" ] && [ -f "$CONN_CURRENT" ]; then
+        read _cse _csu _csb < "$CONN_CURRENT" 2>/dev/null
+        case "$_cse" in
+            ''|*[!0-9]*) ;;
+            *)
+                conn_start=$_cse
+                _cnu=$(sys_uptime_s)
+                if [ -n "$_csu" ] && [ -n "$_cnu" ] && [ "$_cnu" -ge "$_csu" ] 2>/dev/null; then
+                    conn_uptime=$((_cnu - _csu))
+                else
+                    conn_uptime=$(( $(date +%s) - _cse ))
+                    [ "$conn_uptime" -ge 0 ] || conn_uptime=0
+                fi
+            ;;
+        esac
+    fi
+    # Last 5 closed sessions as JSON, newest first. Every numeric field is validated and the
+    # reason token sanitized — a corrupt history line is dropped, never breaks the page's parse.
+    local conn_hist="[]"
+    if [ -f "$CONN_HISTORY" ]; then
+        conn_hist=$(awk -F'|' '
+            NF>=4 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^-?[0-9]+$/ {
+                r=$4; gsub(/[^a-z_]/,"",r)
+                a[++n]="{\"s\":"$1",\"e\":"$2",\"d\":"$3",\"r\":\""r"\"}"
+            }
+            END{ s="["; for(i=n;i>=1;i--) s=s a[i] (i>1?",":""); print s "]" }
+        ' "$CONN_HISTORY" 2>/dev/null)
+        [ -n "$conn_hist" ] || conn_hist="[]"
+    fi
 
     local default_policy=$(get_setting awg_default_policy)
     [ -z "$default_policy" ] && default_policy="direct"
@@ -3540,7 +3676,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","dnsgeo_warn":"${dnsgeo_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","dnsgeo_warn":"${dnsgeo_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
@@ -3930,6 +4066,7 @@ do_uninstall(){
     rm -f "$ANALYZE_FILE" "$ANALYZE_DNS_CONF" "$ANALYZE_DNS_LOG" /tmp/.awg_analyze_*
 
     rm -f "$AWG_INCIDENTS"
+    rm -f "$CONN_HIST_BAK"   # update-time stash lives OUTSIDE $AWG_DIR — the package rm -rf misses it
     rm -rf "$ADDON_DIR"
 
     if [ -f /tmp/menuTree.js ]; then
@@ -4174,7 +4311,7 @@ do_watchdog(){
         # from "tunnel up but traffic misrouted" (fresh handshake, RX growing) in the report.
         is_running && log_msg "  awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer' | tr '\n' '|' | sed 's/|$//')"
         printf '%s\n%s\n' "$((fails + 1))" "$now" > "$wd_state" 2>/dev/null
-        do_stop 2>/dev/null
+        do_stop "" watchdog 2>/dev/null
         wait_for_pid_exit amneziawg-go 10
         do_start
         return
@@ -4305,12 +4442,16 @@ finalize_ipk_install(){
     fi
 
     log_msg "Update: stopping VPN"
-    do_stop 2>/dev/null
+    do_stop "" update 2>/dev/null
     wait_for_pid_exit amneziawg-go 10
     # Let do_stop's DETACHED dnsmasq reload settle before opkg runs the package prerm (which kicks
     # off its OWN teardown + reload). Two concurrent `service restart_dnsmasq` storms during a
     # memory-pressured opkg can OOM/blackout the LAN on a low-RAM box (RT-AC68U, 256MB).
     _i=0; while [ -d /tmp/.awg_dnsreload ] && [ $_i -lt 60 ]; do sleep 1; _i=$((_i + 1)); done
+    # Preserve the connection history across the prerm's rm -rf of /opt/amneziawg. Stashed AFTER
+    # the do_stop above, so the just-recorded "update" session close survives the upgrade too.
+    rm -f "$CONN_HIST_BAK" 2>/dev/null
+    [ -f "$CONN_HISTORY" ] && cp "$CONN_HISTORY" "$CONN_HIST_BAK" 2>/dev/null
     log_msg "Update: installing package via opkg"
     # --force-downgrade: opkg refuses to install an older version by default and, worse,
     # exits 0 while doing nothing ("Not downgrading package ... from X to Y") — so the
@@ -4327,6 +4468,7 @@ finalize_ipk_install(){
         [ -n "$_oout" ] && log_msg "  opkg: $(echo "$_oout" | tr '\n' '|' | cut -c1-400)"
         rm -f "$tmp" /tmp/.awg_no_autostart
         if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
+        conn_history_restore
         update_status; return 1
     fi
     # Post-install integrity gate: opkg can exit 0 yet write a 0-byte binary under memory
@@ -4346,13 +4488,14 @@ finalize_ipk_install(){
             log_msg "  Reinstall to recover: curl -sfL https://raw.githubusercontent.com/william-aqn/asuswrt-merlin-amneziawg/main/install-online.sh | sh"
             rm -f "$tmp" /tmp/.awg_no_autostart
             if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
+            conn_history_restore
             update_status; return 1
         fi
         log_msg "Update: force-reinstall recovered the binaries"
     fi
     rm -f "$tmp"
     # Stop VPN if opkg's init script started it
-    do_stop 2>/dev/null
+    do_stop "" update 2>/dev/null
     wait_for_pid_exit amneziawg-go 10
     # Let this reload settle too before install_page / ensure_geo run (and before the resolver is
     # confirmed for the user), so the resolver is back up by the time the update reports complete.
@@ -4364,6 +4507,8 @@ finalize_ipk_install(){
         mkdir -p "$AWG_DIR"
         mv "$geo_bak" "$GEO_DIR" 2>/dev/null && log_msg "Update: geo lists restored"
     fi
+    # Restore the connection history stashed before opkg (survives the prerm's rm -rf).
+    conn_history_restore
     # Install page from new version
     /jffs/addons/amneziawg/amneziawg.sh install_page
     log_msg "Update: complete — now on $label. Start VPN from the UI."
@@ -4776,7 +4921,7 @@ case "$_ipn" in ''|*[!A-Za-z0-9_.-]*) _ipn="" ;; esac
 case "$1" in
     start)          do_start ;;
     stop)           do_stop user ;;
-    stop_auto)      do_stop ;;          # internal: auto-rollback stop (deadman); keeps watchdog cron
+    stop_auto)      do_stop "" deadman ;;   # internal: auto-rollback stop (deadman); keeps watchdog cron
     restart)        do_restart ;;
     status)         update_status ;;
     diag|diagnostics) do_diag ;;

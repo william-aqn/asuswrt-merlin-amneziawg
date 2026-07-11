@@ -33,15 +33,17 @@
 
     var T_ALL = {
       en: { title:"AmneziaWG VPN", on:"Connected", off:"Stopped", starting:"Connecting…", stopping:"Stopping…",
-            unknown:"Status unknown", addr:"Address", hs:"Handshake", turnOn:"Start", turnOff:"Stop",
+            unknown:"Status unknown", addr:"Address", hs:"Handshake", up:"Uptime", turnOn:"Start", turnOff:"Stop",
             settings:"Open settings →", tipOn:"AmneziaWG VPN: connected", tipOff:"AmneziaWG VPN: stopped",
             tipMv:"AmneziaWG VPN: switching…", tipUnk:"AmneziaWG VPN: status unknown",
-            agoSec:" s ago", agoMin:" min ago", agoHr:" h ago" },
+            agoSec:" s ago", agoMin:" min ago", agoHr:" h ago",
+            dS:" s", dM:" min", dH:" h", dD:" d" },
       ru: { title:"AmneziaWG VPN", on:"Подключено", off:"Остановлено", starting:"Подключение…", stopping:"Остановка…",
-            unknown:"Статус неизвестен", addr:"Адрес", hs:"Рукопожатие", turnOn:"Запустить", turnOff:"Остановить",
+            unknown:"Статус неизвестен", addr:"Адрес", hs:"Рукопожатие", up:"Аптайм", turnOn:"Запустить", turnOff:"Остановить",
             settings:"Открыть настройки →", tipOn:"AmneziaWG VPN: подключено", tipOff:"AmneziaWG VPN: остановлено",
             tipMv:"AmneziaWG VPN: переключение…", tipUnk:"AmneziaWG VPN: статус неизвестен",
-            agoSec:" с назад", agoMin:" мин назад", agoHr:" ч назад" }
+            agoSec:" с назад", agoMin:" мин назад", agoHr:" ч назад",
+            dS:" с", dM:" мин", dH:" ч", dD:" д" }
     };
     // Язык виджета: основной сигнал — window.__awgLang (внедряется бэкендом при монтировании,
     // формат вроде "EN"/"RU"/"DE"). RU → ru, всё прочее → en. Запасной вариант — preferred_lang
@@ -290,6 +292,16 @@
         if (lastData.interface_addr) {
           rows.innerHTML += '<div class="awg-row">' + T.addr + ': <b>' + esc(lastData.interface_addr) + '</b></div>';
         }
+        // Current-session uptime: live from the start epoch (conn_start), else the backend's
+        // static snapshot (conn_uptime) — absent on pre-1.2.51 status files, then no row.
+        // Recomputed on each poll-driven re-render, like the handshake row below.
+        var upSec = -1;
+        if (lastData.conn_start > 1000000000) upSec = Math.floor(new Date().getTime() / 1000) - lastData.conn_start;
+        if (upSec < 0 && lastData.conn_uptime > 0) upSec = lastData.conn_uptime;
+        var upTxt = (upSec >= 0) ? awgFmtUp(upSec) : null;
+        if (upTxt) {
+          rows.innerHTML += '<div class="awg-row">' + T.up + ': <b>' + esc(upTxt) + '</b></div>';
+        }
         // Compute the handshake age live from the raw epoch the backend emits; fall back to
         // the pre-formatted string for older status files. The panel re-renders on each 10s
         // poll while open, so this recomputes without any extra timer.
@@ -319,6 +331,18 @@
 
     function esc(s) {
       return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    // Compact duration for the uptime row ("2 d 5 h" / "3 ч 7 мин"), unit thresholds matching
+    // the addon page's awgFmtDur so both surfaces show the same value.
+    function awgFmtUp(sec) {
+      sec = Math.floor(sec);
+      if (!(sec >= 0)) return null;
+      if (sec < 60) return sec + T.dS;
+      var m = Math.floor(sec / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+      if (h < 1) return m + T.dM;
+      if (d < 1) return h + T.dH + " " + (m % 60) + T.dM;
+      return d + T.dD + " " + (h % 24) + T.dH;
     }
 
     // Handshake age from a raw UNIX epoch (seconds). Returns null for 0/absent so the caller

@@ -109,10 +109,11 @@
 }
 
 #awg_peers_table { width: 100%; table-layout: fixed; }
-/* Shared header style for both data tables. Headers are <td> (not <th>) so they pick up the
+#awg_hist_table { width: 100%; table-layout: fixed; }
+/* Shared header style for the data tables. Headers are <td> (not <th>) so they pick up the
    firmware's gradient header background AND their width="%" attrs aren't overridden by the
    firmware's `.FormTable_table thead th { width:98px }` rule. */
-#awg_peers_table thead td, #awg_client_table thead td {
+#awg_peers_table thead td, #awg_client_table thead td, #awg_hist_table thead td {
     font-weight: bold;
     text-transform: uppercase;
     font-size: 11px;
@@ -121,7 +122,7 @@
     white-space: nowrap;   /* keep headers on one line (both tables sit in a scrollable wrap) */
     padding: 6px 8px;   /* override firmware's asymmetric padding-left so centered text is truly centered */
 }
-#awg_peers_table tbody td {
+#awg_peers_table tbody td, #awg_hist_table tbody td {
     padding: 6px 8px;
     font-size: 12px;
     word-break: break-all;
@@ -332,7 +333,7 @@ var awgPoll = null;
 // «Подключение…» UI (the "button comes back, tempting a second click" bug).
 var awgActionGen = 0;
 var awgLastPeers = [];      // last peers array from the status poll — read by the live handshake ticker
-var awgTickTimer = null;    // singleton interval for awgTickHandshakes (started once)
+var awgTickTimer = null;    // singleton 1s interval: awgTickHandshakes + awgTickUptime (started once)
 // GeoSite category autocomplete source. Seeded with a static fallback of common v2fly
 // categories so suggestions work even when /user/v2fly_categories.htm is 404 — which happens
 // on a fresh /opt whose v2fly DB hasn't downloaded yet, or when the DB download (a GitHub
@@ -593,6 +594,25 @@ en: {
     TH_TRAFFIC: "Traffic (rx/tx)",
     TH_LAST_HANDSHAKE: "Last handshake",
     LBL_NO_PEERS: "No peers",
+    // ---- connection uptime & history ----
+    TITLE_UPTIME: "Current connection uptime",
+    DUR_S: "{0} s",
+    DUR_M: "{0} min",
+    DUR_HM: "{0} h {1} min",
+    DUR_DH: "{0} d {1} h",
+    SEC_CONN_HISTORY: "Connection history",
+    TH_HIST_START: "Started",
+    TH_HIST_DURATION: "Duration",
+    TH_HIST_END: "Ended by",
+    HIST_R_USER: "stopped by user",
+    HIST_R_RESTART: "restart",
+    HIST_R_ROLLBACK: "auto-rollback (tunnel had no traffic)",
+    HIST_R_WATCHDOG: "watchdog restart",
+    HIST_R_UPDATE: "addon update",
+    HIST_R_DEADMAN: "emergency rollback (LAN protection)",
+    HIST_R_REBOOT: "router reboot",
+    HIST_R_INTERRUPTED: "interrupted (crash)",
+    HIST_R_AUTO: "auto stop",
     SEC_CONFIG: "Configuration",
     BTN_IMPORT_CONF_FILE: "Import a .conf file from the Amnezia VPN client",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— obfuscation parameters (usually filled in by importing a config) ▾</span>",
@@ -954,6 +974,25 @@ ru: {
     TH_TRAFFIC: "Трафик (приём/передача)",
     TH_LAST_HANDSHAKE: "Последнее рукопожатие",
     LBL_NO_PEERS: "Нет пиров",
+    // ---- аптайм и история подключений ----
+    TITLE_UPTIME: "Время работы текущего подключения",
+    DUR_S: "{0} с",
+    DUR_M: "{0} мин",
+    DUR_HM: "{0} ч {1} мин",
+    DUR_DH: "{0} д {1} ч",
+    SEC_CONN_HISTORY: "История подключений",
+    TH_HIST_START: "Начало",
+    TH_HIST_DURATION: "Длительность",
+    TH_HIST_END: "Причина завершения",
+    HIST_R_USER: "остановлено пользователем",
+    HIST_R_RESTART: "перезапуск",
+    HIST_R_ROLLBACK: "автооткат (туннель без трафика)",
+    HIST_R_WATCHDOG: "перезапуск вотчдогом",
+    HIST_R_UPDATE: "обновление аддона",
+    HIST_R_DEADMAN: "аварийный откат (защита LAN)",
+    HIST_R_REBOOT: "перезагрузка роутера",
+    HIST_R_INTERRUPTED: "прервано (сбой)",
+    HIST_R_AUTO: "автоостановка",
     SEC_CONFIG: "Конфигурация",
     BTN_IMPORT_CONF_FILE: "Импорт .conf-файла из клиента Amnezia VPN",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— параметры обфускации (обычно заполняются импортом конфига) ▾</span>",
@@ -1133,6 +1172,39 @@ function awgAgo(epoch){
     return T('AGO_HOUR', Math.floor(d / 3600));
 }
 
+// ---- Current-connection uptime (ticks live client-side, like the handshake counter) ----
+// Primary source is the start epoch (status.conn_start) — same Date.now() arithmetic as
+// awgAgo; when that epoch is implausible (session started before NTP sync) or the browser
+// clock sits behind it, fall back to the static conn_uptime snapshot from the status file
+// (monotonic on the router, but refreshed only per status write — may lag, never lies).
+var awgConnStart = 0, awgConnUptime = 0, awgConnUp = false;
+function awgFmtDur(sec){
+    sec = Math.floor(sec);
+    if(!isFinite(sec) || sec < 0) return null;
+    if(sec < 60) return T('DUR_S', sec);
+    var m = Math.floor(sec / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+    if(h < 1) return T('DUR_M', m);
+    if(d < 1) return T('DUR_HM', h, m % 60);
+    return T('DUR_DH', d, h % 24);
+}
+function awgUptimeText(){
+    if(!awgConnUp) return null;
+    var up = -1;
+    if(awgConnStart > 1000000000) up = Math.floor(Date.now() / 1000) - awgConnStart;
+    if(up < 0) up = (awgConnUptime > 0) ? awgConnUptime : -1;
+    return awgFmtDur(up);
+}
+// Repaint the small uptime label next to the status badge; also called every second by the
+// shared ticker so it counts live between the 5s status polls.
+function awgTickUptime(){
+    var el = document.getElementById('awg_uptime');
+    if(!el) return;
+    var t = awgUptimeText();
+    if(t === null){ el.style.display = 'none'; el.textContent = ''; return; }
+    el.textContent = '· ' + t;
+    el.style.display = '';
+}
+
 // Mirror of the backend human_size() (1 decimal, GiB/MiB/KiB/B) so RX/TX can be formatted
 // from the raw byte counters. Returns null for non-numeric/absent input -> caller falls back
 // to the pre-formatted transfer_rx/tx string. Bytes are 64-bit counters; JS Number is exact
@@ -1183,8 +1255,8 @@ function initial(){
     loadSettings();
     awgRefreshStatus();
     statusTimer = setInterval(awgRefreshStatus, 5000);
-    // Tick the handshake age live (client-side) between the 5s status polls.
-    if(!awgTickTimer) awgTickTimer = setInterval(awgTickHandshakes, 1000);
+    // Tick the handshake age + connection uptime live (client-side) between the 5s status polls.
+    if(!awgTickTimer) awgTickTimer = setInterval(function(){ awgTickHandshakes(); awgTickUptime(); }, 1000);
     awgRefreshLog();
     setInterval(awgRefreshLog, 2500);
     loadV2flyCategories();
@@ -1317,6 +1389,8 @@ function syncViaVpnToggles(){
 function doUpdate(version){
     var badge = document.getElementById('awg_badge');
     if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; ' + escHtml(T('STAT_UPDATING')); }
+    awgConnUp = false;
+    awgTickUptime();
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
     // Supersede any status read still in flight so it can't repaint over the «Updating» badge
     // (same generation guard as awgAction; see awgActionGen).
@@ -2642,9 +2716,11 @@ function awgEnterTransition(kind){
     // backend settles, then shows the right control («Запустить» or «Остановить»/«Перезапустить»).
     sBtn.style.display = pBtn.style.display = rBtn.style.display = 'none';
 
-    // Show transitional status
+    // Show transitional status (uptime label hides with it — it belongs to the stable state)
     badge.className = 'awg-status connecting';
     badge.innerHTML = isStop ? ('&#9679; ' + escHtml(T('STAT_STOPPING'))) : ('&#9679; ' + escHtml(T('STAT_CONNECTING')));
+    awgConnUp = false;
+    awgTickUptime();
 
     // Poll until status is fully ready
     var attempts = 0;
@@ -3557,6 +3633,13 @@ function updateStatusUI(s){
         document.getElementById('btn_restart').style.display = 'none';
     }
 
+    // Uptime label next to the badge — only in the stable Connected state (transition states
+    // show just the badge). The 1s ticker keeps it counting between polls.
+    awgConnUp = !!(s.running && !s.stopping && !s.starting);
+    awgConnStart = parseInt(s.conn_start, 10) || 0;
+    awgConnUptime = parseInt(s.conn_uptime, 10) || 0;
+    awgTickUptime();
+
     info.innerHTML = '';
     if(s.interface_addr) info.innerHTML += escHtml(T('INFO_ADDRESS')) + escHtml(s.interface_addr) + '<br>';
     if(s.public_key) info.innerHTML += escHtml(T('INFO_PUBLIC_KEY')) + escHtml(s.public_key.substring(0,12)) + '...<br>';
@@ -3583,6 +3666,28 @@ function updateStatusUI(s){
         }
     }
     peers.innerHTML = html;
+
+    // Connection history (last 5 sessions) — hidden until the backend has recorded at least
+    // one. Start time is rendered in the browser locale; unknown duration/epoch shows as "—";
+    // reason tokens map to i18n keys, unknown tokens are shown as-is (forward-compatible).
+    var histBody = document.getElementById('awg_hist');
+    if(histBody){
+        var hist = (s.conn_history && s.conn_history.length) ? s.conn_history : [];
+        var hh = '';
+        for(var hi = 0; hi < hist.length; hi++){
+            var he = hist[hi] || {};
+            var hStart = (he.s > 1000000000) ? new Date(he.s * 1000).toLocaleString() : '—';
+            var hDurS = awgFmtDur(he.d); if(hDurS === null) hDurS = '—';
+            var hKey = 'HIST_R_' + String(he.r || 'auto').toUpperCase();
+            var hReason = (AWG_I18N[AWG_LANG] && AWG_I18N[AWG_LANG][hKey]) || AWG_I18N.en[hKey] || String(he.r || '—');
+            hh += '<tr><td>' + escHtml(hStart) + '</td><td>' + escHtml(hDurS) + '</td><td>' + escHtml(hReason) + '</td></tr>';
+        }
+        histBody.innerHTML = hh;
+        var histTitle = document.getElementById('awg_hist_title');
+        var histWrap = document.getElementById('awg_hist_wrap');
+        if(histTitle) histTitle.style.display = hh ? '' : 'none';
+        if(histWrap) histWrap.style.display = hh ? '' : 'none';
+    }
 
     // on-page log is polled in real time via awgRefreshLog() (not from s.log)
 
@@ -3765,6 +3870,8 @@ function setOfflineUI(){
     var badge = document.getElementById('awg_badge');
     badge.className = 'awg-status stopped';
     badge.innerHTML = '&#9679; ' + escHtml(T('STAT_STOPPED'));
+    awgConnUp = false;
+    awgTickUptime();
     // Always land on a clean, clickable «Start»: re-show + re-enable it (a transition may have
     // hidden/disabled the buttons) so a stranded transition can never leave the page without a
     // clickable control.
@@ -4213,6 +4320,7 @@ function initAutocompleteIp(){
                     <td>
                         <div class="awg-actions">
                             <span id="awg_badge" class="awg-status connecting" data-i18n-html="STAT_LOADING_BADGE">&#9679; Loading…</span>
+                            <span id="awg_uptime" style="display:none; color:#b6bdc7; font-size:12px;" title="Current connection uptime" data-i18n-title="TITLE_UPTIME"></span>
                             <input type="button" id="btn_start" class="button_gen awg-btn" value="Start" data-i18n-val="BTN_START" onclick="awgAction('start_awgstart');">
                             <input type="button" id="btn_stop" class="button_gen awg-btn" value="Stop" data-i18n-val="BTN_STOP" style="display:none;" onclick="awgAction('start_awgstop');">
                             <input type="button" id="btn_restart" class="button_gen awg-btn" value="Restart" data-i18n-val="BTN_RESTART" style="display:none;" onclick="awgAction('start_awgrestart');">
@@ -4253,6 +4361,19 @@ function initAutocompleteIp(){
                 <tbody id="awg_peers">
                     <tr><td colspan="4" style="text-align:center; color:#b6bdc7;" data-i18n="LBL_NO_PEERS">No peers</td></tr>
                 </tbody>
+                </table>
+                </div>
+
+                <!-- Connection history (last 5 sessions; rendered by updateStatusUI from status.conn_history) -->
+                <div class="awg-section" id="awg_hist_title" style="display:none;" data-i18n="SEC_CONN_HISTORY">Connection history</div>
+                <div class="awg-tablewrap" id="awg_hist_wrap" style="display:none;">
+                <table width="100%" border="0" cellpadding="4" cellspacing="0" class="FormTable_table" id="awg_hist_table" style="min-width:520px;">
+                <thead><tr>
+                    <td width="40%" data-i18n="TH_HIST_START">Started</td>
+                    <td width="25%" data-i18n="TH_HIST_DURATION">Duration</td>
+                    <td width="35%" data-i18n="TH_HIST_END">Ended by</td>
+                </tr></thead>
+                <tbody id="awg_hist"></tbody>
                 </table>
                 </div>
 
