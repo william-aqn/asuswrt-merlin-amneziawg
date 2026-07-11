@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.49"
+AWG_VERSION="1.2.50"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2820,12 +2820,13 @@ AWG_GOMEMLIMIT_AVAIL_PCT=60   # opportunistic ceiling from MemAvailable when the
 # GENUINE Go-runtime OOM — NOT the 1.2.42 dangling-dnsmasq-conf LAN brick.
 #
 # GOMEMLIMIT is a SOFT limit and only reclaims the pool's IDLE buffers (ordinary GC garbage).
-# It CANNOT reclaim buffers still queued in the 1024-deep inbound path — so on a box whose
-# genuine live working set under load exceeds the ceiling, it reduces crash frequency but is
-# not a full cure; the real cure is bounding the daemon's buffers (a rebuild — see the
-# release.yml queueconstants patch discussion). It still degrades gracefully (Go bounds GC
-# at 50% CPU, no death-spiral) and is never worse than the unbounded status quo. Works on the
-# legacy Go-1.23 daemon too (GOMEMLIMIT landed in Go 1.19).
+# It CANNOT reclaim buffers still queued in the 1024-deep inbound path — field-confirmed on a
+# settled box with the correct 190MiB ceiling (still OOM'd ~4 min into video). The REAL cure
+# shipped in 1.2.50: release.yml builds the daemon with PreallocatedBuffersPerPool = 1024
+# (upstream's own iOS/Windows memory-constrained profile) — the pool caps at ~64MB and the
+# receiver BLOCKS when it's full (true backpressure), so the daemon can't eat itself. This env
+# stays as belt-and-suspenders for the rest of the heap. Degrades gracefully (Go bounds GC at
+# 50% CPU), never worse than unbounded. Works on the legacy Go-1.23 daemon too (Go >= 1.19).
 #
 # EARLIER BUG (1.2.47): the ceiling was 55% of MemAvailable *at launch only*. A daemon that
 # (re)started during post-update churn — geo re-download + repeated dnsmasq reloads — read a

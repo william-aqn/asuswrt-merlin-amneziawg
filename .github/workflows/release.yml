@@ -51,8 +51,32 @@ jobs:
           # `Version` is a `const` in version.go, so `-ldflags -X main.Version=` can't override it
           # (only vars). Patch the source so `amneziawg-go --version` reports the real ref instead
           # of the stale hardcoded "0.0.20250522" (which has fooled diagnosis before).
-          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG ($AWG_GO_COMMIT)\"|" amneziawg-go/version.go
+          # The -pool1024 suffix marks the bounded-pool patch below — a field diag shows at a
+          # glance whether the running daemon has it.
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-pool1024 ($AWG_GO_COMMIT)\"|" amneziawg-go/version.go
           grep '^const Version' amneziawg-go/version.go || true
+          # BOUNDED BUFFER POOL — the fix for "daemon OOM under heavy load" on low-RAM routers.
+          # Upstream's Linux profile sets PreallocatedBuffersPerPool = 0 ("allow infinite memory
+          # growth"): under sustained inbound (video) the receive routine allocates 64KB message
+          # buffers faster than the slow software-ChaCha20 pipeline drains them, the Go heap
+          # outgrows a 512MB box and the runtime aborts with `fatal error: runtime: out of
+          # memory` (field: RT-AX82U crash-looping ~2-4 min into YouTube; GOMEMLIMIT alone only
+          # delayed it — it can't reclaim buffers LIVE in the queues). Capping the pool at 1024
+          # is upstream's OWN memory-constrained profile (queueconstants_ios.go / _windows.go
+          # ship exactly 1024): WaitPool.Get then BLOCKS the receiver when the pool is full
+          # (real backpressure), excess UDP is dropped by the kernel — normal congestion
+          # signaling — and the message-buffer pool tops out at 1024*64KB = 64MB. Throughput
+          # caps at what the CPU can decrypt (which is all it could ever deliver), the daemon
+          # stops killing itself, and bufferbloat shrinks as a bonus.
+          # NB: MaxSegmentSize (the 64KB buffer size) is deliberately NOT shrunk — kernels
+          # >= 4.18 can deliver UDP-GRO-coalesced datagrams up to 64KB and a smaller buffer
+          # would truncate them (TUF-AX3000_V2 fleet runs 4.19). The pool CAP is size-agnostic
+          # and safe on every kernel.
+          sed -i 's|PreallocatedBuffersPerPool = 0.*|PreallocatedBuffersPerPool = 1024          // bounded (upstream iOS/Windows profile): backpressure instead of OOM on low-RAM routers|' amneziawg-go/device/queueconstants_default.go
+          # HARD assert (no `|| true`): this patch is functional — if upstream renames the
+          # constant or reformats the file, fail the build instead of shipping an unbounded pool.
+          grep -q 'PreallocatedBuffersPerPool = 1024' amneziawg-go/device/queueconstants_default.go
+          grep 'PreallocatedBuffersPerPool' amneziawg-go/device/queueconstants_default.go
           mkdir -p "$GITHUB_WORKSPACE/output"
           cd amneziawg-go
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64       go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go"
@@ -77,8 +101,12 @@ jobs:
           cp -r amneziawg-go amneziawg-go-legacy
           cd amneziawg-go-legacy
           AWG_GO_COMMIT=$(git rev-parse --short HEAD)
-          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-legacy26 ($AWG_GO_COMMIT)\"|" version.go
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-legacy26-pool1024 ($AWG_GO_COMMIT)\"|" version.go
           grep '^const Version' version.go
+          # The bounded-pool patch (see the main build step) rode in via the cp -r above —
+          # assert it, hard-fail otherwise: the 2.6.x fleet (RT-AC68U, 256MB!) needs the cap
+          # even more than the 512MB boxes, and kernels this old have no UDP GRO anyway.
+          grep -q 'PreallocatedBuffersPerPool = 1024' device/queueconstants_default.go
           go get golang.org/x/sys@v0.35.0 golang.org/x/net@v0.43.0 golang.org/x/crypto@v0.41.0
           go mod edit -go=1.23.0 -toolchain=none
           GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 \
