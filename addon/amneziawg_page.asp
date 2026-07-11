@@ -581,6 +581,9 @@ en: {
     BTN_WD_FROM_DNS: "From DNS",
     TITLE_WD_FROM_DNS: "Fill in from the Interface DNS above",
     MSG_NO_DNS_FOR_WD: "The Interface DNS field is empty — set the DNS first.",
+    MSG_WD_COPIED: "Copied: {0}. Press «Apply» to save.",
+    MSG_WD_COPIED_DROPPED: "Copied: {0} — some entries were skipped (the tunnel probe works over IPv4 only, up to 4 hosts). Press «Apply» to save.",
+    MSG_WD_DNS_ALL_V6: "The DNS field has no IPv4 address — the tunnel probe works over IPv4 only; enter e.g. 8.8.8.8.",
     TH_INTERFACE: "Interface",
     FIRSTRUN_HTML: "<b>It looks like no configuration is set yet.</b><br>\n                    Start by importing a <code>.conf</code> file from the Amnezia VPN app, then check the fields and click «Apply».",
     BTN_IMPORT_CONFIG: "Import configuration",
@@ -609,7 +612,7 @@ en: {
     HINT_KILLSWITCH_HTML: "<summary>Blocks traffic of VPN devices if the tunnel goes down (instead of leaking around it to the WAN). Off by default. <u>Details</u></summary>When enabled: if the tunnel suddenly goes down (daemon crash / out of memory), traffic from devices with a «VPN» policy doesn't leak around it to the WAN in cleartext but is blocked until recovery (the watchdog brings the tunnel back within ~5 min). Off — the previous behavior (traffic may temporarily go around the VPN). Affects only devices with a VPN/Geo policy; with the default policy set to «VPN — all traffic» it affects the whole LAN.",
     TH_TUNNEL_CHECK_ADDR: "Tunnel check addresses",
     ARIA_TUNNEL_CHECK_ADDR: "Tunnel check addresses",
-    HINT_WATCHDOG_HTML: "<summary>Addresses the watchdog pings <b>through the tunnel</b> every 5 minutes (if at least one replies, the tunnel is alive). <u>Format and examples</u></summary><b>Format:</b> IP or domain, several allowed — separated by a space or comma (up to 4 addresses).<br><b>Example:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Prefer IPs (no dependency on DNS). Empty = default <b>8.8.8.8</b> and <b>1.1.1.1</b>. Change it if those addresses are blocked/unreachable for you — otherwise the watchdog restarts the VPN needlessly. Which addresses are checked is shown in the log below.",
+    HINT_WATCHDOG_HTML: "<summary>Addresses the watchdog pings <b>through the tunnel</b> every 5 minutes (if at least one replies, the tunnel is alive). <u>Format and examples</u></summary><b>Format:</b> IPv4 or domain, several allowed — separated by a space or comma (up to 4 addresses; IPv6 is not supported — the probe rides the tunnel's IPv4).<br><b>Example:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Prefer IPs (no dependency on DNS). Empty = default <b>8.8.8.8</b> and <b>1.1.1.1</b>. Change it if those addresses are blocked/unreachable for you — otherwise the watchdog restarts the VPN needlessly. Which addresses are checked is shown in the log below.",
     TH_ZAPRET_COMPAT: "Compatibility mode",
     LBL_NO_DNS_INTERCEPT: "Compatibility mode — coexist with zapret2 / Xray / b4 (don't intercept DNS)",
     LBL_TUNNEL_DNS_TH: "DNS via tunnel",
@@ -939,6 +942,9 @@ ru: {
     BTN_WD_FROM_DNS: "Из DNS",
     TITLE_WD_FROM_DNS: "Заполнить из поля DNS интерфейса выше",
     MSG_NO_DNS_FOR_WD: "Поле DNS интерфейса пустое — сначала укажите DNS.",
+    MSG_WD_COPIED: "Скопировано: {0}. Нажмите «Применить», чтобы сохранить.",
+    MSG_WD_COPIED_DROPPED: "Скопировано: {0} — часть адресов пропущена (проверка туннеля работает только по IPv4, максимум 4). Нажмите «Применить», чтобы сохранить.",
+    MSG_WD_DNS_ALL_V6: "В поле DNS нет IPv4-адреса — проверка туннеля работает только по IPv4; укажите, например, 8.8.8.8.",
     TH_INTERFACE: "Интерфейс",
     FIRSTRUN_HTML: "<b>Похоже, конфигурация ещё не задана.</b><br>\n                    Начните с импорта <code>.conf</code>-файла из приложения Amnezia VPN, затем проверьте поля и нажмите «Применить».",
     BTN_IMPORT_CONFIG: "Импорт конфигурации",
@@ -967,7 +973,7 @@ ru: {
     HINT_KILLSWITCH_HTML: "<summary>Блокирует трафик VPN-устройств, если туннель упал (вместо утечки в обход в WAN). По умолчанию выключено. <u>Подробнее</u></summary>Когда включено: если туннель внезапно падает (краш демона / нехватка памяти), трафик устройств с политикой «VPN» не уходит в обход в WAN открытым текстом, а блокируется до восстановления (watchdog поднимает туннель в течение ~5 мин). Выключено — прежнее поведение (трафик может временно идти мимо VPN). Влияет только на устройства с политикой VPN/Geo; при политике по умолчанию «VPN — весь трафик» затрагивает весь LAN.",
     TH_TUNNEL_CHECK_ADDR: "Адреса проверки туннеля",
     ARIA_TUNNEL_CHECK_ADDR: "Адреса проверки туннеля",
-    HINT_WATCHDOG_HTML: "<summary>Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут (ответил хоть один — туннель живой). <u>Формат и примеры</u></summary><b>Формат:</b> IP или домен, можно несколько — через пробел или запятую (до 4 адресов).<br><b>Пример:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Лучше указывать IP (без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны — иначе watchdog зря перезапускает VPN. Какие адреса проверяются — видно в журнале ниже.",
+    HINT_WATCHDOG_HTML: "<summary>Адреса, которые watchdog пингует <b>через туннель</b> раз в 5 минут (ответил хоть один — туннель живой). <u>Формат и примеры</u></summary><b>Формат:</b> IPv4 или домен, можно несколько — через пробел или запятую (до 4 адресов; IPv6 не поддерживается — проверка идёт по IPv4 туннеля).<br><b>Пример:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Лучше указывать IP (без зависимости от DNS). Пусто = по умолчанию <b>8.8.8.8</b> и <b>1.1.1.1</b>. Поменяйте, если эти адреса у вас блокируются/недоступны — иначе watchdog зря перезапускает VPN. Какие адреса проверяются — видно в журнале ниже.",
     TH_ZAPRET_COMPAT: "Режим совместимости",
     LBL_NO_DNS_INTERCEPT: "Режим совместимости — сосуществование с zapret2 / Xray / b4 (не перехватывать DNS)",
     LBL_TUNNEL_DNS_TH: "DNS через туннель",
@@ -1915,8 +1921,11 @@ function applyConfig(actionScript){
     if(_wfa) custom_settings.awg_wait_for_agh = _wfa.checked ? '1' : '0';
     var _sd = document.getElementById('awg_start_delay');
     if(_sd){ var _sdv = parseInt(_sd.value, 10); custom_settings.awg_start_delay = (isNaN(_sdv) || _sdv < 0) ? '0' : String(Math.min(_sdv, 300)); }
-    // Watchdog probe hosts: keep only safe host chars (IP/hostname + separators), collapse spaces
-    custom_settings.awg_watchdog_hosts = document.getElementById('awg_watchdog_hosts').value.replace(/[^0-9A-Za-z.\-, ]/g, '').replace(/\s+/g, ' ').trim();
+    // Watchdog probe hosts: token-filter to what the probe accepts (IPv4/hostname). The old
+    // char-level strip mangled an IPv6 into a fake all-digit "hostname" (2606:4700::1111 ->
+    // "2606470047001111") that persisted and wasted a probe slot; drop such tokens whole.
+    custom_settings.awg_watchdog_hosts = document.getElementById('awg_watchdog_hosts').value
+        .split(/[\s,]+/).filter(function(h){ return /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(h); }).join(' ');
     custom_settings.awg_geo_wipe_update = document.getElementById('awg_geo_wipe_update').checked ? '1' : '0';
     // ipset name — sanitize to a valid set name (letters/digits/_.-, <=31); empty => backend uses awg_dst
     custom_settings.awg_ipset_name = document.getElementById('awg_ipset_name').value.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 31);
@@ -1947,6 +1956,7 @@ function applyConfig(actionScript){
     // Submit via the shared helper so we get a completion callback for the ack, and disable
     // the Apply buttons meanwhile so an impatient second tap can't queue a redundant
     // firewall rebuild / tunnel restart under the backend lock.
+    awgWdHint('');   // the "press Apply to save" note is fulfilled by this very submit
     awgSetApplyBusy(true);
     // Sync the header icon. «Применить» (awgsaveconf) only rebuilds the firewall — no tunnel
     // cycle — so a light fast-probe suffices. «Сохранить и перезапустить» (awgforceapply) really
@@ -3436,17 +3446,28 @@ function awgRefreshLog(){
 
 // Watchdog convenience: prefill the probe hosts from the Interface DNS the user already
 // entered (so they don't retype IPs). Splits on space/comma, keeps up to 4 entries.
+// The probe path is IPv4-only (ping/curl -I awg0 rides the v4 policy rule), so IPv6 DNS
+// entries can't be probed and are dropped — but VISIBLY: with dual-stack configs the silent
+// drop read as "the button is broken". The fill is also NOT saved by itself (a refresh
+// reverts it like any unapplied field) — the inline hint says both things.
 function awgWatchdogFromDns(){
     var wd = document.getElementById('awg_watchdog_hosts');
     if(!wd) return;
     var dns = (document.getElementById('awg_dns') || {}).value || '';
-    // Keep only tokens the watchdog backend accepts (IPv4 / hostname). The save path and
-    // watchdog_hosts() strip ':' , so an IPv6 DNS (2606:4700:4700::1111) would be silently
-    // mangled — drop such tokens here so what we prefill equals what gets stored & probed.
-    var hosts = dns.split(/[\s,]+/).filter(function(h){ return /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(h); }).slice(0, 4).join(' ');
-    if(!hosts){ alert(T('MSG_NO_DNS_FOR_WD')); return; }
-    wd.value = hosts;
+    var toks = dns.split(/[\s,]+/).filter(function(h){ return !!h; });
+    var hosts = toks.filter(function(h){ return /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(h); }).slice(0, 4);
+    if(!hosts.length){ alert(T(toks.length ? 'MSG_WD_DNS_ALL_V6' : 'MSG_NO_DNS_FOR_WD')); return; }
+    wd.value = hosts.join(' ');
+    awgWdHint(T(toks.length > hosts.length ? 'MSG_WD_COPIED_DROPPED' : 'MSG_WD_COPIED', hosts.join(' ')));
     wd.focus();
+}
+
+// Show/clear the small note under the watchdog-hosts field ('' hides it).
+function awgWdHint(msg){
+    var el = document.getElementById('awg_wd_hint');
+    if(!el) return;
+    el.textContent = msg || '';
+    el.style.display = msg ? '' : 'none';
 }
 
 function awgRefreshStatus(){
@@ -4251,7 +4272,7 @@ function initAutocompleteIp(){
                 </tr>
                 <tr>
                     <th>Address</th>
-                    <td><input type="text" class="input_20_table" id="awg_address" maxlength="32" placeholder="10.7.0.2/24" aria-label="Address"></td>
+                    <td><input type="text" class="input_20_table" id="awg_address" maxlength="128" placeholder="10.7.0.2/24, fd00::2/64" aria-label="Address"></td>
                 </tr>
                 <tr>
                     <th>Listen Port</th>
@@ -4264,7 +4285,7 @@ function initAutocompleteIp(){
                 </tr>
                 <tr>
                     <th>DNS</th>
-                    <td><input type="text" class="input_20_table" id="awg_dns" maxlength="64" placeholder="1.1.1.1" aria-label="DNS">
+                    <td><input type="text" class="input_20_table" id="awg_dns" maxlength="160" placeholder="1.1.1.1" aria-label="DNS">
                         <span data-i18n="HINT_DNS" style="color:#b6bdc7; font-size:11px; margin-left:6px;">used by “DNS via tunnel” below; empty = firmware DNS</span></td>
                 </tr>
                 <tr>
@@ -4412,7 +4433,8 @@ function initAutocompleteIp(){
                             <input type="text" class="input_25_table" id="awg_watchdog_hosts" maxlength="200" style="flex:1 1 200px; min-width:140px;" placeholder="8.8.8.8 1.1.1.1" aria-label="Tunnel check addresses" data-i18n-aria="ARIA_TUNNEL_CHECK_ADDR">
                             <input type="button" class="button_gen" id="btn_wd_from_dns" value="From DNS" data-i18n-val="BTN_WD_FROM_DNS" title="Fill in from the Interface DNS above" data-i18n-title="TITLE_WD_FROM_DNS" onclick="awgWatchdogFromDns();" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0; white-space:nowrap;">
                         </div>
-                        <details class="awg-hint" data-i18n-html="HINT_WATCHDOG_HTML"><summary>Addresses the watchdog pings <b>through the tunnel</b> every 5 minutes (if at least one replies, the tunnel is alive). <u>Format and examples</u></summary><b>Format:</b> IP or domain, several allowed — separated by a space or comma (up to 4 addresses).<br><b>Example:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Prefer IPs (no dependency on DNS). Empty = default <b>8.8.8.8</b> and <b>1.1.1.1</b>. Change it if those addresses are blocked/unreachable for you — otherwise the watchdog restarts the VPN needlessly. Which addresses are checked is shown in the log below.</details>
+                        <div id="awg_wd_hint" style="display:none; margin-top:4px; max-width:480px; color:#FFCC00; font-size:11px; line-height:1.4;"></div>
+                        <details class="awg-hint" data-i18n-html="HINT_WATCHDOG_HTML"><summary>Addresses the watchdog pings <b>through the tunnel</b> every 5 minutes (if at least one replies, the tunnel is alive). <u>Format and examples</u></summary><b>Format:</b> IPv4 or domain, several allowed — separated by a space or comma (up to 4 addresses; IPv6 is not supported — the probe rides the tunnel's IPv4).<br><b>Example:</b> <code>8.8.8.8, 1.1.1.1, 9.9.9.9</code><br>Prefer IPs (no dependency on DNS). Empty = default <b>8.8.8.8</b> and <b>1.1.1.1</b>. Change it if those addresses are blocked/unreachable for you — otherwise the watchdog restarts the VPN needlessly. Which addresses are checked is shown in the log below.</details>
                     </td>
                 </tr>
                 <tr>

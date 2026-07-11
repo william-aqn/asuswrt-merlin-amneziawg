@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.48"
+AWG_VERSION="1.2.49"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3129,7 +3129,26 @@ do_start(){
         update_status; release_lock; return 1
     fi
 
-    [ -f "$AWG_DIR/awg0.addr" ] && ip addr add "$(cat "$AWG_DIR/awg0.addr")" dev "$IFACE"
+    # Address may be dual-stack ("10.8.0.2/24,fd00::2/64" — modern provider configs). Feeding the
+    # raw combined string to ONE `ip addr add` is EINVAL, so awg0 ended up with NO address at all:
+    # the handshake still completes and keepalives tick the RX/TX counters (daemon-level UDP via
+    # the WAN), but MASQUERADE has no source to pick and the prio-100 from-rule never installs —
+    # "connected, zero traffic". Add each comma/space-separated address on its own; a failed IPv6
+    # add (firmware IPv6 disabled) must not kill the start — the policy routing rides the IPv4.
+    if [ -f "$AWG_DIR/awg0.addr" ]; then
+        local _addr _v4_ok=0
+        for _addr in $(tr ',\r' '  ' < "$AWG_DIR/awg0.addr"); do
+            if ip addr add "$_addr" dev "$IFACE" 2>/dev/null; then
+                case "$_addr" in *:*) ;; *) _v4_ok=1 ;; esac
+            else
+                case "$_addr" in
+                    *:*) log_msg "WARN: IPv6 address $_addr not applied (firmware IPv6 disabled?) — tunnel continues on IPv4" ;;
+                    *)   log_msg "WARN: failed to add address $_addr to $IFACE" ;;
+                esac
+            fi
+        done
+        [ "$_v4_ok" = 1 ] || log_msg "WARN: no IPv4 address on $IFACE — NAT and policy routing need one; check the Address field"
+    fi
     # MTU: configurable via awg_mtu (default 1280); fall back if unset/out of range
     local mtu=$(get_setting awg_mtu)
     { [ -n "$mtu" ] && validate_uint "$mtu" && [ "$mtu" -ge 576 ] && [ "$mtu" -le 1500 ]; } || mtu=1280
