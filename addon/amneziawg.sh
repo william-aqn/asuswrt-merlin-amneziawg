@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.53"
+AWG_VERSION="1.2.54"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -221,6 +221,22 @@ migrate_field_names(){
     _awg_rename_setting awg_privatekey  awg_iface_p1
     _awg_rename_setting awg_peer_pubkey awg_peer_p1
     _awg_rename_setting awg_peer_psk    awg_peer_p2
+}
+
+# Rewrite a legacy SPACE-separated awg_watchdog_hosts value to commas. The firmware stores
+# a spaced value intact, but the page's settings read-back (get_custom_settings) truncates
+# it at the first space — the UI showed only the first host and the next Apply persisted
+# the loss. The page now saves this key comma-joined (same convention as awg_dns); fixing
+# the stored value here rescues the already-saved tail hosts before the user's next Apply.
+# The probe itself (watchdog_hosts) always accepted both separators. Cheap no-op once done.
+migrate_watchdog_hosts(){
+    local val tmp
+    val=$(get_setting awg_watchdog_hosts)
+    case "$val" in *" "*) ;; *) return 0 ;; esac
+    val=$(printf '%s' "$val" | tr -s ' ' ',')
+    tmp="$SETTINGS.awgtmp.$$"
+    { grep -v "^awg_watchdog_hosts " "$SETTINGS"; echo "awg_watchdog_hosts $val"; } > "$tmp" 2>/dev/null && mv "$tmp" "$SETTINGS"
+    rm -f "$tmp" 2>/dev/null
 }
 
 # =============================================================
@@ -5035,6 +5051,9 @@ do_service_event(){
 # Rename any pre-1.1.89 credential-flavored config keys to neutral names before any command
 # reads them (cheap no-op once migrated), so existing installs keep working after upgrade.
 migrate_field_names
+# Normalize a space-separated watchdog-hosts value (pre-1.2.54 saves) to commas before the
+# page can read a truncated copy back and re-save it without the tail hosts.
+migrate_watchdog_hosts
 
 # Geo ipset name is configurable (so it can be shared with other connections/tools). Default
 # awg_dst; sanitize to a valid ipset name (letters/digits/_.-, <=31 chars), else keep default.

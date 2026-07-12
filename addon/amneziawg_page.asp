@@ -2006,8 +2006,11 @@ function applyConfig(actionScript){
     // Watchdog probe hosts: token-filter to what the probe accepts (IPv4/hostname). The old
     // char-level strip mangled an IPv6 into a fake all-digit "hostname" (2606:4700::1111 ->
     // "2606470047001111") that persisted and wasted a probe slot; drop such tokens whole.
+    // COMMA-joined, like awg_dns/awg_address: Merlin stores the value fine but truncates it
+    // at the first space when the page reads it back, so a space-joined "1.1.1.1 1.0.0.1"
+    // came back as "1.1.1.1" after a reload — and the next Apply persisted the loss.
     custom_settings.awg_watchdog_hosts = document.getElementById('awg_watchdog_hosts').value
-        .split(/[\s,]+/).filter(function(h){ return /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(h); }).join(' ');
+        .split(/[\s,]+/).filter(function(h){ return /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(h); }).join(',');
     custom_settings.awg_geo_wipe_update = document.getElementById('awg_geo_wipe_update').checked ? '1' : '0';
     // ipset name — sanitize to a valid set name (letters/digits/_.-, <=31); empty => backend uses awg_dst
     custom_settings.awg_ipset_name = document.getElementById('awg_ipset_name').value.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 31);
@@ -2493,9 +2496,10 @@ function loadGeoSettings(){
     if(wfa) wfa.checked = (custom_settings.awg_wait_for_agh === '1');
     var sd = document.getElementById('awg_start_delay');
     if(sd) sd.value = (custom_settings.awg_start_delay && custom_settings.awg_start_delay !== '0') ? custom_settings.awg_start_delay : '';
-    // Watchdog probe hosts (empty = backend default 8.8.8.8 1.1.1.1)
+    // Watchdog probe hosts (empty = backend default 8.8.8.8 1.1.1.1). Stored comma-joined
+    // (spaces don't survive the settings read-back); shown space-separated like the placeholder.
     var wh = document.getElementById('awg_watchdog_hosts');
-    if(wh) wh.value = custom_settings.awg_watchdog_hosts || '';
+    if(wh) wh.value = (custom_settings.awg_watchdog_hosts || '').replace(/,/g, ' ');
     var wp = document.getElementById('awg_geo_wipe_update');
     if(wp) wp.checked = (custom_settings.awg_geo_wipe_update === '1');
     var ipn = document.getElementById('awg_ipset_name');
