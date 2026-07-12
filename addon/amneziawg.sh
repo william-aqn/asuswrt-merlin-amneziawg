@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.52"
+AWG_VERSION="1.2.53"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -63,6 +63,8 @@ FWMARK="0x100"
 DNSMASQ_AWG_CONF="$AWG_DIR/dnsmasq_awg.conf"
 DNSMASQ_INCLUDE="/jffs/configs/dnsmasq.conf.add"
 DNSRELOAD_SIG="/tmp/.awg_dnsmasq_sig"   # md5 of the geo conf last loaded into dnsmasq (skip needless restarts); tmpfs = reboot-volatile like dnsmasq's own state
+DNSRELOAD_DEFER="/tmp/.awg_dnsreload_defer"     # updater window: reload jobs record PENDING + exit instead of fighting a busy rc (see dnsreload_deferred)
+DNSRELOAD_PENDING="/tmp/.awg_dnsreload_pending" # >=1 reload was swallowed while DEFER was up; the updater fires exactly one at the end
 SCRIPT_NAME="amneziawg"
 RT_TABLE=300
 AWG_CHAIN="AWG"
@@ -1546,14 +1548,56 @@ cleanup_firewall(){
     log_msg "Firewall rules cleaned"
 }
 
+# --- Updater dnsmasq-reload coalescing ---
+# finalize_ipk_install's stop → prerm → postinst → stop chain kicks 3-4 detached reload
+# jobs while rc_service is busy with OUR OWN start_awgdoupdate service-event. None of
+# their `service restart_dnsmasq` calls can execute until the update handler returns
+# (notify_rc blocks ~15s waiting for it, then DROPS the request — "skip the event"), and
+# each live job held finalize's/prerm's settle-waits for the full 60s (field log: two
+# ~1-min stalls + 7 dropped restarts per update, then a restart tail AFTER the update).
+# While DNSRELOAD_DEFER is fresh, reload jobs record PENDING and exit instantly; the
+# updater fires exactly ONE reload at the end on every exit path (dnsreload_defer_end).
+# Freshness-capped like .awg_no_autostart: a flag leaked by an updater that died
+# mid-flight must not swallow reloads forever (geo/tunnel-DNS conf edits would silently
+# stop landing in dnsmasq — the same class of harm as a stolen lock disabling self-heal).
+dnsreload_deferred(){
+    [ -f "$DNSRELOAD_DEFER" ] || return 1
+    if [ -n "$(find "$DNSRELOAD_DEFER" -mmin +15 2>/dev/null)" ]; then
+        rm -f "$DNSRELOAD_DEFER"
+        return 1
+    fi
+    return 0
+}
+
+dnsreload_defer_begin(){
+    rm -f "$DNSRELOAD_PENDING"
+    touch "$DNSRELOAD_DEFER"
+}
+
+# Close the defer window; if any reload was swallowed while it was open, fire exactly one
+# now. The spawned job settles rc first (we are usually STILL inside the update's
+# service-event here), so dnsmasq restarts once, seconds after the handler returns — the
+# "lucky last attempt" a field log showed by accident, made deterministic.
+dnsreload_defer_end(){
+    rm -f "$DNSRELOAD_DEFER"
+    if [ -f "$DNSRELOAD_PENDING" ]; then
+        rm -f "$DNSRELOAD_PENDING"
+        reload_dnsmasq
+    fi
+}
+
 # Reload dnsmasq so it re-reads our ipset/domain rules from dnsmasq.conf.add.
 # When invoked from a service-event, rc_service is busy and a direct
 # "service restart_dnsmasq" is dropped ("skip the event: restart_dnsmasq"); a
 # foreground retry would deadlock (rc waits for this very handler). So defer to a
-# detached job that retries until the restart actually takes (dnsmasq PID changes),
-# then pre-resolves geo domains to populate the ipset.
+# detached job that first waits for rc_service to go IDLE (the job outlives the
+# handler, so the event always ends under it), then restarts until it actually
+# takes (dnsmasq PID changes), then pre-resolves geo domains to populate the ipset.
 reload_dnsmasq(){
     (
+        # Updater window: don't queue up behind the lock just to fight a busy rc —
+        # mark that a reload is owed and let the updater fire one at the end.
+        if dnsreload_deferred; then touch "$DNSRELOAD_PENDING"; exit 0; fi
         # Serialize reload jobs: wait for any prior one (so the last restart loads the
         # current on-disk config), then hold the lock. Avoids ping-ponging restarts.
         # OWNERSHIP matters here: the old code, after 60s of waiting, BROKE OUT and ran
@@ -1570,6 +1614,9 @@ reload_dnsmasq(){
                 rm -rf /tmp/.awg_dnsreload 2>/dev/null
                 continue
             fi
+            # The defer window can open while we queue (update started under a running
+            # job) — hand off to the updater's final reload instead of waiting it out.
+            if dnsreload_deferred; then touch "$DNSRELOAD_PENDING"; exit 0; fi
             _w=$((_w + 1))
             if [ $_w -ge 240 ]; then
                 log_msg "dnsmasq reload: another reload job (pid ${_hp:-?}) still running after 240s — skipping this one"
@@ -1585,6 +1632,33 @@ reload_dnsmasq(){
         # pidof returns two PIDs — sort them so a mere change in listing order can't masquerade as
         # (or mask) a real restart in the comparison below.
         oldpid=$(pidof dnsmasq 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ')
+        # A busy rc_service means `service restart_dnsmasq` is LOST, not queued: notify_rc
+        # blocks ~15s inside our call waiting for the in-flight event, then DROPS ours
+        # ("skip the event: restart_dnsmasq"). When that in-flight event is one of our OWN
+        # service-events (start_awgstart / start_awgdoupdate), the drop is GUARANTEED — rc
+        # is waiting on the very handler this detached job outlives (a circular wait broken
+        # only by rc's 15s timeout; a field update log shows 7 straight block+drop cycles,
+        # ~2 min stalled, zero restarts). So before each attempt, poll 1s until rc goes
+        # idle — the one call that then executes beats thirty that rc throws away. The
+        # budget is job-global, so a pathologically busy rc degrades to the old fire-blind
+        # behavior instead of pinning this job (and the lock) forever.
+        _rcbudget=150
+        _rc_settle(){
+            while [ $_rcbudget -gt 0 ]; do
+                [ -z "$(nvram get rc_service 2>/dev/null)" ] && return 0
+                # Update began while we waited: its final reload supersedes this one.
+                if dnsreload_deferred; then touch "$DNSRELOAD_PENDING"; exit 0; fi
+                sleep 1
+                _rcbudget=$((_rcbudget - 1))
+            done
+            return 0
+        }
+        # Did dnsmasq restart since the snapshot? Any PID change counts — an external
+        # restart that landed while we settled has read the SAME on-disk conf we carry.
+        _reload_took(){
+            newpid=$(pidof dnsmasq 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ')
+            [ -n "$newpid" ] && [ "$newpid" != "$oldpid" ]
+        }
         # Skip a pointless restart when the on-disk geo conf is byte-identical to the one we last
         # loaded AND dnsmasq is still the SAME process that loaded it — common on an Apply that
         # changed only a device->policy assignment, not the geo lists. A needless restart only widens
@@ -1602,20 +1676,25 @@ reload_dnsmasq(){
             _step=1
             _memav=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
             [ -n "$_memav" ] && [ "$_memav" -lt 81920 ] && _step=4
-            i=0
+            i=0; _took=0
             while [ $i -lt 30 ]; do
+                _rc_settle
+                # rc may have executed a PREVIOUS attempt while we waited for it to go
+                # idle — don't fire another restart over a resolver that just reloaded
+                # (a needless bounce only widens the :53 outage window).
+                if _reload_took; then _took=1; break; fi
                 service restart_dnsmasq >/dev/null 2>&1
                 sleep 2
-                newpid=$(pidof dnsmasq 2>/dev/null | tr ' ' '\n' | sort | tr '\n' ' ')
-                if [ -n "$newpid" ] && [ "$newpid" != "$oldpid" ]; then
-                    log_msg "dnsmasq reloaded (geo rules active)"
-                    [ -n "$_sig" ] && echo "${newpid}|${_sig}" > "$DNSRELOAD_SIG"
-                    break
-                fi
+                if _reload_took; then _took=1; break; fi
                 i=$((i + 1))
                 sleep "$_step"
             done
-            [ $i -ge 30 ] && log_msg "WARNING: dnsmasq reload was skipped by rc; geo domains may need a manual restart"
+            if [ "$_took" = 1 ]; then
+                log_msg "dnsmasq reloaded (geo rules active)"
+                [ -n "$_sig" ] && echo "${newpid}|${_sig}" > "$DNSRELOAD_SIG"
+            else
+                log_msg "WARNING: dnsmasq reload never took (rc kept dropping restart_dnsmasq); geo domains may need a manual restart"
+            fi
         fi
         # Self-heal: if dnsmasq is NOT running at all now, the LAN just lost DHCP/DNS. But DON'T
         # assume our config is to blame and nuke geo routing — on a box with a co-resident resolver
@@ -1648,6 +1727,7 @@ reload_dnsmasq(){
                 log_msg "config parses clean — retrying dnsmasq with geo rules INTACT (transient failure suspected)"
                 _r=0
                 while [ $_r -lt 5 ]; do
+                    _rc_settle   # a dropped attempt here = more dead-LAN time; make it count
                     service restart_dnsmasq >/dev/null 2>&1
                     sleep 2
                     if pidof dnsmasq >/dev/null 2>&1; then _recovered=1; log_msg "dnsmasq recovered WITH geo rules intact"; break; fi
@@ -1670,6 +1750,7 @@ reload_dnsmasq(){
                 fi
                 _j=0
                 while [ $_j -lt 15 ]; do
+                    _rc_settle
                     service restart_dnsmasq >/dev/null 2>&1
                     sleep 2
                     pidof dnsmasq >/dev/null 2>&1 && { log_msg "dnsmasq recovered (AWG dnsmasq rules removed)"; break; }
@@ -2685,6 +2766,11 @@ do_diag(){
         else
             echo "  $_L : free"
         fi
+    done
+    # Updater flags: a FRESH one during an update is normal; one older than ~15 min means the
+    # updater died mid-flight (both self-reclaim on TTL, but show them so the window is visible).
+    for _F in /tmp/.awg_no_autostart "$DNSRELOAD_DEFER" "$DNSRELOAD_PENDING"; do
+        [ -f "$_F" ] && echo "updater flag: $_F ($([ -n "$(find "$_F" -mmin +15 2>/dev/null)" ] && echo 'STALE >15min — updater died?' || echo 'fresh'))"
     done
     echo "--- co-resident DPI / coexistence ---"
     _dpi_tool=$(detect_dpi_tool 2>/dev/null)
@@ -4455,6 +4541,12 @@ finalize_ipk_install(){
     # mid-update. Every error/success path below clears it. (The opkg-not-found bail above is
     # BEFORE this point — it leaves the VPN running, so no flag to clear there.)
     touch /tmp/.awg_no_autostart
+    # Same window, dnsmasq flavor: the stop → prerm → postinst → stop chain below kicks
+    # 3-4 dnsmasq reload jobs, none of which rc can execute while it waits on THIS very
+    # service-event — each would only burn 15s-block+drop cycles and hold the settle-waits
+    # below for their full 60s. Swallow them into ONE deferred reload fired at the end
+    # (dnsreload_defer_end on every post-commit exit path).
+    dnsreload_defer_begin
 
     # Preserve geo lists across the upgrade unless "wipe before update" is on. The
     # package prerm runs 'rm -rf /opt/amneziawg', so move geo to a sibling dir (same
@@ -4468,9 +4560,12 @@ finalize_ipk_install(){
     log_msg "Update: stopping VPN"
     do_stop "" update 2>/dev/null
     wait_for_pid_exit amneziawg-go 10
-    # Let do_stop's DETACHED dnsmasq reload settle before opkg runs the package prerm (which kicks
-    # off its OWN teardown + reload). Two concurrent `service restart_dnsmasq` storms during a
-    # memory-pressured opkg can OOM/blackout the LAN on a low-RAM box (RT-AC68U, 256MB).
+    # Let any PRE-update dnsmasq reload job settle before opkg runs the package prerm. Jobs
+    # spawned after the defer window opened never take the lock (they mark PENDING and exit),
+    # and an older in-flight job retires itself at its next rc-settle check — so this normally
+    # clears in a second or two; the 60s cap only guards a job stuck mid-restart. (Rationale
+    # unchanged: two concurrent `service restart_dnsmasq` storms during a memory-pressured
+    # opkg can OOM/blackout the LAN on a low-RAM box — RT-AC68U, 256MB.)
     _i=0; while [ -d /tmp/.awg_dnsreload ] && [ $_i -lt 60 ]; do sleep 1; _i=$((_i + 1)); done
     # Preserve the connection history across the prerm's rm -rf of /opt/amneziawg. Stashed AFTER
     # the do_stop above, so the just-recorded "update" session close survives the upgrade too.
@@ -4493,6 +4588,7 @@ finalize_ipk_install(){
         rm -f "$tmp" /tmp/.awg_no_autostart
         if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
         conn_history_restore
+        dnsreload_defer_end
         update_status; return 1
     fi
     # Post-install integrity gate: opkg can exit 0 yet write a 0-byte binary under memory
@@ -4513,6 +4609,7 @@ finalize_ipk_install(){
             rm -f "$tmp" /tmp/.awg_no_autostart
             if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
             conn_history_restore
+            dnsreload_defer_end
             update_status; return 1
         fi
         log_msg "Update: force-reinstall recovered the binaries"
@@ -4535,6 +4632,9 @@ finalize_ipk_install(){
     conn_history_restore
     # Install page from new version
     /jffs/addons/amneziawg/amneziawg.sh install_page
+    # Fire the ONE dnsmasq reload owed for the whole update (its job settles rc first, so
+    # dnsmasq restarts once, right after this service-event returns — not 3-4 times).
+    dnsreload_defer_end
     log_msg "Update: complete — now on $label. Start VPN from the UI."
     # Refresh status with the NEW script (this process still runs the old code in memory,
     # so calling update_status directly would re-write the OLD version number).
