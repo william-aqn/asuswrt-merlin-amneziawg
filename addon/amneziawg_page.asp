@@ -572,8 +572,8 @@ en: {
     CTF_DISABLING: "Disabling & rebooting…",
     CTF_DISABLE_CONFIRM: "Disable hardware NAT acceleration (CTF) and REBOOT the router now? This is required for AmneziaWG to work on this model. The router will be unreachable for a minute or two while it restarts.",
     // ---- kernel too old for sendmmsg() → daemon can't send packets ----
-    KERNEL_UNSUP_HEADER: "⛔ This router runs an old kernel (Linux&nbsp;2.6.x — RT-AC68U and similar). <b>AmneziaWG does not work on this kernel yet.</b> The daemon's packet-send fix has shipped, but bringing up the VPN's policy routing <b>destabilises the router's own network</b> on this kernel (the WAN connection drops). Tunnel start is disabled here to keep the router reachable.",
-    KERNEL_UNSUP_BODY: "This is a limitation of this old kernel, not a setting — no config change, and no NAT-acceleration toggle, fixes it. Routers on Linux&nbsp;3.x/4.x/5.x are unaffected.",
+    KERNEL_UNSUP_HEADER: "⚠️ This router runs an old kernel (Linux&nbsp;2.6.x — RT-AC68U and similar), where AmneziaWG is <b>experimental</b>. Testing on real hardware showed the <b>tunnel core works</b> (handshake completes, traffic flows both ways) — but the full start can sometimes destabilise the router (the WAN connection may drop, and the router may reboot) on this old kernel. <b>You can start the tunnel, but at your own risk.</b>",
+    KERNEL_UNSUP_BODY: "If the router becomes unreachable after you start it, it reboots on its own and comes back with the tunnel stopped. Keep <b>«Autostart after reboot» OFF</b> so a bad start can't loop. Routers on Linux&nbsp;3.x/4.x/5.x are unaffected — this note only appears on 2.6.x.",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Import will replace the current interface and peer settings. Continue?",
     MSG_IMPORT_UNRECOGNIZED: "Could not recognize the configuration: no [Interface]/[Peer] fields found (PrivateKey, PublicKey, Endpoint). Make sure it's a .conf from the Amnezia / WireGuard app.",
@@ -964,8 +964,8 @@ ru: {
     CTF_DISABLING: "Отключаю и перезагружаю…",
     CTF_DISABLE_CONFIRM: "Отключить аппаратное ускорение NAT (CTF) и ПЕРЕЗАГРУЗИТЬ роутер сейчас? Это необходимо для работы AmneziaWG на этой модели. Роутер будет недоступен минуту-две, пока перезагружается.",
     // ---- ядро слишком старое для sendmmsg() → демон не может слать пакеты ----
-    KERNEL_UNSUP_HEADER: "⛔ Роутер на старом ядре (Linux&nbsp;2.6.x — RT-AC68U и подобные). <b>AmneziaWG на этом ядре пока не работает.</b> Фикс отправки пакетов демоном уже вышел, но подъём policy-routing туннеля <b>дестабилизирует собственную сеть роутера</b> на этом ядре (отваливается WAN). Запуск туннеля здесь отключён, чтобы роутер оставался доступен.",
-    KERNEL_UNSUP_BODY: "Это ограничение старого ядра, а не настройка — не лечится ни конфигом, ни переключением аппаратного ускорения NAT. Роутеров на ядре Linux&nbsp;3.x/4.x/5.x это не касается.",
+    KERNEL_UNSUP_HEADER: "⚠️ Роутер на старом ядре (Linux&nbsp;2.6.x — RT-AC68U и подобные), где AmneziaWG <b>экспериментален</b>. Тесты на живом железе показали, что <b>ядро туннеля работает</b> (handshake проходит, трафик идёт в обе стороны) — но полный запуск иногда дестабилизирует роутер (может отвалиться WAN, роутер может перезагрузиться) на этом старом ядре. <b>Туннель можно запустить, но на свой страх и риск.</b>",
+    KERNEL_UNSUP_BODY: "Если после запуска роутер станет недоступен — он сам перезагрузится и поднимется с остановленным туннелем. Держите <b>«Автозапуск после перезагрузки» ВЫКЛЮЧЕННЫМ</b>, чтобы неудачный старт не зациклился. Роутеров на ядре Linux&nbsp;3.x/4.x/5.x это не касается — это уведомление только на 2.6.x.",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Импорт заменит текущие настройки интерфейса и пира. Продолжить?",
     MSG_IMPORT_UNRECOGNIZED: "Не удалось распознать конфигурацию: не найдены поля [Interface]/[Peer] (PrivateKey, PublicKey, Endpoint). Проверьте, что это .conf из приложения Amnezia / WireGuard.",
@@ -4419,7 +4419,7 @@ function initAutocompleteIp(){
                 <!-- Coexistence warning: shown by updateStatusUI() when a co-resident proxy/DPI
                      tool (Xray/XRAYUI, zapret, ...) is detected AND the config would collide with it -->
                 <div id="awg_coexist_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a2e1a; border:1px solid #f0ad4e; border-radius:5px; color:#f0ad4e; font-size:12px; line-height:1.5;"></div>
-                <div id="awg_kernel_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
+                <div id="awg_kernel_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_ctf_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_xray_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_fwvpn_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; border:1px solid; border-radius:5px; font-size:12px; line-height:1.5;"></div>

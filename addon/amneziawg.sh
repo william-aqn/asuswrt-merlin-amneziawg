@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.59"
+AWG_VERSION="1.2.60"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3230,10 +3230,17 @@ do_start(){
     # page banner. Checked BEFORE the CTF guard because it's the deeper blocker (on these boxes
     # disabling CTF wouldn't help). Removed once the daemon carries a sendmmsg fallback.
     if kernel_pre_sendmmsg; then
-        log_msg "ERROR: kernel $(uname -r) (Linux 2.6.x) — AmneziaWG is not usable on this old kernel. The daemon's packet-send fix shipped (1.2.58), but bringing up the VPN's policy routing destabilises the router's own network (WAN drops) on this kernel. Refusing to start to protect the router. This is a kernel limitation, not a config issue."
-        awg_incident "Unsupported kernel $(uname -r): policy-routing bring-up destabilises WAN on 2.6.x — refused start to protect the router"
-        update_status
-        return 1
+        # EXPERIMENTAL on Linux 2.6.x (RT-AC68U class), not blocked (since 1.2.60). Bisecting on a
+        # real RT-AC68U proved the tunnel CORE works here — handshake completes and traffic flows
+        # both ways (ping through awg0: 0% loss), inbound stays up, no reboot — when the daemon +
+        # policy routing + firewall are brought up in isolation. The FULL do_start still sometimes
+        # destabilises the box (WAN drop / watchdog reboot), traced NOT to the routing but to the
+        # extra start-stack (dnsmasq reload + geo/ipset + resource pressure on the 256MB box). So
+        # we no longer refuse — we WARN and proceed; the user starts at their own risk. If it goes
+        # bad the box reboots and (with autostart off) comes back stopped. Status kernel_unsup
+        # drives a yellow "experimental / at your own risk" banner.
+        log_msg "WARNING: kernel $(uname -r) (Linux 2.6.x) — AmneziaWG is EXPERIMENTAL on this old kernel. The tunnel core works here, but the full start can sometimes destabilise the router (WAN may drop, router may reboot). Starting anyway at your own risk. Keep 'Autostart after reboot' OFF so a bad start can't loop."
+        awg_incident "kernel $(uname -r): starting AmneziaWG despite the 2.6.x experimental warning (at user's own risk)"
     fi
 
     # Broadcom CTF guard (see ctf_active): on a CTF-accelerated box, standing up our policy
@@ -3892,12 +3899,12 @@ EOF
     local kernel_unsup=false
     kernel_pre_sendmmsg && kernel_unsup=true
 
-    # Broadcom CTF blocks the tunnel (see ctf_active): a CTF-accelerated box would hang on our
-    # policy-routing bring-up, so do_start refuses. Surfaced so the page renders a blocking
-    # banner with a one-click "disable CTF + reboot". False on every non-CTF box, and suppressed
-    # on an unsupported kernel (kernel_unsup is the real story there — disabling CTF wouldn't help).
+    # Broadcom CTF hard-wedges the box on policy-routing bring-up (see ctf_active) — surfaced so the
+    # page renders a banner with a one-click "disable CTF + reboot". Shown on 2.6.x too now (since
+    # 1.2.60 the kernel guard is a warning, not a block, so a 2.6.x user CAN try the tunnel — but
+    # must disable CTF first, else it hard-wedges). False on every non-CTF box.
     local ctf_block=false
-    { ctf_active && ! kernel_pre_sendmmsg; } && ctf_block=true
+    ctf_active && ctf_block=true
 
     # Firmware UI language (preferred_lang nvram) so the page/widget can localize without a
     # round-trip. The frontend maps RU -> Russian, everything else -> English. Empty -> EN.
