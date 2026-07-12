@@ -222,8 +222,14 @@ youtube,google,discord,netflix,spotify,instagram
 
 ### Сборка amneziawg-go (userspace-демон)
 
+> **Демон собирается из нашего форка [`william-aqn/amneziawg-go`](https://github.com/william-aqn/amneziawg-go), а не из upstream.** Причина — два фикса, критичных для роутеров, которые ещё не приняты в upstream (пока они висят в PR, сборка идёт из форка):
+> - **[PR #152](https://github.com/amnezia-vpn/amneziawg-go/pull/152)** — ограниченный буферный пул (`PreallocatedBuffersPerPool`): лекарство от `runtime: out of memory` под нагрузкой на роутерах с малой памятью;
+> - **[PR #153](https://github.com/amnezia-vpn/amneziawg-go/pull/153)** — fallback `sendmmsg`/`recvmmsg` → пакетный `sendmsg`/`recvmsg` при `ENOSYS`: без него на ядре Linux < 3.0 (RT-AC68U / 2.6.36) демон не может отправить ни одного пакета и туннель не передаёт трафик.
+>
+> Ветка форка **`router-build`** = тег `v0.2.19` (те же AmneziaWG 1.5/2.0 параметры) + оба патча отдельными коммитами. **Когда оба PR примут в upstream**, сборка вернётся на `amnezia-vpn/amneziawg-go` — правятся две строки (`AWG_GO_REPO`/`AWG_GO_REF`) в `.github/workflows/release.yml`.
+
 ```shell
-git clone --depth 1 --branch v0.2.19 https://github.com/amnezia-vpn/amneziawg-go.git
+git clone --depth 1 --branch router-build https://github.com/william-aqn/amneziawg-go.git
 cd amneziawg-go
 
 # ARM64 (aarch64-3.10) — GT-AX11000, RT-AX86U, RT-AX88U
@@ -242,7 +248,7 @@ GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 \
   go build -ldflags="-s -w" -o ../output/amneziawg-go-arm5
 ```
 
-Канонические команды (включая патч версии, чтобы `--version` показывал `v0.2.19-legacy26`) — в `.github/workflows/release.yml`, шаг «Build amneziawg-go-arm5 (legacy Go 1.23…)».
+Канонические команды (включая патч версии, чтобы `--version` показывал `v0.2.19-legacy26-pool1024-smfix`, и жёсткие проверки наличия обоих патчей) — в `.github/workflows/release.yml`, шаг «Build amneziawg-go-arm5 (legacy Go 1.23…)».
 
 ### Сборка awg CLI (статический musl)
 
@@ -346,7 +352,7 @@ opkg remove amneziawg
 
 **В: Поддерживается ли ARM32 (RT-AC68U)?**
 
-О: Да, есть отдельный .ipk для ARM32 (`armv7-2.6`). Начиная с **1.2.32** демон в этом пакете собирается специальным legacy-тулчейном (Go 1.23) — обычные сборки Go ≥ 1.24 не поддерживают ядро 2.6.36 этих роутеров и молча падали с `ERROR: amneziawg-go failed to create interface`. Проверить, что стоит нужная сборка: `/opt/amneziawg/amneziawg-go --version` должен показывать `v0.2.19-legacy26 (…)`.
+О: Да, есть отдельный .ipk для ARM32 (`armv7-2.6`). Начиная с **1.2.32** демон в этом пакете собирается специальным legacy-тулчейном (Go 1.23) — обычные сборки Go ≥ 1.24 не поддерживают ядро 2.6.36 этих роутеров и молча падали с `ERROR: amneziawg-go failed to create interface`. Проверить, что стоит нужная сборка: `/opt/amneziawg/amneziawg-go --version` должен показывать `v0.2.19-legacy26-pool1024-smfix (…)` (демон собран из [форка](https://github.com/william-aqn/amneziawg-go) с двумя фиксами — см. раздел «Сборка amneziawg-go»; суффикс `-smfix` = фикс `sendmmsg`, без которого туннель на 2.6.36 не передаёт трафик).
 
 **В: Туннель сам останавливается через минуту-две после запуска (или «2 минуты работает → дроп → переподключение»)?**
 
