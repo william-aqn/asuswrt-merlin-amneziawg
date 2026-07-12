@@ -170,7 +170,10 @@ PRERMEOF
 
 case "$1" in
     start)
-        /jffs/addons/amneziawg/amneziawg.sh start
+        # Init/boot path (rc.unslung at Entware start, opkg on package install) — honors the
+        # web-UI "Autostart after reboot" toggle (awg_autostart). To force a start regardless
+        # of the toggle: /jffs/addons/amneziawg/amneziawg.sh start
+        /jffs/addons/amneziawg/amneziawg.sh boot_start
         ;;
     stop)
         /jffs/addons/amneziawg/amneziawg.sh stop

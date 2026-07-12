@@ -639,6 +639,9 @@ en: {
     LBL_TUNNEL_DNS: "Route the whole LAN's DNS through the tunnel to the servers above while the VPN is up (needs DNS interception ON — inert in compatibility mode; defeats ISP DNS poisoning)",
     HINT_DNS: "used by “DNS via tunnel” below; empty = firmware DNS",
     HINT_NO_DNS_HTML: "<summary>Compatibility mode: disables AmneziaWG's DNS interception (port :53) so it can't clash with a co-resident DPI/proxy tool. ON by default for new installs. <u>Details</u></summary>Keep it on if <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) or <b>b4</b> runs alongside — otherwise a DNS conflict can leave the network without internet. Geo by IP (GeoIP/antifilter) keeps working; geo by domains keeps working for clients that use the router as their DNS — only clients with a hardcoded external resolver lose domain-geo. A nearby zapret2 / Xray / v2ray / sing-box / b4 or NFQUEUE/TPROXY (iptables or nft) footprint also disables interception automatically even without this checkbox. Note: this only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».",
+    TH_AUTOSTART: "Autostart",
+    LBL_AUTOSTART: "Start the tunnel automatically after a router reboot",
+    HINT_AUTOSTART: "On (default): the tunnel comes up by itself when the router boots. Turn it off to keep the tunnel stopped across reboots (e.g. while debugging another tool) — the configured connection is fully preserved, just start it manually with the «Start» button when needed. Manual start/restart and the watchdog of an already-running tunnel are not affected.",
     TH_START_DELAY: "Startup delay",
     ARIA_START_DELAY: "Startup delay in seconds",
     LBL_START_DELAY_UNIT: "sec",
@@ -1019,6 +1022,9 @@ ru: {
     LBL_TUNNEL_DNS: "Пускать DNS-запросы всей сети через туннель на указанные выше серверы, пока VPN запущен (нужен включённый перехват DNS — в режиме совместимости не действует; защищает от DNS-подмены провайдером)",
     HINT_DNS: "используется опцией «DNS через туннель» ниже; пусто = DNS прошивки",
     HINT_NO_DNS_HTML: "<summary>Режим совместимости: отключает перехват DNS (порт :53) у AmneziaWG, чтобы он не конфликтовал с соседней DPI/прокси-утилитой. Для новых установок включён по умолчанию. <u>Подробнее</u></summary>Держите включённым, если рядом работает <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) или <b>b4</b> — иначе конфликт DNS может оставить сеть без интернета. Geo по IP (GeoIP/antifilter) продолжает работать; geo по доменам работает для клиентов, использующих роутер как DNS — только клиенты с жёстко прописанным внешним резолвером теряют geo по доменам. Обнаруженный рядом zapret2 / Xray / v2ray / sing-box / b4 или след NFQUEUE/TPROXY (iptables или nft) тоже отключает перехват автоматически даже без этой галочки. Важно: галочка решает только конфликт по DNS — при политике «VPN — весь трафик» маршрутизация всё равно заберёт трафик прокси, поэтому для совместимости выбирайте «Напрямую» или «VPN — только Geo».",
+    TH_AUTOSTART: "Автозапуск",
+    LBL_AUTOSTART: "Автоматически запускать туннель после перезагрузки роутера",
+    HINT_AUTOSTART: "Включено (по умолчанию): туннель поднимается сам при загрузке роутера. Выключите, чтобы после перезагрузки туннель оставался остановленным (например, на время отладки другой программы) — настроенное подключение полностью сохраняется, просто запускайте его вручную кнопкой «Запустить», когда нужно. На ручной запуск/перезапуск и на watchdog уже работающего туннеля галочка не влияет.",
     TH_START_DELAY: "Задержка запуска",
     ARIA_START_DELAY: "Задержка запуска в секундах",
     LBL_START_DELAY_UNIT: "с",
@@ -1991,6 +1997,8 @@ function applyConfig(actionScript){
     custom_settings.awg_no_dns_intercept = document.getElementById('awg_no_dns_intercept').checked ? '1' : '0';
     custom_settings.awg_killswitch = document.getElementById('awg_killswitch').checked ? '1' : '0';
     custom_settings.awg_tunnel_dns = document.getElementById('awg_tunnel_dns').checked ? '1' : '0';
+    var _as = document.getElementById('awg_autostart');
+    if(_as) custom_settings.awg_autostart = _as.checked ? '1' : '0';
     var _wfa = document.getElementById('awg_wait_for_agh');
     if(_wfa) custom_settings.awg_wait_for_agh = _wfa.checked ? '1' : '0';
     var _sd = document.getElementById('awg_start_delay');
@@ -2476,6 +2484,10 @@ function loadGeoSettings(){
     if(ks) ks.checked = (custom_settings.awg_killswitch === '1');
     var tdns = document.getElementById('awg_tunnel_dns');
     if(tdns) tdns.checked = (custom_settings.awg_tunnel_dns === '1');
+    // Autostart after reboot (default ON — absent/1 = start, the pre-1.2.52 behavior; the
+    // boot gate itself lives in the S99 init script -> `amneziawg.sh boot_start`).
+    var asb = document.getElementById('awg_autostart');
+    if(asb) asb.checked = (custom_settings.awg_autostart !== '0');
     // Wait-for-AdGuardHome on autostart (only meaningful/visible on AGH boxes; default off).
     var wfa = document.getElementById('awg_wait_for_agh');
     if(wfa) wfa.checked = (custom_settings.awg_wait_for_agh === '1');
@@ -4563,6 +4575,13 @@ function initAutocompleteIp(){
                     <td>
                         <label><input type="checkbox" id="awg_no_dns_intercept"> <span data-i18n="LBL_NO_DNS_INTERCEPT" style="color:#FFCC00;">Compatibility mode — coexist with zapret2 / Xray / b4 (don't intercept DNS)</span></label>
                         <details class="awg-hint" data-i18n-html="HINT_NO_DNS_HTML"><summary>Compatibility mode: disables AmneziaWG's DNS interception (port :53) so it can't clash with a co-resident DPI/proxy tool. ON by default for new installs. <u>Details</u></summary>Keep it on if <b>zapret2</b>, <b>Xray/XRAYUI</b> (v2ray, sing-box) or <b>b4</b> runs alongside — otherwise a DNS conflict can leave the network without internet. Geo by IP (GeoIP/antifilter) keeps working; geo by domains keeps working for clients that use the router as their DNS — only clients with a hardcoded external resolver lose domain-geo. A nearby zapret2 / Xray / v2ray / sing-box / b4 or NFQUEUE/TPROXY (iptables or nft) footprint also disables interception automatically even without this checkbox. Note: this only resolves the DNS conflict — with the «VPN — all traffic» policy, routing still takes the proxy's traffic, so for compatibility choose «Direct» or «VPN — Geo only».</details>
+                    </td>
+                </tr>
+                <tr>
+                    <th data-i18n="TH_AUTOSTART">Autostart</th>
+                    <td>
+                        <label><input type="checkbox" id="awg_autostart"> <span data-i18n="LBL_AUTOSTART">Start the tunnel automatically after a router reboot</span></label>
+                        <div class="awg-hint" data-i18n="HINT_AUTOSTART">On (default): the tunnel comes up by itself when the router boots. Turn it off to keep the tunnel stopped across reboots (e.g. while debugging another tool) — the configured connection is fully preserved, just start it manually with the «Start» button when needed. Manual start/restart and the watchdog of an already-running tunnel are not affected.</div>
                     </td>
                 </tr>
                 <tr>

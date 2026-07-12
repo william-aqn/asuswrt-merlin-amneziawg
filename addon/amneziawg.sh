@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.51"
+AWG_VERSION="1.2.52"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3015,6 +3015,29 @@ conn_record_stop(){
 
 # --- Start ---
 
+# Boot-time entry (the .ipk's S99amneziawg init: rc.unslung at Entware start, plus opkg's
+# auto-invocation of the init script on package install). Honors the UI toggle «Автозапуск
+# после перезагрузки» (awg_autostart; absent/1 = start — the pre-1.2.52 behavior). A SEPARATE
+# command from `start` on purpose: the UI button, `amneziawg.sh start` and the watchdog of a
+# running tunnel stay unconditional — the toggle only decides whether the tunnel comes up BY
+# ITSELF. (The watchdog cron doesn't survive a reboot and is only installed by do_start, so
+# with autostart off nothing else will start the tunnel; do_firewall_restart/do_wan_event are
+# is_running-gated.)
+do_boot_start(){
+    # is_running guard: with the tunnel already up, fall through to do_start's own
+    # "Already running" no-op — a second `S99amneziawg start` must not claim it skipped.
+    if ! is_running && [ "$(get_setting awg_autostart)" = "0" ]; then
+        # logger + UI journal so "why is the VPN down after reboot" is answerable from diag;
+        # echo for whoever runs `S99amneziawg start` from an interactive shell.
+        log_msg "Autostart is off (awg_autostart=0) — tunnel left stopped after boot. Start it from the web UI or: $ADDON_DIR/amneziawg.sh start"
+        echo "AmneziaWG: autostart is disabled in the web UI settings — tunnel not started."
+        echo "  Manual start: $ADDON_DIR/amneziawg.sh start (or the web UI button)"
+        update_status
+        return 0
+    fi
+    do_start
+}
+
 do_start(){
     # Skip if update in progress (opkg triggers S99amneziawg start)
     [ -f /tmp/.awg_no_autostart ] && { log_msg "Start blocked: update in progress"; return 0; }
@@ -4029,10 +4052,11 @@ do_mount_ui(){
     [ -f "$GEO_DIR/v2fly_categories.txt" ] && cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
     update_status
     # NOTE: the tunnel's boot autostart is the .ipk's S99amneziawg init script (Entware rc.unslung
-    # -> 'amneziawg.sh start' -> do_start), NOT this hook. The old `awg_autostart` branch here was
-    # dead code (the key was never set anywhere and had no UI) and is removed. The optional
-    # pre-start delay and the AdGuardHome-readiness wait now live in do_start — the single real
-    # start path hit by every trigger (boot, UI, restart, watchdog).
+    # -> 'amneziawg.sh boot_start' -> do_boot_start, which honors the awg_autostart toggle), NOT
+    # this hook. A pre-1.2.19 `awg_autostart` branch here was dead code and was removed; since
+    # 1.2.52 the key is real again — with a UI checkbox — but it gates ONLY do_boot_start, never
+    # this hook. The optional pre-start delay and the AdGuardHome-readiness wait live in do_start —
+    # the single real start path hit by every trigger (boot, UI, restart, watchdog).
 }
 
 do_uninstall(){
@@ -4920,6 +4944,7 @@ case "$_ipn" in ''|*[!A-Za-z0-9_.-]*) _ipn="" ;; esac
 
 case "$1" in
     start)          do_start ;;
+    boot_start)     do_boot_start ;;   # S99 init (boot/opkg): honors the awg_autostart toggle
     stop)           do_stop user ;;
     stop_auto)      do_stop "" deadman ;;   # internal: auto-rollback stop (deadman); keeps watchdog cron
     restart)        do_restart ;;

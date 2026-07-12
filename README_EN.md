@@ -260,6 +260,8 @@ awg show
 /jffs/addons/amneziawg/amneziawg.sh diag
 ```
 
+> `S99amneziawg start` is the boot path (the system invokes it at router startup): it honors the **"Autostart"** checkbox in the web UI and will not bring the tunnel up when the checkbox is off. To start manually regardless of the checkbox: `/jffs/addons/amneziawg/amneziawg.sh start`.
+
 > The same report is available in the web UI via the **"Получить диагностические данные"** button in the "Журнал" (Log) block — you can **download it as a `.txt` file** or **copy it** to the clipboard with the 📋 mini-button (fenced in a code block, ready to paste into Telegram).
 
 ## How to uninstall
@@ -314,6 +316,10 @@ A: Restart the tunnel with a pause: `/jffs/addons/amneziawg/amneziawg.sh stop; s
 **Q: How to add a custom service by IP?**
 
 A: Add CIDR ranges in the "Custom IPs / subnets" field (GeoCustom), e.g. `149.154.160.0/20,91.108.4.0/22` for Telegram.
+
+**Q: How do I temporarily disable the tunnel so it doesn't come back up after a reboot (without uninstalling the addon)?**
+
+A: Since **1.2.52** — natively: stop the tunnel with the "Stop" button and untick the **"Autostart"** checkbox in the settings (Apply). After a reboot the tunnel stays stopped and your working config is fully preserved; when you need it again — "Start", and re-tick the checkbox if you like. Handy while debugging co-resident tools (zapret2, Xray, etc.).
 
 **Q: Can it run alongside zapret2 or Xray (XRAYUI)?**
 
