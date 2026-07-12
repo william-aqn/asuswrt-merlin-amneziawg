@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.58"
+AWG_VERSION="1.2.59"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1265,16 +1265,18 @@ ctf_active(){
     return 0
 }
 
-# True on a kernel too old for sendmmsg() — the batched UDP send amneziawg-go (like wireguard-go)
-# uses for ALL packet egress. sendmmsg landed in Linux 3.0; on the 2.6.x kernels some Broadcom
-# boxes still run (RT-AC68U = 2.6.36) it returns ENOSYS ("function not implemented"), so the
-# daemon forms handshake/keepalive packets but CANNOT send a single one — the tunnel comes up,
-# gets no handshake, and the health check rolls it back forever, on ANY config. Interface create +
-# setconf + obfuscation all succeed (they don't touch sendmmsg), which is why this masqueraded as
-# CTF/routing/config for so long. Until the daemon carries a sendmmsg→sendmsg fallback there is NO
-# working tunnel on these kernels — so do_start refuses up front (also spares the box the WAN
-# destabilisation that policy-routing bring-up causes here). Detect by kernel version, the ground
-# truth. NB: this supersedes the CTF banner on such boxes — disabling CTF wouldn't help.
+# True on a 2.6.x/2.4.x kernel — where AmneziaWG does not work, so do_start refuses up front.
+# TWO distinct blockers were found on the RT-AC68U (2.6.36), both real:
+#   1. sendmmsg() ENOSYS — the batched UDP send amneziawg-go uses for ALL egress landed in Linux
+#      3.0, so the daemon couldn't send a single packet. FIXED (1.2.58): the fork daemon falls
+#      back to per-packet sendmsg (version suffix -smfix); proven to send + handshake.
+#   2. Policy-routing bring-up (ip rules 97-100 + fwmark + table 300 + iptables) DESTABILISES WAN
+#      on 2.6.36 — confirmed 2026-07-13 with the smfix daemon + CTF off: TX flowed (358 B sent)
+#      but RX stayed 0, the box became WAN-unreachable and rebooted. UNSOLVED (likely the
+#      Entware-iproute2-vs-2.6.36 fragility family). This is why the guard STAYS even though the
+#      daemon is fixed — disabling CTF or fixing the daemon is not enough on these kernels.
+# Detect by kernel version (ground truth). Supersedes the CTF banner here. Lift only once (2) is
+# solved (isolate the breaking ip/iptables op in QEMU 2.6.32, NOT on a live box).
 kernel_pre_sendmmsg(){
     case "$(uname -r 2>/dev/null)" in
         2.6.*|2.4.*) return 0 ;;
@@ -3228,8 +3230,8 @@ do_start(){
     # page banner. Checked BEFORE the CTF guard because it's the deeper blocker (on these boxes
     # disabling CTF wouldn't help). Removed once the daemon carries a sendmmsg fallback.
     if kernel_pre_sendmmsg; then
-        log_msg "ERROR: kernel $(uname -r) is too old for sendmmsg() (added in Linux 3.0) — amneziawg-go cannot send ANY packets, so the tunnel can't pass traffic on this router. This needs a patched daemon (sendmmsg→sendmsg fallback), not a config change. Start aborted."
-        awg_incident "Unsupported kernel $(uname -r): daemon can't send UDP (sendmmsg ENOSYS) — refused start (tunnel would never pass traffic)"
+        log_msg "ERROR: kernel $(uname -r) (Linux 2.6.x) — AmneziaWG is not usable on this old kernel. The daemon's packet-send fix shipped (1.2.58), but bringing up the VPN's policy routing destabilises the router's own network (WAN drops) on this kernel. Refusing to start to protect the router. This is a kernel limitation, not a config issue."
+        awg_incident "Unsupported kernel $(uname -r): policy-routing bring-up destabilises WAN on 2.6.x — refused start to protect the router"
         update_status
         return 1
     fi

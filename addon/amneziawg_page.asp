@@ -572,8 +572,8 @@ en: {
     CTF_DISABLING: "Disabling & rebooting…",
     CTF_DISABLE_CONFIRM: "Disable hardware NAT acceleration (CTF) and REBOOT the router now? This is required for AmneziaWG to work on this model. The router will be unreachable for a minute or two while it restarts.",
     // ---- kernel too old for sendmmsg() → daemon can't send packets ----
-    KERNEL_UNSUP_HEADER: "⛔ This router's kernel is too old to carry AmneziaWG's VPN traffic. The daemon sends packets with <code>sendmmsg()</code> (added in Linux&nbsp;3.0); this kernel doesn't implement it, so the tunnel connects but <b>cannot send a single packet</b> — no handshake, no traffic, on any config.",
-    KERNEL_UNSUP_BODY: "This is a kernel limitation, not a setting — no config change fixes it, and disabling NAT acceleration won't help either. A patched daemon (with a sendmmsg→sendmsg fallback) is needed and is being worked on; tunnel start is disabled here until then.",
+    KERNEL_UNSUP_HEADER: "⛔ This router runs an old kernel (Linux&nbsp;2.6.x — RT-AC68U and similar). <b>AmneziaWG does not work on this kernel yet.</b> The daemon's packet-send fix has shipped, but bringing up the VPN's policy routing <b>destabilises the router's own network</b> on this kernel (the WAN connection drops). Tunnel start is disabled here to keep the router reachable.",
+    KERNEL_UNSUP_BODY: "This is a limitation of this old kernel, not a setting — no config change, and no NAT-acceleration toggle, fixes it. Routers on Linux&nbsp;3.x/4.x/5.x are unaffected.",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Import will replace the current interface and peer settings. Continue?",
     MSG_IMPORT_UNRECOGNIZED: "Could not recognize the configuration: no [Interface]/[Peer] fields found (PrivateKey, PublicKey, Endpoint). Make sure it's a .conf from the Amnezia / WireGuard app.",
@@ -964,8 +964,8 @@ ru: {
     CTF_DISABLING: "Отключаю и перезагружаю…",
     CTF_DISABLE_CONFIRM: "Отключить аппаратное ускорение NAT (CTF) и ПЕРЕЗАГРУЗИТЬ роутер сейчас? Это необходимо для работы AmneziaWG на этой модели. Роутер будет недоступен минуту-две, пока перезагружается.",
     // ---- ядро слишком старое для sendmmsg() → демон не может слать пакеты ----
-    KERNEL_UNSUP_HEADER: "⛔ Ядро этого роутера слишком старое для VPN-трафика AmneziaWG. Демон отправляет пакеты через <code>sendmmsg()</code> (появился в Linux&nbsp;3.0); на этом ядре его нет, поэтому туннель подключается, но <b>не может отправить ни одного пакета</b> — нет handshake, нет трафика, ни при каком конфиге.",
-    KERNEL_UNSUP_BODY: "Это ограничение ядра, а не настройка — конфигом не лечится, и отключение аппаратного ускорения NAT тоже не поможет. Нужен пропатченный демон (с fallback sendmmsg→sendmsg), он в работе; до тех пор запуск туннеля здесь отключён.",
+    KERNEL_UNSUP_HEADER: "⛔ Роутер на старом ядре (Linux&nbsp;2.6.x — RT-AC68U и подобные). <b>AmneziaWG на этом ядре пока не работает.</b> Фикс отправки пакетов демоном уже вышел, но подъём policy-routing туннеля <b>дестабилизирует собственную сеть роутера</b> на этом ядре (отваливается WAN). Запуск туннеля здесь отключён, чтобы роутер оставался доступен.",
+    KERNEL_UNSUP_BODY: "Это ограничение старого ядра, а не настройка — не лечится ни конфигом, ни переключением аппаратного ускорения NAT. Роутеров на ядре Linux&nbsp;3.x/4.x/5.x это не касается.",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Импорт заменит текущие настройки интерфейса и пира. Продолжить?",
     MSG_IMPORT_UNRECOGNIZED: "Не удалось распознать конфигурацию: не найдены поля [Interface]/[Peer] (PrivateKey, PublicKey, Endpoint). Проверьте, что это .conf из приложения Amnezia / WireGuard.",
