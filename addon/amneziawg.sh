@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.54"
+AWG_VERSION="1.2.55"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -2491,6 +2491,15 @@ validate_endpoint(){
     echo "$port" | grep -qE '^[0-9]+$' || { log_msg "ERROR: Invalid endpoint port: $1"; return 1; }
     [ "$port" -ge 1 ] && [ "$port" -le 65535 ] 2>/dev/null || { log_msg "ERROR: Endpoint port out of range: $port"; return 1; }
     [ -n "$host" ] || { log_msg "ERROR: Empty endpoint host"; return 1; }
+    # A loopback/unspecified endpoint is never a real VPN server, and it weaponizes the
+    # endpoint host-route: setup adds `<endpoint> via <wan-gw>` and every cleanup deletes it,
+    # and doing that against 127.0.0.0/8 broke WAN reachability outright on a 2.6.36 box
+    # (2026-07, remote RT-AC68U — every start/stop re-broke it; power-cycles to recover).
+    case "$host" in
+        127.*|0.0.0.0|localhost)
+            log_msg "ERROR: Endpoint host '$host' is loopback/unspecified — must be the VPN server's external address"
+            return 1 ;;
+    esac
     return 0
 }
 
