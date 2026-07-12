@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.55"
+AWG_VERSION="1.2.56"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1247,6 +1247,43 @@ do_xray_stop(){
         log_msg "  Xray stopped — transparent-proxy rules cleared; AmneziaWG can route now"
     fi
     update_status
+}
+
+# True when Broadcom CTF (Cut-Through Forwarding, the HW-NAT flow accelerator on BCM470x boxes
+# like the RT-AC68U) is ACTIVE. CTF forwards packets via a flow cache that SHORT-CIRCUITS the
+# netfilter/routing path — so our policy ip-rules (prio 97-100) + fwmark marking are bypassed,
+# and bringing them up corrupts the accelerator's kernel state badly enough to HANG the box →
+# the hardware watchdog reboots it. Field-confirmed on a remote RT-AC68U (kernel 2.6.36): EVERY
+# tunnel start wedged the router regardless of endpoint (this is NOT the loopback-endpoint red
+# herring the 1.2.55 note first blamed). Merlin's own VPN-client policy routing / QoS disables
+# CTF the same way — nvram ctf_disable=1 + a reboot (the old CTF, ctf_fa_cap=0, has no runtime
+# `fc` toggle). Detection: the `ctf` module is loaded AND nvram hasn't already disabled it.
+# No-op (returns false) on every box without the module — the AX-series fleet never trips it.
+ctf_active(){
+    grep -q '^ctf ' /proc/modules 2>/dev/null || return 1
+    [ "$(nvram get ctf_disable 2>/dev/null)" = "1" ] && return 1
+    return 0
+}
+
+# Disable Broadcom CTF ON EXPLICIT USER ACTION (the CTF banner's button). Sets the persistent
+# nvram flag Merlin itself uses and reboots — the only way to unload the accelerator on old-CTF
+# boxes (no runtime `fc`). After the reboot ctf_active() is false, the do_start guard passes and
+# the policy-routed tunnel comes up normally. We only ever DISABLE (never re-enable behind the
+# user's back); a user who wants HW acceleration back can clear ctf_disable in the firmware.
+do_ctf_disable(){
+    if ! ctf_active; then
+        log_msg "Disable-CTF requested, but Broadcom CTF is not active — nothing to do"
+        update_status
+        return 0
+    fi
+    log_msg "Disabling Broadcom CTF (hardware NAT acceleration) at user request: nvram ctf_disable=1, then reboot"
+    nvram set ctf_disable=1
+    nvram commit
+    log_msg "CTF disabled in nvram — rebooting to apply. AmneziaWG will be able to start after the router comes back."
+    awg_incident "CTF disabled at user request (ctf_disable=1) + reboot — enables policy-routed tunnel on this box"
+    update_status
+    # Detach the reboot so this service-event handler returns first (the UI reads the log/ack).
+    ( sleep 3; reboot ) >/dev/null 2>&1 &
 }
 
 # Firmware VPN client coexistence probe (WireGuard wgc* / VPN Fusion). The firmware's policy
@@ -2806,6 +2843,7 @@ do_diag(){
     if nft list ruleset 2>/dev/null | grep -qE 'queue (num|to)'; then _b4_be="${_b4_be:+$_b4_be+}nft"; fi
     echo "NFQUEUE backend seen : ${_b4_be:-none}"
     echo "compat (no DNS hijack): $([ "$(get_setting awg_no_dns_intercept)" = "1" ] && echo "ON (coexist)" || echo off)"
+    echo "Broadcom CTF (HW-NAT) : $(grep -q '^ctf ' /proc/modules 2>/dev/null && echo "module loaded" || echo "no module") ctf_disable=$(nvram get ctf_disable 2>/dev/null) -> $(ctf_active && echo 'ACTIVE (BLOCKS tunnel start — disable + reboot)' || echo 'not blocking')"
     echo "conntrack count/max  : $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo '?')/$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo '?')"
     echo "ip rule fwmark 0x100 :"; ip rule show 2>/dev/null | grep -i 'fwmark 0x100' | sed 's/^/  /'
     echo "lan_ipaddr           : $(nvram get lan_ipaddr 2>/dev/null)"
@@ -3157,6 +3195,18 @@ do_start(){
         log_msg "Already running"
         update_status
         return 0
+    fi
+
+    # Broadcom CTF guard (see ctf_active): on a CTF-accelerated box, standing up our policy
+    # routing hangs the kernel and the hardware watchdog reboots the router. Refuse to start —
+    # from EVERY path that reaches here (boot autostart, UI, watchdog) — until CTF is disabled.
+    # The page shows a banner with a one-click "disable CTF + reboot"; the status ctf_block flag
+    # drives it. Placed before STARTING_FLAG so the UI never even flashes "Connecting".
+    if ctf_active; then
+        log_msg "ERROR: Broadcom CTF (hardware NAT acceleration) is ON — starting the policy-routed tunnel would hang the router and force a watchdog reboot. Disable CTF (nvram ctf_disable=1) and reboot; the web UI has a one-click button. Start aborted."
+        awg_incident "CTF enabled — refused tunnel start to avoid a kernel hang/reboot (disable CTF + reboot first)"
+        update_status
+        return 1
     fi
 
     # Mark start-in-progress so the UI shows "Connecting" even across a page
@@ -3797,6 +3847,12 @@ EOF
     local xray_ctl=false
     [ -x /jffs/scripts/xrayui ] && xray_ctl=true
 
+    # Broadcom CTF blocks the tunnel (see ctf_active): a CTF-accelerated box would hang on our
+    # policy-routing bring-up, so do_start refuses. Surfaced so the page renders a blocking
+    # banner with a one-click "disable CTF + reboot". False on every non-CTF box.
+    local ctf_block=false
+    ctf_active && ctf_block=true
+
     # Firmware UI language (preferred_lang nvram) so the page/widget can localize without a
     # round-trip. The frontend maps RU -> Russian, everything else -> English. Empty -> EN.
     local pref_lang=$(nvram get preferred_lang 2>/dev/null)
@@ -3810,7 +3866,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","dnsgeo_warn":"${dnsgeo_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"dnsgeo_warn":"${dnsgeo_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
@@ -5052,6 +5108,7 @@ do_service_event(){
         awganalyzestart) do_analyze_start ;;
         awganalyzestop)  do_analyze_stop ;;
         awgxraystop)     do_xray_stop ;;
+        awgctfdisable)   do_ctf_disable ;;
     esac
 }
 
@@ -5093,5 +5150,7 @@ case "$1" in
     ensure_geo)     ensure_geo ;;
     analyze_start)  do_analyze_start ;;
     analyze_stop)   do_analyze_stop ;;
+    ctf_status)     ctf_active && echo "CTF active (ctf_disable=$(nvram get ctf_disable 2>/dev/null))" || echo "CTF not active" ;;
+    ctf_disable)    do_ctf_disable ;;
     *)              echo "Usage: $0 {start|stop|restart|status|diag|update_geo|download_geo|install_page|uninstall}" ;;
 esac

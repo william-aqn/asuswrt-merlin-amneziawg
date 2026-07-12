@@ -565,6 +565,12 @@ en: {
     XRAY_STOP_BTN: "Stop Xray",
     XRAY_STOPPING: "Stopping Xray…",
     XRAY_STOP_CONFIRM: "Stop Xray / XRAYUI now? Its transparent-proxy (TPROXY) rules will be removed so AmneziaWG can route traffic. You can start XRAYUI again from its own page (VPN → X-RAY).",
+    // ---- Broadcom CTF (HW NAT acceleration) blocks the tunnel ----
+    CTF_BLOCK_HEADER: "⛔ <b>Hardware NAT acceleration (Broadcom CTF)</b> is enabled on this router. AmneziaWG relies on policy routing, which on this platform is <b>incompatible</b> with CTF — starting the tunnel corrupts the accelerator's kernel state and <b>hangs the router until its watchdog reboots it</b>. The tunnel will not start until CTF is disabled.",
+    CTF_BLOCK_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>Click the button below to disable CTF (<code>ctf_disable=1</code>) and reboot — the same fix Merlin applies for its own policy-routed VPN clients. After the reboot AmneziaWG starts normally.</li><li>Trade-off: with CTF off, NAT throughput drops somewhat (the CPU forwards packets). You can re-enable acceleration in the firmware later if you stop using AmneziaWG.</li></ul>",
+    CTF_DISABLE_BTN: "Disable acceleration & reboot",
+    CTF_DISABLING: "Disabling & rebooting…",
+    CTF_DISABLE_CONFIRM: "Disable hardware NAT acceleration (CTF) and REBOOT the router now? This is required for AmneziaWG to work on this model. The router will be unreachable for a minute or two while it restarts.",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Import will replace the current interface and peer settings. Continue?",
     MSG_IMPORT_UNRECOGNIZED: "Could not recognize the configuration: no [Interface]/[Peer] fields found (PrivateKey, PublicKey, Endpoint). Make sure it's a .conf from the Amnezia / WireGuard app.",
@@ -948,6 +954,12 @@ ru: {
     XRAY_STOP_BTN: "Остановить Xray",
     XRAY_STOPPING: "Останавливаю Xray…",
     XRAY_STOP_CONFIRM: "Остановить Xray / XRAYUI сейчас? Его правила прозрачного проксирования (TPROXY) будут удалены, чтобы AmneziaWG мог маршрутизировать трафик. Включить XRAYUI обратно можно на его странице (VPN → X-RAY).",
+    // ---- Broadcom CTF (аппаратное ускорение NAT) блокирует туннель ----
+    CTF_BLOCK_HEADER: "⛔ На роутере включено <b>аппаратное ускорение NAT (Broadcom CTF)</b>. AmneziaWG использует policy-routing, который на этой платформе <b>несовместим</b> с CTF — запуск туннеля повреждает состояние ускорителя в ядре и <b>подвешивает роутер до перезагрузки по watchdog</b>. Туннель не запустится, пока CTF не отключён.",
+    CTF_BLOCK_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>Нажмите кнопку ниже, чтобы отключить CTF (<code>ctf_disable=1</code>) и перезагрузиться — это то же решение, что Merlin применяет для своих policy-routed VPN-клиентов. После перезагрузки AmneziaWG запустится нормально.</li><li>Компромисс: с выключенным CTF скорость NAT немного снижается (пересылку делает CPU). Позже можно вернуть ускорение в прошивке, если перестанете пользоваться AmneziaWG.</li></ul>",
+    CTF_DISABLE_BTN: "Отключить ускорение и перезагрузить",
+    CTF_DISABLING: "Отключаю и перезагружаю…",
+    CTF_DISABLE_CONFIRM: "Отключить аппаратное ускорение NAT (CTF) и ПЕРЕЗАГРУЗИТЬ роутер сейчас? Это необходимо для работы AmneziaWG на этой модели. Роутер будет недоступен минуту-две, пока перезагружается.",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Импорт заменит текущие настройки интерфейса и пира. Продолжить?",
     MSG_IMPORT_UNRECOGNIZED: "Не удалось распознать конфигурацию: не найдены поля [Interface]/[Peer] (PrivateKey, PublicKey, Endpoint). Проверьте, что это .conf из приложения Amnezia / WireGuard.",
@@ -3757,6 +3769,7 @@ function updateStatusUI(s){
     if(aghRow) aghRow.style.display = (s && s.agh) ? '' : 'none';
 
     renderCoexistWarning(s);
+    renderCtfBlockWarning(s);
     renderXrayCaptureWarning(s);
     renderFwVpnWarning(s);
     renderDnsGeoWarning(s);
@@ -3810,6 +3823,34 @@ function renderXrayCaptureWarning(s){
     el.innerHTML = html;
     el.style.display = '';
 }
+// Broadcom CTF blocker (red, with an action button). On CTF-accelerated boxes (RT-AC68U class)
+// our policy routing would hang the kernel → watchdog reboot, so the backend refuses do_start and
+// flags status.ctf_block. Offer a one-click "disable CTF + reboot" (backend do_ctf_disable sets
+// nvram ctf_disable=1 and reboots — the fix Merlin itself uses for policy-routed VPNs).
+var awgCtfDisabling = false;
+function renderCtfBlockWarning(s){
+    var el = document.getElementById('awg_ctf_warn');
+    if(!el) return;
+    if(!s || !s.ctf_block){ el.style.display = 'none'; el.innerHTML = ''; awgCtfDisabling = false; return; }
+    var html = T('CTF_BLOCK_HEADER') + T('CTF_BLOCK_FIX');
+    html += '<div style="margin-top:8px;"><input type="button" class="button_gen"'
+          + (awgCtfDisabling ? ' disabled' : '')
+          + ' value="' + escHtml(awgCtfDisabling ? T('CTF_DISABLING') : T('CTF_DISABLE_BTN')) + '"'
+          + ' onclick="awgDisableCtf(this);"></div>';
+    el.innerHTML = html;
+    el.style.display = '';
+}
+// "Disable acceleration & reboot": backend do_ctf_disable sets nvram ctf_disable=1 and reboots the
+// router. User-initiated, with a confirm (it IS a reboot). No status refresh follows — the box goes
+// down; the page reconnects after it's back (CTF then off, banner gone, tunnel startable).
+function awgDisableCtf(btn){
+    if(awgCtfDisabling) return;
+    if(!confirm(T('CTF_DISABLE_CONFIRM'))) return;
+    awgCtfDisabling = true;
+    if(btn){ btn.disabled = true; btn.value = T('CTF_DISABLING'); }
+    awgPostSettings('start_awgctfdisable', null, 2, function(){});
+}
+
 // "Stop Xray": stop the co-resident XRAYUI through its OWN entry point (backend do_xray_stop ->
 // /jffs/scripts/xrayui stop) so its TPROXY/fwmark rules are cleaned up, not just the process.
 // User-initiated, with a confirm. After firing, refresh status so the banner clears once gone.
@@ -4359,6 +4400,7 @@ function initAutocompleteIp(){
                 <!-- Coexistence warning: shown by updateStatusUI() when a co-resident proxy/DPI
                      tool (Xray/XRAYUI, zapret, ...) is detected AND the config would collide with it -->
                 <div id="awg_coexist_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a2e1a; border:1px solid #f0ad4e; border-radius:5px; color:#f0ad4e; font-size:12px; line-height:1.5;"></div>
+                <div id="awg_ctf_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_xray_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_fwvpn_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; border:1px solid; border-radius:5px; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_dnsgeo_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
