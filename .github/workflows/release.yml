@@ -21,11 +21,19 @@ permissions:
 env:
   # amneziawg-tools (awg) release tag — the static-musl awg CLI is built from this tag
   AWG_TOOLS_TAG: v1.0.20260223
-  # amneziawg-go (daemon) release tag — PIN it (don't float master): reproducible builds, and
-  # v0.2.19 carries the AmneziaWG 1.5/2.0 obfuscation params (I1-I5, S3/S4) + "handle empty
-  # I1-I5" fix that modern provider configs need. (Floating master also reports a stale
-  # hardcoded `const Version = "0.0.20250522"`, which is misleading — see the sed patch below.)
+  # amneziawg-go (daemon) — built from OUR FORK, not upstream, until upstream merges the two
+  # patches the router build needs (both carried as real commits on the fork branch below):
+  #   1. bounded buffer pool (PreallocatedBuffersPerPool = 1024) — the fix for daemon OOM under
+  #      load on low-RAM boxes (was a CI sed here; now a fork commit),
+  #   2. sendmmsg/recvmmsg -> sendmsg/recvmsg ENOSYS fallback — without it the daemon can't send
+  #      a single packet on Linux < 3.0 (RT-AC68U / 2.6.36), so the tunnel never passes traffic.
+  # The branch is based on the v0.2.19 tag (AWG_GO_TAG), so it keeps the AmneziaWG 1.5/2.0
+  # obfuscation params (I1-I5, S3/S4) + "handle empty I1-I5" fix — reproducible, not floating
+  # master. When upstream merges the PRs, point AWG_GO_REPO back to amnezia-vpn + drop the
+  # asserts that are then upstream. (version.go still hardcodes a stale const — see the sed below.)
   AWG_GO_TAG: v0.2.19
+  AWG_GO_REPO: https://github.com/william-aqn/amneziawg-go.git
+  AWG_GO_REF: router-build
 
 jobs:
   build:
@@ -45,38 +53,35 @@ jobs:
       - name: Build amneziawg-go (aarch64 + ARM32)
         run: |
           set -eux
-          git clone --depth 1 --branch "$AWG_GO_TAG" https://github.com/amnezia-vpn/amneziawg-go.git
+          git clone --depth 1 --branch "$AWG_GO_REF" "$AWG_GO_REPO" amneziawg-go
           AWG_GO_COMMIT=$(git -C amneziawg-go rev-parse --short HEAD)
-          echo "amneziawg-go ref: $AWG_GO_TAG commit: $AWG_GO_COMMIT"
+          echo "amneziawg-go: $AWG_GO_REPO ref $AWG_GO_REF (based on $AWG_GO_TAG) commit: $AWG_GO_COMMIT"
           # `Version` is a `const` in version.go, so `-ldflags -X main.Version=` can't override it
           # (only vars). Patch the source so `amneziawg-go --version` reports the real ref instead
-          # of the stale hardcoded "0.0.20250522" (which has fooled diagnosis before).
-          # The -pool1024 suffix marks the bounded-pool patch below — a field diag shows at a
-          # glance whether the running daemon has it.
-          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-pool1024 ($AWG_GO_COMMIT)\"|" amneziawg-go/version.go
+          # of the stale hardcoded "0.0.20250522" (which has fooled diagnosis before). The
+          # -pool1024-smfix suffix marks the two fork patches (bounded pool + sendmmsg fallback) —
+          # a field diag shows at a glance whether the running daemon carries them.
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-pool1024-smfix ($AWG_GO_COMMIT)\"|" amneziawg-go/version.go
           grep '^const Version' amneziawg-go/version.go || true
-          # BOUNDED BUFFER POOL — the fix for "daemon OOM under heavy load" on low-RAM routers.
-          # Upstream's Linux profile sets PreallocatedBuffersPerPool = 0 ("allow infinite memory
-          # growth"): under sustained inbound (video) the receive routine allocates 64KB message
-          # buffers faster than the slow software-ChaCha20 pipeline drains them, the Go heap
-          # outgrows a 512MB box and the runtime aborts with `fatal error: runtime: out of
-          # memory` (field: RT-AX82U crash-looping ~2-4 min into YouTube; GOMEMLIMIT alone only
-          # delayed it — it can't reclaim buffers LIVE in the queues). Capping the pool at 1024
-          # is upstream's OWN memory-constrained profile (queueconstants_ios.go / _windows.go
-          # ship exactly 1024): WaitPool.Get then BLOCKS the receiver when the pool is full
-          # (real backpressure), excess UDP is dropped by the kernel — normal congestion
-          # signaling — and the message-buffer pool tops out at 1024*64KB = 64MB. Throughput
-          # caps at what the CPU can decrypt (which is all it could ever deliver), the daemon
-          # stops killing itself, and bufferbloat shrinks as a bonus.
-          # NB: MaxSegmentSize (the 64KB buffer size) is deliberately NOT shrunk — kernels
-          # >= 4.18 can deliver UDP-GRO-coalesced datagrams up to 64KB and a smaller buffer
-          # would truncate them (TUF-AX3000_V2 fleet runs 4.19). The pool CAP is size-agnostic
-          # and safe on every kernel.
-          sed -i 's|PreallocatedBuffersPerPool = 0.*|PreallocatedBuffersPerPool = 1024          // bounded (upstream iOS/Windows profile): backpressure instead of OOM on low-RAM routers|' amneziawg-go/device/queueconstants_default.go
-          # HARD assert (no `|| true`): this patch is functional — if upstream renames the
-          # constant or reformats the file, fail the build instead of shipping an unbounded pool.
+          # The two functional patches now ride in as COMMITS on the fork branch (see the env
+          # block) rather than seds — but still HARD-assert both are present, so a bad rebase or a
+          # wrong AWG_GO_REF fails the build instead of silently shipping a broken daemon:
+          #   1. BOUNDED BUFFER POOL (PreallocatedBuffersPerPool = 1024, upstream's iOS/Windows
+          #      profile) — the fix for "daemon OOM under heavy load" on low-RAM routers. Upstream's
+          #      Linux profile leaves it 0 (unbounded): under sustained inbound the receive routine
+          #      allocates 64KB buffers faster than software ChaCha20 drains them and the runtime
+          #      aborts with `runtime: out of memory`. 1024 caps the pool at 64MB and turns
+          #      WaitPool.Get into real backpressure (excess UDP dropped by the kernel). NB the 64KB
+          #      MaxSegmentSize is deliberately NOT shrunk — the cap is size-agnostic and UDP-GRO
+          #      kernels (>=4.18) can coalesce up to 64KB.
           grep -q 'PreallocatedBuffersPerPool = 1024' amneziawg-go/device/queueconstants_default.go
-          grep 'PreallocatedBuffersPerPool' amneziawg-go/device/queueconstants_default.go
+          #   2. SENDMMSG/RECVMMSG -> per-packet ENOSYS FALLBACK — StdNetBind uses WriteBatch/
+          #      ReadBatch (sendmmsg/recvmmsg, added in Linux 3.0). On the RT-AC68U's 2.6.36 they
+          #      return ENOSYS, so WITHOUT this the daemon forms handshakes but can't send/recv a
+          #      single packet (tunnel up, no traffic, forever). The fork adds a sticky
+          #      batchUnsupported flag that falls back to WriteMsgUDP/ReadMsgUDP. Proven on a real
+          #      RT-AC68U: handshake completes, traffic flows both ways.
+          grep -q 'batchUnsupported' amneziawg-go/conn/bind_std.go
           mkdir -p "$GITHUB_WORKSPACE/output"
           cd amneziawg-go
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64       go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go"
@@ -101,12 +106,14 @@ jobs:
           cp -r amneziawg-go amneziawg-go-legacy
           cd amneziawg-go-legacy
           AWG_GO_COMMIT=$(git rev-parse --short HEAD)
-          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-legacy26-pool1024 ($AWG_GO_COMMIT)\"|" version.go
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-legacy26-pool1024-smfix ($AWG_GO_COMMIT)\"|" version.go
           grep '^const Version' version.go
-          # The bounded-pool patch (see the main build step) rode in via the cp -r above —
-          # assert it, hard-fail otherwise: the 2.6.x fleet (RT-AC68U, 256MB!) needs the cap
-          # even more than the 512MB boxes, and kernels this old have no UDP GRO anyway.
+          # Both fork patches rode in via the cp -r above — assert both, hard-fail otherwise.
+          # The 2.6.x fleet (RT-AC68U, 256MB!) needs the pool cap even more than 512MB boxes, and
+          # — critically — this legacy build is the ONLY one that runs on the 2.6.36 kernels where
+          # the sendmmsg fallback is load-bearing: without it this daemon can't pass a single byte.
           grep -q 'PreallocatedBuffersPerPool = 1024' device/queueconstants_default.go
+          grep -q 'batchUnsupported' conn/bind_std.go
           go get golang.org/x/sys@v0.35.0 golang.org/x/net@v0.43.0 golang.org/x/crypto@v0.41.0
           go mod edit -go=1.23.0 -toolchain=none
           GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 \
