@@ -571,6 +571,9 @@ en: {
     CTF_DISABLE_BTN: "Disable acceleration & reboot",
     CTF_DISABLING: "Disabling & rebooting…",
     CTF_DISABLE_CONFIRM: "Disable hardware NAT acceleration (CTF) and REBOOT the router now? This is required for AmneziaWG to work on this model. The router will be unreachable for a minute or two while it restarts.",
+    // ---- kernel too old for sendmmsg() → daemon can't send packets ----
+    KERNEL_UNSUP_HEADER: "⛔ This router's kernel is too old to carry AmneziaWG's VPN traffic. The daemon sends packets with <code>sendmmsg()</code> (added in Linux&nbsp;3.0); this kernel doesn't implement it, so the tunnel connects but <b>cannot send a single packet</b> — no handshake, no traffic, on any config.",
+    KERNEL_UNSUP_BODY: "This is a kernel limitation, not a setting — no config change fixes it, and disabling NAT acceleration won't help either. A patched daemon (with a sendmmsg→sendmsg fallback) is needed and is being worked on; tunnel start is disabled here until then.",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Import will replace the current interface and peer settings. Continue?",
     MSG_IMPORT_UNRECOGNIZED: "Could not recognize the configuration: no [Interface]/[Peer] fields found (PrivateKey, PublicKey, Endpoint). Make sure it's a .conf from the Amnezia / WireGuard app.",
@@ -960,6 +963,9 @@ ru: {
     CTF_DISABLE_BTN: "Отключить ускорение и перезагрузить",
     CTF_DISABLING: "Отключаю и перезагружаю…",
     CTF_DISABLE_CONFIRM: "Отключить аппаратное ускорение NAT (CTF) и ПЕРЕЗАГРУЗИТЬ роутер сейчас? Это необходимо для работы AmneziaWG на этой модели. Роутер будет недоступен минуту-две, пока перезагружается.",
+    // ---- ядро слишком старое для sendmmsg() → демон не может слать пакеты ----
+    KERNEL_UNSUP_HEADER: "⛔ Ядро этого роутера слишком старое для VPN-трафика AmneziaWG. Демон отправляет пакеты через <code>sendmmsg()</code> (появился в Linux&nbsp;3.0); на этом ядре его нет, поэтому туннель подключается, но <b>не может отправить ни одного пакета</b> — нет handshake, нет трафика, ни при каком конфиге.",
+    KERNEL_UNSUP_BODY: "Это ограничение ядра, а не настройка — конфигом не лечится, и отключение аппаратного ускорения NAT тоже не поможет. Нужен пропатченный демон (с fallback sendmmsg→sendmsg), он в работе; до тех пор запуск туннеля здесь отключён.",
     // ---- import config ----
     MSG_IMPORT_REPLACE_CONFIRM: "Импорт заменит текущие настройки интерфейса и пира. Продолжить?",
     MSG_IMPORT_UNRECOGNIZED: "Не удалось распознать конфигурацию: не найдены поля [Interface]/[Peer] (PrivateKey, PublicKey, Endpoint). Проверьте, что это .conf из приложения Amnezia / WireGuard.",
@@ -3769,6 +3775,7 @@ function updateStatusUI(s){
     if(aghRow) aghRow.style.display = (s && s.agh) ? '' : 'none';
 
     renderCoexistWarning(s);
+    renderKernelUnsupWarning(s);
     renderCtfBlockWarning(s);
     renderXrayCaptureWarning(s);
     renderFwVpnWarning(s);
@@ -3823,6 +3830,18 @@ function renderXrayCaptureWarning(s){
     el.innerHTML = html;
     el.style.display = '';
 }
+// Unsupported-kernel blocker (red, informational — no button, nothing the user can change). On
+// Linux < 3.0 (some old Broadcom boxes, e.g. RT-AC68U on 2.6.36) the daemon can't send packets
+// (sendmmsg ENOSYS), so the tunnel never passes traffic; the backend refuses do_start and flags
+// status.kernel_unsup. This is the deeper blocker — shown ABOVE and instead of the CTF banner.
+function renderKernelUnsupWarning(s){
+    var el = document.getElementById('awg_kernel_warn');
+    if(!el) return;
+    if(!s || !s.kernel_unsup){ el.style.display = 'none'; el.innerHTML = ''; return; }
+    el.innerHTML = T('KERNEL_UNSUP_HEADER') + '<div style="margin-top:6px;">' + T('KERNEL_UNSUP_BODY') + '</div>';
+    el.style.display = '';
+}
+
 // Broadcom CTF blocker (red, with an action button). On CTF-accelerated boxes (RT-AC68U class)
 // our policy routing would hang the kernel → watchdog reboot, so the backend refuses do_start and
 // flags status.ctf_block. Offer a one-click "disable CTF + reboot" (backend do_ctf_disable sets
@@ -4400,6 +4419,7 @@ function initAutocompleteIp(){
                 <!-- Coexistence warning: shown by updateStatusUI() when a co-resident proxy/DPI
                      tool (Xray/XRAYUI, zapret, ...) is detected AND the config would collide with it -->
                 <div id="awg_coexist_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a2e1a; border:1px solid #f0ad4e; border-radius:5px; color:#f0ad4e; font-size:12px; line-height:1.5;"></div>
+                <div id="awg_kernel_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_ctf_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_xray_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_fwvpn_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; border:1px solid; border-radius:5px; font-size:12px; line-height:1.5;"></div>

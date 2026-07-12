@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.56"
+AWG_VERSION="1.2.57"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1265,6 +1265,23 @@ ctf_active(){
     return 0
 }
 
+# True on a kernel too old for sendmmsg() — the batched UDP send amneziawg-go (like wireguard-go)
+# uses for ALL packet egress. sendmmsg landed in Linux 3.0; on the 2.6.x kernels some Broadcom
+# boxes still run (RT-AC68U = 2.6.36) it returns ENOSYS ("function not implemented"), so the
+# daemon forms handshake/keepalive packets but CANNOT send a single one — the tunnel comes up,
+# gets no handshake, and the health check rolls it back forever, on ANY config. Interface create +
+# setconf + obfuscation all succeed (they don't touch sendmmsg), which is why this masqueraded as
+# CTF/routing/config for so long. Until the daemon carries a sendmmsg→sendmsg fallback there is NO
+# working tunnel on these kernels — so do_start refuses up front (also spares the box the WAN
+# destabilisation that policy-routing bring-up causes here). Detect by kernel version, the ground
+# truth. NB: this supersedes the CTF banner on such boxes — disabling CTF wouldn't help.
+kernel_pre_sendmmsg(){
+    case "$(uname -r 2>/dev/null)" in
+        2.6.*|2.4.*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Disable Broadcom CTF ON EXPLICIT USER ACTION (the CTF banner's button). Sets the persistent
 # nvram flag Merlin itself uses and reboots — the only way to unload the accelerator on old-CTF
 # boxes (no runtime `fc`). After the reboot ctf_active() is false, the do_start guard passes and
@@ -1276,10 +1293,17 @@ do_ctf_disable(){
         update_status
         return 0
     fi
-    log_msg "Disabling Broadcom CTF (hardware NAT acceleration) at user request: nvram ctf_disable=1, then reboot"
+    log_msg "Disabling Broadcom CTF (hardware NAT acceleration) at user request: nvram ctf_disable_force=1 + ctf_disable=1, then reboot"
+    # ctf_disable_force is the PERSISTENT knob (the GUI's LAN → Switch Control → "NAT
+    # Acceleration = Disable" sets it, and the firmware's boot init respects it). Setting
+    # ctf_disable=1 ALONE does NOT survive a reboot: the firmware recomputes ctf_disable at
+    # boot from the features IT knows about — our policy routing is invisible to it, so it
+    # resets ctf_disable=0 and CTF comes back (field-confirmed on RT-AC68U: 1 before reboot,
+    # 0 after). Set the force flag so the disable sticks; ctf_disable=1 also covers this boot.
+    nvram set ctf_disable_force=1
     nvram set ctf_disable=1
     nvram commit
-    log_msg "CTF disabled in nvram — rebooting to apply. AmneziaWG will be able to start after the router comes back."
+    log_msg "CTF force-disabled in nvram (ctf_disable_force=1) — rebooting to apply. AmneziaWG will be able to start after the router comes back."
     awg_incident "CTF disabled at user request (ctf_disable=1) + reboot — enables policy-routed tunnel on this box"
     update_status
     # Detach the reboot so this service-event handler returns first (the UI reads the log/ack).
@@ -2843,7 +2867,8 @@ do_diag(){
     if nft list ruleset 2>/dev/null | grep -qE 'queue (num|to)'; then _b4_be="${_b4_be:+$_b4_be+}nft"; fi
     echo "NFQUEUE backend seen : ${_b4_be:-none}"
     echo "compat (no DNS hijack): $([ "$(get_setting awg_no_dns_intercept)" = "1" ] && echo "ON (coexist)" || echo off)"
-    echo "Broadcom CTF (HW-NAT) : $(grep -q '^ctf ' /proc/modules 2>/dev/null && echo "module loaded" || echo "no module") ctf_disable=$(nvram get ctf_disable 2>/dev/null) -> $(ctf_active && echo 'ACTIVE (BLOCKS tunnel start — disable + reboot)' || echo 'not blocking')"
+    echo "kernel / sendmmsg    : $(uname -r) -> $(kernel_pre_sendmmsg && echo 'PRE-3.0: no sendmmsg — daemon CANNOT send packets, tunnel never passes traffic (needs patched daemon); start refused' || echo 'ok (>=3.0)')"
+    echo "Broadcom CTF (HW-NAT) : $(grep -q '^ctf ' /proc/modules 2>/dev/null && echo "module loaded" || echo "no module") ctf_disable=$(nvram get ctf_disable 2>/dev/null) force=$(nvram get ctf_disable_force 2>/dev/null) -> $(ctf_active && echo 'ACTIVE (BLOCKS tunnel start — disable + reboot)' || echo 'not blocking')"
     echo "conntrack count/max  : $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo '?')/$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo '?')"
     echo "ip rule fwmark 0x100 :"; ip rule show 2>/dev/null | grep -i 'fwmark 0x100' | sed 's/^/  /'
     echo "lan_ipaddr           : $(nvram get lan_ipaddr 2>/dev/null)"
@@ -3195,6 +3220,18 @@ do_start(){
         log_msg "Already running"
         update_status
         return 0
+    fi
+
+    # Unsupported-kernel guard (see kernel_pre_sendmmsg): on Linux < 3.0 the daemon can't send a
+    # single UDP packet (sendmmsg ENOSYS), so the tunnel can NEVER pass traffic — and starting it
+    # only destabilises the box. Refuse up front with a clear reason; status kernel_unsup drives a
+    # page banner. Checked BEFORE the CTF guard because it's the deeper blocker (on these boxes
+    # disabling CTF wouldn't help). Removed once the daemon carries a sendmmsg fallback.
+    if kernel_pre_sendmmsg; then
+        log_msg "ERROR: kernel $(uname -r) is too old for sendmmsg() (added in Linux 3.0) — amneziawg-go cannot send ANY packets, so the tunnel can't pass traffic on this router. This needs a patched daemon (sendmmsg→sendmsg fallback), not a config change. Start aborted."
+        awg_incident "Unsupported kernel $(uname -r): daemon can't send UDP (sendmmsg ENOSYS) — refused start (tunnel would never pass traffic)"
+        update_status
+        return 1
     fi
 
     # Broadcom CTF guard (see ctf_active): on a CTF-accelerated box, standing up our policy
@@ -3847,11 +3884,18 @@ EOF
     local xray_ctl=false
     [ -x /jffs/scripts/xrayui ] && xray_ctl=true
 
+    # Unsupported kernel (see kernel_pre_sendmmsg): Linux < 3.0 has no sendmmsg → the daemon can't
+    # send packets → the tunnel can never pass traffic. do_start refuses; the page shows an
+    # informational banner (no user action fixes it — a patched daemon is needed).
+    local kernel_unsup=false
+    kernel_pre_sendmmsg && kernel_unsup=true
+
     # Broadcom CTF blocks the tunnel (see ctf_active): a CTF-accelerated box would hang on our
     # policy-routing bring-up, so do_start refuses. Surfaced so the page renders a blocking
-    # banner with a one-click "disable CTF + reboot". False on every non-CTF box.
+    # banner with a one-click "disable CTF + reboot". False on every non-CTF box, and suppressed
+    # on an unsupported kernel (kernel_unsup is the real story there — disabling CTF wouldn't help).
     local ctf_block=false
-    ctf_active && ctf_block=true
+    { ctf_active && ! kernel_pre_sendmmsg; } && ctf_block=true
 
     # Firmware UI language (preferred_lang nvram) so the page/widget can localize without a
     # round-trip. The frontend maps RU -> Russian, everything else -> English. Empty -> EN.
@@ -3866,7 +3910,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"dnsgeo_warn":"${dnsgeo_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
