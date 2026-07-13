@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.60"
+AWG_VERSION="1.2.61"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1562,13 +1562,24 @@ cleanup_dns_interception(){
 # (also removes rules orphaned by a since-removed client). Bounded loops: `ip rule del`
 # removes ONE copy per call. Priority-scoped to our documented 97-100 range.
 drain_ip_rules(){
-    local _pr _i
-    for _pr in 97 98 99 100; do
-        _i=0; while [ $_i -lt 100 ] && ip rule del prio "$_pr" 2>/dev/null; do _i=$((_i+1)); done
+    # DANGER on old kernels: `ip rule del <partial-selector>` (e.g. `del prio 97`, `del lookup
+    # 300`) does NOT fail when nothing matches on Broadcom 2.6.36 + Entware iproute2 — it deletes
+    # a NON-matching rule instead (same RTM netlink mismatch family as the 1.2.40 `ip link show`
+    # false-negative). A blind delete-while-success loop then drains the ENTIRE table, system
+    # `local`/`main`/`default` included, leaving the router "Network is unreachable" — no egress,
+    # so the tunnel handshake can't even leave and RX stays 0 (root cause of the RT-AC68U
+    # "full start bricks the box", found 2026-07-13). Fix: NEVER blind-loop a bare `ip rule del`.
+    # Enumerate `ip rule show` (RTM_GETRULE is fine on this kernel — it lists rules correctly),
+    # pick only OUR rules — priority band 97-100 AND referencing our table/fwmark — and delete
+    # each by its exact, confirmed-present priority. System rules (prio 0/32766/32767) can never
+    # be selected, so they can never be drained.
+    local _pr _guard=0
+    while [ $_guard -lt 60 ]; do
+        _guard=$((_guard + 1))
+        _pr=$(ip rule show 2>/dev/null | awk -F: '{p=$1+0} p>=97 && p<=100 && (/lookup '"$RT_TABLE"'([^0-9]|$)/ || /fwmark '"$FWMARK"'([^0-9]|$)/){print p; exit}')
+        case "$_pr" in ''|*[!0-9]*) break ;; esac
+        ip rule del prio "$_pr" 2>/dev/null || break
     done
-    # Fallbacks for a rule that somehow lost its priority tag.
-    _i=0; while [ $_i -lt 100 ] && ip rule del lookup $RT_TABLE 2>/dev/null; do _i=$((_i+1)); done
-    _i=0; while [ $_i -lt 100 ] && ip rule del fwmark "$FWMARK" 2>/dev/null; do _i=$((_i+1)); done
 }
 
 # Idempotent single-rule add: drain every existing copy of THIS exact rule, then add exactly
@@ -1577,8 +1588,18 @@ drain_ip_rules(){
 # its own drain and re-add, so a live re-apply never opens a policy-routing gap across the
 # whole rebuild. $@ = the spec after `ip rule` (e.g. `from 1.2.3.4 lookup main prio 97`).
 ip_rule_replace(){
-    local _i=0
-    while [ $_i -lt 100 ] && ip rule del "$@" 2>/dev/null; do _i=$((_i+1)); done
+    # Same old-kernel hazard as drain_ip_rules: a bare `ip rule del "$@"` when this exact rule
+    # doesn't exist yet mis-deletes a system rule on Broadcom 2.6.36. Our specs always carry a
+    # `prio N` (N in 97-100); delete ONLY while a rule actually exists at that priority (system
+    # rules sit at 0/32766/32767, so `^N:` can never match one), then add exactly one.
+    local _pr _g=0
+    _pr=$(printf '%s ' "$@" | sed -n 's/.*[[:space:]]prio[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p')
+    if [ -n "$_pr" ]; then
+        while [ $_g -lt 60 ] && ip rule show 2>/dev/null | grep -q "^$_pr:[[:space:]]"; do
+            ip rule del prio "$_pr" 2>/dev/null || break
+            _g=$((_g + 1))
+        done
+    fi
     ip rule add "$@"
 }
 
@@ -3229,19 +3250,14 @@ do_start(){
     # only destabilises the box. Refuse up front with a clear reason; status kernel_unsup drives a
     # page banner. Checked BEFORE the CTF guard because it's the deeper blocker (on these boxes
     # disabling CTF wouldn't help). Removed once the daemon carries a sendmmsg fallback.
-    if kernel_pre_sendmmsg; then
-        # EXPERIMENTAL on Linux 2.6.x (RT-AC68U class), not blocked (since 1.2.60). Bisecting on a
-        # real RT-AC68U proved the tunnel CORE works here — handshake completes and traffic flows
-        # both ways (ping through awg0: 0% loss), inbound stays up, no reboot — when the daemon +
-        # policy routing + firewall are brought up in isolation. The FULL do_start still sometimes
-        # destabilises the box (WAN drop / watchdog reboot), traced NOT to the routing but to the
-        # extra start-stack (dnsmasq reload + geo/ipset + resource pressure on the 256MB box). So
-        # we no longer refuse — we WARN and proceed; the user starts at their own risk. If it goes
-        # bad the box reboots and (with autostart off) comes back stopped. Status kernel_unsup
-        # drives a yellow "experimental / at your own risk" banner.
-        log_msg "WARNING: kernel $(uname -r) (Linux 2.6.x) — AmneziaWG is EXPERIMENTAL on this old kernel. The tunnel core works here, but the full start can sometimes destabilise the router (WAN may drop, router may reboot). Starting anyway at your own risk. Keep 'Autostart after reboot' OFF so a bad start can't loop."
-        awg_incident "kernel $(uname -r): starting AmneziaWG despite the 2.6.x experimental warning (at user's own risk)"
-    fi
+    # Old kernels (Linux 2.6.x — RT-AC68U class) are SUPPORTED again as of 1.2.61: the daemon
+    # carries the sendmmsg→sendmsg fallback (1.2.58) AND drain_ip_rules no longer wipes the
+    # system routing table on Broadcom 2.6.36 + Entware iproute2 (the blind `ip rule del` bug
+    # fixed here — that was THE reason the full start "bricked" the AC68U). Verified end-to-end
+    # on a real RT-AC68U: handshake completes, RX/TX both flow, inbound stays up, no reboot. CTF
+    # (if present) must still be off first — the ctf guard above handles that. So no kernel guard
+    # here anymore. If a NEW 2.6.x-specific issue turns up, autostart-off still makes a bad start
+    # self-recover (reboot → tunnel stopped).
 
     # Broadcom CTF guard (see ctf_active): on a CTF-accelerated box, standing up our policy
     # routing hangs the kernel and the hardware watchdog reboots the router. Refuse to start —
@@ -3893,11 +3909,9 @@ EOF
     local xray_ctl=false
     [ -x /jffs/scripts/xrayui ] && xray_ctl=true
 
-    # Unsupported kernel (see kernel_pre_sendmmsg): Linux < 3.0 has no sendmmsg → the daemon can't
-    # send packets → the tunnel can never pass traffic. do_start refuses; the page shows an
-    # informational banner (no user action fixes it — a patched daemon is needed).
+    # Old-kernel banner retired in 1.2.61 — 2.6.x is supported again (sendmmsg fallback + the
+    # drain_ip_rules fix). Field kept (always false) so the page's dormant renderer just hides it.
     local kernel_unsup=false
-    kernel_pre_sendmmsg && kernel_unsup=true
 
     # Broadcom CTF hard-wedges the box on policy-routing bring-up (see ctf_active) — surfaced so the
     # page renders a banner with a one-click "disable CTF + reboot". Shown on 2.6.x too now (since
