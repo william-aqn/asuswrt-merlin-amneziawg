@@ -1,6 +1,6 @@
 # AmneziaWG for Asuswrt-Merlin
 
-![banner](assets/banner.jpg)
+![logo](assets/logo.png)
 
 
 [[русский]](README.md) [[english]](README_EN.md)
