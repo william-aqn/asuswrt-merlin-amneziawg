@@ -138,6 +138,43 @@ srv_wan_private(){
     echo 0
 }
 
+# Does a running xray transparent-proxy actually COVER the peer subnet? Field-learned
+# (RT-BE88U + XRAYUI): XRAYUI's redirect-all adds per-source TPROXY rules for every
+# interface subnet it saw at ITS start — if XRAYUI started BEFORE awgs0 existed, the peer
+# subnet is missing and peers silently bypass xray straight to WAN (no DPI bypass), while
+# the UI would otherwise claim "peers flow through Xray". Chain-name-agnostic: scan the
+# whole mangle table for TPROXY rules; covered = a rule scoped to our subnet OR a blanket
+# (source-less) TPROXY that captures everything. Only meaningful while xray_redirect_active.
+# Full-table mangle dump that survives firmware-proprietary targets. Field case (RT-BE88U):
+# Entware iptables 1.4.21 (first on our PATH) aborts `-t mangle -S` at ASUS's SKIPLOG
+# target — "Can't find library for target `SKIPLOG'", rc=1 — truncating the dump in
+# PREROUTING, BEFORE the XRAYUI chain, so the TPROXY rules never printed and the coverage
+# guard below false-reported "uncovered" while the rules were right there. The firmware's
+# own iptables lists its own targets fine. So: prefer firmware binaries for full-table
+# READS; a clean rc=0 dump wins, else fall back to the (possibly truncated) PATH-resolved
+# one. Our WRITE/-C calls are unaffected — they touch only our own rules.
+srv_mangle_dump(){
+    local b out
+    for b in /usr/sbin/iptables /sbin/iptables; do
+        [ -x "$b" ] || continue
+        if out=$("$b" -t mangle -S 2>/dev/null); then
+            printf '%s\n' "$out"
+            return 0
+        fi
+    done
+    iptables -t mangle -S 2>/dev/null
+}
+
+srv_xray_covers_peers(){
+    local subnet tp
+    subnet=$(srv_subnet)
+    tp=$(srv_mangle_dump | grep -F -- '-j TPROXY')
+    [ -z "$tp" ] && return 1
+    printf '%s\n' "$tp" | grep -qF -- "-s $subnet" && return 0
+    printf '%s\n' "$tp" | grep -qv -- ' -s ' && return 0
+    return 1
+}
+
 # Firmware WireGuard server on the same UDP port? ("1" when wgs is enabled on our port)
 srv_port_conflict(){
     local p
@@ -512,6 +549,9 @@ do_srv_start(){
 
     [ "$(srv_wan_private)" = "1" ] && log_msg "WARNING: WAN address $(nvram get wan0_ipaddr 2>/dev/null) is private/CGNAT — peers from the internet will NOT reach this server (need a public IP or port forwarding on the upstream router)"
     [ "$(srv_port_conflict)" = "1" ] && log_msg "WARNING: firmware WireGuard server is enabled on the same UDP port $(srv_port) — change one of the ports"
+    if xray_redirect_active && ! srv_xray_covers_peers; then
+        log_msg "NOTE: xray/XRAYUI is capturing traffic, but its TPROXY rules do NOT cover the peer subnet $(srv_subnet) — peers bypass xray straight to WAN (no DPI bypass). Restart XRAYUI so it picks up awgs0, or add the subnet to its transparent-proxy settings."
+    fi
 
     log_msg "Server started: port $(srv_port), subnet $(srv_subnet), endpoint hint $(srv_endpoint_hint)"
     srv_update_status
@@ -746,13 +786,17 @@ srv_update_status(){
     # double-hop through the client tunnel is stolen by xray, and even direct peers can be
     # grabbed. Surface it so the page warns + offers a one-click stop (routed to the client
     # script's do_xray_stop via the awgxraystop event, which uses xrayui's own cleanup).
-    local xray_capture=false xray_ctl=false
+    local xray_capture=false xray_ctl=false xray_uncov=false
     xray_redirect_active && xray_capture=true
     [ -x /jffs/scripts/xrayui ] && xray_ctl=true
+    # Guard: xray captures traffic but its TPROXY rules miss the peer subnet — peers bypass
+    # xray straight to WAN (usually XRAYUI started before awgs0 existed). Page shows a
+    # yellow banner with the fix (restart XRAYUI / add the subnet).
+    [ "$xray_capture" = "true" ] && ! srv_xray_covers_peers && xray_uncov=true
 
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","port":"${port}","subnet":"${subnet}","router_ip":"${router_ip}","public_key":"${pubkey}","endpoint_hint":"${ep_hint}","wan_private":$([ "$wan_priv" = "1" ] && echo true || echo false),"port_conflict":$([ "$port_conf" = "1" ] && echo true || echo false),"nat_lan":${nat_lan},"autostart":${autostart},"client_running":${client_running},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"peers":${peers_json},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","port":"${port}","subnet":"${subnet}","router_ip":"${router_ip}","public_key":"${pubkey}","endpoint_hint":"${ep_hint}","wan_private":$([ "$wan_priv" = "1" ] && echo true || echo false),"port_conflict":$([ "$port_conf" = "1" ] && echo true || echo false),"nat_lan":${nat_lan},"autostart":${autostart},"client_running":${client_running},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"xray_peers_uncovered":${xray_uncov},"peers":${peers_json},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
@@ -764,6 +808,7 @@ do_srv_diag(){
     echo "port: $(srv_port); subnet: $(srv_subnet); router ip: $(srv_router_ip)"
     echo "endpoint hint: $(srv_endpoint_hint); wan_private: $(srv_wan_private); port_conflict(fw wgs): $(srv_port_conflict)"
     echo "client tunnel awg0: $(iface_exists awg0 && echo up || echo down)"
+    echo "xray: $(pidof xray >/dev/null 2>&1 && echo running || echo absent); capture=$(xray_redirect_active && echo yes || echo no); covers peer subnet=$(srv_xray_covers_peers && echo yes || echo no)"
     echo "--- awg show ---"
     "$AWG_BIN" show "$IFACE" 2>&1 | redact_secrets
     echo "--- firewall ---"

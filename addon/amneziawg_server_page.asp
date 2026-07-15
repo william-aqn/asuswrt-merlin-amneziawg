@@ -163,6 +163,7 @@ en: {
     BAN_UNSAVED: "Unsaved changes — press «Apply».",
     BAN_XRAY_POLICY: "⛔ <b>Xray / XRAYUI</b> is running in transparent-proxy mode («redirect all»), and some peers have a «VPN…» policy. <b>Those policies (the double-hop through the client tunnel) do NOT work while Xray runs</b>: Xray grabs traffic ahead of AmneziaWG's rules (ip-rule priority 19 vs 99) and also breaks the client tunnel's own traffic. Two working setups:<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li><b>Keep Xray</b> — switch the peers to «Direct»: their traffic then flows <b>through Xray automatically</b> (DPI bypass — XRAYUI already captures the peer subnet), non-proxied destinations go straight to WAN.</li><li><b>Need the double-hop</b> — stop Xray (button below), set the peer to «VPN: all traffic» and start the client tunnel on the AmneziaWG page.</li></ul>",
     BAN_XRAY_INFO: "<b>Xray / XRAYUI</b> is running in transparent-proxy mode («redirect all») — peer traffic automatically flows <b>through Xray</b> (DPI bypass), non-proxied destinations go straight to WAN. This is a working setup. Note: per-peer «VPN…» policies (the double-hop through the client tunnel) are unavailable while Xray runs — to use them, stop Xray and start the client tunnel.",
+    BAN_XRAY_UNCOVERED: "<b>Xray / XRAYUI</b> is running, but the peer subnet <code>{0}</code> is <b>not in its capture rules</b> — peer traffic bypasses Xray and goes straight to WAN (no DPI bypass). This usually means XRAYUI started before this server did. Fix: <b>restart XRAYUI</b> (it picks up existing interfaces at start), or add the subnet to its transparent-proxy settings.",
     XRAY_STOP_BTN: "Stop Xray",
     XRAY_STOPPING: "Stopping Xray…",
     XRAY_STOP_CONFIRM: "Stop Xray / XRAYUI now? Its TPROXY rules will be removed so AmneziaWG can route peer traffic. You can start it again from its own page (VPN → X-RAY).",
@@ -252,6 +253,7 @@ ru: {
     BAN_UNSAVED: "Есть несохранённые изменения — нажмите «Применить».",
     BAN_XRAY_POLICY: "⛔ <b>Xray / XRAYUI</b> работает в режиме прозрачного прокси («весь трафик»), а у части пиров стоит политика «VPN…». <b>Эти политики (двойной хоп через клиентский туннель) при работающем Xray НЕ действуют</b>: Xray перехватывает трафик раньше правил AmneziaWG (приоритет ip-rule 19 против 99) и ломает трафик самого клиентского туннеля. Два рабочих варианта:<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li><b>Оставить Xray</b> — переведите пиров на «Напрямую»: их трафик автоматически пойдёт <b>через Xray</b> (обход DPI — XRAYUI уже перехватывает подсеть пиров), непроксируемые адреса — напрямую в WAN.</li><li><b>Нужен двойной хоп</b> — остановите Xray (кнопка ниже), поставьте пиру «VPN: весь трафик» и запустите клиентский туннель на странице AmneziaWG.</li></ul>",
     BAN_XRAY_INFO: "<b>Xray / XRAYUI</b> работает в режиме прозрачного прокси («весь трафик») — трафик пиров автоматически идёт <b>через Xray</b> (обход DPI), непроксируемые адреса — напрямую в WAN. Это штатная рабочая схема. Учтите: per-peer политики «VPN…» (двойной хоп через клиентский туннель) при работающем Xray недоступны — для них остановите Xray и запустите клиентский туннель.",
+    BAN_XRAY_UNCOVERED: "<b>Xray / XRAYUI</b> запущен, но подсети пиров <code>{0}</code> <b>нет в его правилах перехвата</b> — трафик пиров идёт мимо Xray, напрямую в WAN (без обхода DPI). Обычно так бывает, когда XRAYUI стартовал раньше этого сервера. Решение: <b>перезапустите XRAYUI</b> (при старте он подхватывает существующие интерфейсы) или добавьте подсеть в его настройки прозрачного прокси.",
     XRAY_STOP_BTN: "Остановить Xray",
     XRAY_STOPPING: "Останавливаю Xray…",
     XRAY_STOP_CONFIRM: "Остановить Xray / XRAYUI сейчас? Его правила TPROXY будут удалены, чтобы AmneziaWG мог маршрутизировать трафик пиров. Включить обратно можно на его странице (VPN → X-RAY).",
@@ -785,16 +787,23 @@ function renderStatus(st){
     var policied = false;
     for (var i = 0; i < awgsPeers.length; i++)
         if (awgsPeers[i].enabled && awgsPeers[i].policy && awgsPeers[i].policy !== 'direct') policied = true;
-    // "Fail-open to WAN" is only TRUE without xray: while xray's TPROXY capture is active,
+    // Coverage guard (backend srv_xray_covers_peers): xray is capturing, but its TPROXY
+    // rules miss the peer subnet (typical when XRAYUI started before awgs0 existed) —
+    // peers then bypass xray straight to WAN, so the INFO banner's "peers flow through
+    // Xray" claim would be false. Separate yellow banner names the fix (restart XRAYUI).
+    var uncov = !!(st.xray_capture && st.xray_peers_uncovered);
+    showBanner('awgs_ban_xraycov', uncov, T('BAN_XRAY_UNCOVERED', escHtml(st.subnet || '')));
+    // "Fail-open to WAN" is only TRUE when xray isn't capturing the peers: with coverage,
     // peer traffic goes through XRAY (not straight to WAN) and the xray banner below tells
     // the accurate story — showing both would be contradictory (field-confirmed on RT-BE88U).
-    showBanner('awgs_ban_client', st.running && policied && !st.client_running && !st.xray_capture, T('BAN_CLIENT_DOWN'));
+    showBanner('awgs_ban_client', st.running && policied && !st.client_running && (!st.xray_capture || uncov), T('BAN_CLIENT_DOWN'));
     // Xray coexistence banner, two severities (verified live on a box running XRAYUI):
     //  - peers with a VPN policy -> RED: the double-hop genuinely does not work under xray
     //    (prio 19 grabs traffic first + it breaks the client tunnel); banner lists the two
     //    working setups (keep xray + Direct peers, or stop xray + vpn_all + client tunnel).
     //  - all peers Direct -> YELLOW info: peers flow through xray automatically (XRAYUI
     //    captures the peer subnet itself) — a working DPI-bypass setup, nothing broken.
+    //    Suppressed while uncovered — the coverage banner above is the accurate story then.
     var xb = document.getElementById('awgs_ban_xray');
     if (xb) xb.className = 'awg-banner ' + (policied ? 'red' : 'yellow');
     var xrayHtml = T(policied ? 'BAN_XRAY_POLICY' : 'BAN_XRAY_INFO');
@@ -802,7 +811,7 @@ function renderStatus(st){
         xrayHtml += '<div style="margin-top:7px;"><input type="button" class="awg-mini danger" value="' +
                     escHtml(awgsXrayStopping ? T('XRAY_STOPPING') : T('XRAY_STOP_BTN')) + '"' +
                     (awgsXrayStopping ? ' disabled' : '') + ' onclick="stopXray(this);"></div>';
-    showBanner('awgs_ban_xray', !!st.xray_capture, xrayHtml);
+    showBanner('awgs_ban_xray', !!(st.xray_capture && (policied || !uncov)), xrayHtml);
     // log
     var logEl = document.getElementById('awgs_log');
     if (logEl && typeof st.log === 'string') {
@@ -912,6 +921,7 @@ function initial(){
                 <div id="awgs_ban_port" class="awg-banner red" style="display:none;"></div>
                 <div id="awgs_ban_client" class="awg-banner yellow" style="display:none;"></div>
                 <div id="awgs_ban_xray" class="awg-banner red" style="display:none;"></div>
+                <div id="awgs_ban_xraycov" class="awg-banner yellow" style="display:none;"></div>
                 <div id="awgs_unsaved" class="awg-banner yellow" style="display:none;" data-i18n="BAN_UNSAVED"></div>
 
                 <!-- Server settings -->
