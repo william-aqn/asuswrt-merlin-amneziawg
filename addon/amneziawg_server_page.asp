@@ -161,7 +161,8 @@ en: {
     BAN_PORT_CONFLICT: "<b>The firmware WireGuard server uses the same UDP port {0}.</b> Change this server's port or disable the firmware WG server (VPN → WireGuard).",
     BAN_CLIENT_DOWN: "The AmneziaWG <b>client</b> tunnel is not running — peers with a «VPN…» policy currently go <b>directly</b> to the internet through your WAN (fail-open). Start the client tunnel on the AmneziaWG page for the policies to apply.",
     BAN_UNSAVED: "Unsaved changes — press «Apply».",
-    BAN_XRAY: "⛔ <b>Xray / XRAYUI</b> is running in transparent-proxy mode (TPROXY, «redirect all»). Its routing rule sits <b>ahead</b> of AmneziaWG's (ip-rule priority 19 vs 99), so it captures the router's egress — <b>per-peer VPN policy (double-hop through the client tunnel) will NOT work</b>, and even Direct peers can be grabbed. Turn off Xray's redirect-all mode (or exclude the <b>awgs0</b>/<b>awg0</b> interfaces), or run one VPN at a time.",
+    BAN_XRAY_POLICY: "⛔ <b>Xray / XRAYUI</b> is running in transparent-proxy mode («redirect all»), and some peers have a «VPN…» policy. <b>Those policies (the double-hop through the client tunnel) do NOT work while Xray runs</b>: Xray grabs traffic ahead of AmneziaWG's rules (ip-rule priority 19 vs 99) and also breaks the client tunnel's own traffic. Two working setups:<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li><b>Keep Xray</b> — switch the peers to «Direct»: their traffic then flows <b>through Xray automatically</b> (DPI bypass — XRAYUI already captures the peer subnet), non-proxied destinations go straight to WAN.</li><li><b>Need the double-hop</b> — stop Xray (button below), set the peer to «VPN: all traffic» and start the client tunnel on the AmneziaWG page.</li></ul>",
+    BAN_XRAY_INFO: "<b>Xray / XRAYUI</b> is running in transparent-proxy mode («redirect all») — peer traffic automatically flows <b>through Xray</b> (DPI bypass), non-proxied destinations go straight to WAN. This is a working setup. Note: per-peer «VPN…» policies (the double-hop through the client tunnel) are unavailable while Xray runs — to use them, stop Xray and start the client tunnel.",
     XRAY_STOP_BTN: "Stop Xray",
     XRAY_STOPPING: "Stopping Xray…",
     XRAY_STOP_CONFIRM: "Stop Xray / XRAYUI now? Its TPROXY rules will be removed so AmneziaWG can route peer traffic. You can start it again from its own page (VPN → X-RAY).",
@@ -249,7 +250,8 @@ ru: {
     BAN_PORT_CONFLICT: "<b>Встроенный WireGuard-сервер прошивки использует тот же UDP-порт {0}.</b> Смените порт этого сервера или выключите WG-сервер прошивки (VPN → WireGuard).",
     BAN_CLIENT_DOWN: "<b>Клиентский</b> туннель AmneziaWG не запущен — пиры с политикой «VPN…» сейчас ходят в интернет <b>напрямую</b> через WAN (fail-open). Запустите клиентский туннель на странице AmneziaWG, чтобы политики заработали.",
     BAN_UNSAVED: "Есть несохранённые изменения — нажмите «Применить».",
-    BAN_XRAY: "⛔ <b>Xray / XRAYUI</b> работает в режиме прозрачного прокси (TPROXY, «весь трафик»). Его правило маршрутизации стоит <b>впереди</b> правила AmneziaWG (приоритет ip-rule 19 против 99) и перехватывает исходящий трафик роутера — <b>per-peer VPN-политика (двойной хоп через клиентский туннель) работать НЕ будет</b>, и даже Direct-пиры могут быть перехвачены. Отключите у Xray режим «весь трафик» (или исключите интерфейсы <b>awgs0</b>/<b>awg0</b>), либо держите включённым один VPN за раз.",
+    BAN_XRAY_POLICY: "⛔ <b>Xray / XRAYUI</b> работает в режиме прозрачного прокси («весь трафик»), а у части пиров стоит политика «VPN…». <b>Эти политики (двойной хоп через клиентский туннель) при работающем Xray НЕ действуют</b>: Xray перехватывает трафик раньше правил AmneziaWG (приоритет ip-rule 19 против 99) и ломает трафик самого клиентского туннеля. Два рабочих варианта:<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li><b>Оставить Xray</b> — переведите пиров на «Напрямую»: их трафик автоматически пойдёт <b>через Xray</b> (обход DPI — XRAYUI уже перехватывает подсеть пиров), непроксируемые адреса — напрямую в WAN.</li><li><b>Нужен двойной хоп</b> — остановите Xray (кнопка ниже), поставьте пиру «VPN: весь трафик» и запустите клиентский туннель на странице AmneziaWG.</li></ul>",
+    BAN_XRAY_INFO: "<b>Xray / XRAYUI</b> работает в режиме прозрачного прокси («весь трафик») — трафик пиров автоматически идёт <b>через Xray</b> (обход DPI), непроксируемые адреса — напрямую в WAN. Это штатная рабочая схема. Учтите: per-peer политики «VPN…» (двойной хоп через клиентский туннель) при работающем Xray недоступны — для них остановите Xray и запустите клиентский туннель.",
     XRAY_STOP_BTN: "Остановить Xray",
     XRAY_STOPPING: "Останавливаю Xray…",
     XRAY_STOP_CONFIRM: "Остановить Xray / XRAYUI сейчас? Его правила TPROXY будут удалены, чтобы AmneziaWG мог маршрутизировать трафик пиров. Включить обратно можно на его странице (VPN → X-RAY).",
@@ -783,10 +785,19 @@ function renderStatus(st){
     var policied = false;
     for (var i = 0; i < awgsPeers.length; i++)
         if (awgsPeers[i].enabled && awgsPeers[i].policy && awgsPeers[i].policy !== 'direct') policied = true;
-    showBanner('awgs_ban_client', st.running && policied && !st.client_running, T('BAN_CLIENT_DOWN'));
-    // Reverse-coexistence: xray TPROXY captures the router egress -> per-peer VPN policy /
-    // double-hop is stolen. Offer a one-click Stop only when XRAYUI is controllable (xray_ctl).
-    var xrayHtml = T('BAN_XRAY');
+    // "Fail-open to WAN" is only TRUE without xray: while xray's TPROXY capture is active,
+    // peer traffic goes through XRAY (not straight to WAN) and the xray banner below tells
+    // the accurate story — showing both would be contradictory (field-confirmed on RT-BE88U).
+    showBanner('awgs_ban_client', st.running && policied && !st.client_running && !st.xray_capture, T('BAN_CLIENT_DOWN'));
+    // Xray coexistence banner, two severities (verified live on a box running XRAYUI):
+    //  - peers with a VPN policy -> RED: the double-hop genuinely does not work under xray
+    //    (prio 19 grabs traffic first + it breaks the client tunnel); banner lists the two
+    //    working setups (keep xray + Direct peers, or stop xray + vpn_all + client tunnel).
+    //  - all peers Direct -> YELLOW info: peers flow through xray automatically (XRAYUI
+    //    captures the peer subnet itself) — a working DPI-bypass setup, nothing broken.
+    var xb = document.getElementById('awgs_ban_xray');
+    if (xb) xb.className = 'awg-banner ' + (policied ? 'red' : 'yellow');
+    var xrayHtml = T(policied ? 'BAN_XRAY_POLICY' : 'BAN_XRAY_INFO');
     if (st.xray_capture && st.xray_ctl)
         xrayHtml += '<div style="margin-top:7px;"><input type="button" class="awg-mini danger" value="' +
                     escHtml(awgsXrayStopping ? T('XRAY_STOPPING') : T('XRAY_STOP_BTN')) + '"' +
