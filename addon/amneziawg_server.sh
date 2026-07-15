@@ -635,6 +635,18 @@ do_srv_apply(){
     if ! srv_generate_config; then
         srv_update_status; release_lock; return 1
     fi
+    # I1-I5 (tagged junk) go straight to a restart: the amneziawg-tools `syncconf` diff parser
+    # does NOT understand the `I1 = <b 0x…>` lines (it errors "Line unrecognized"), even though
+    # `setconf` — the start path — parses them fine (verified on the router). So with I-params
+    # present, skip the doomed syncconf and restart directly (setconf-based), instead of logging
+    # a scary "syncconf failed" and falling back. Peers reconnect in ~1-2s either way.
+    if grep -qE '^I[1-5] ' "$CONF" 2>/dev/null; then
+        log_msg "Server config has I1-I5 (tagged junk) — applying via restart (syncconf can't diff those)"
+        release_lock
+        do_srv_restart
+        srv_poke_policies
+        return 0
+    fi
     local sync_err
     sync_err=$("$AWG_BIN" syncconf "$IFACE" "$CONF" 2>&1)
     if [ $? -ne 0 ]; then

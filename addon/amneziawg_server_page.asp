@@ -120,7 +120,8 @@ en: {
     BTN_GEN_OBFS: "Generate random",
     HINT_OBFS: "These values are embedded into every peer config — clients must match the server exactly. Changing them disconnects peers until they re-import configs.",
     LBL_IPARAMS: "I1–I5 (advanced, AWG 2.x signature packets)",
-    HINT_IPARAMS: "Optional. Format: <code>&lt;b 0x…&gt;</code> tags. Requires AmneziaWG 2.x clients.",
+    HINT_IPARAMS: "Optional. Junk/signature packets sent before the handshake to camouflage the flow. «Generate» fills I1–I2 with a unique random signature. Tags: <code>&lt;b 0xHEX&gt;</code> fixed bytes, <code>&lt;r N&gt;</code> random bytes, <code>&lt;rc N&gt;</code> random letters, <code>&lt;rd N&gt;</code> random digits, <code>&lt;t&gt;</code> timestamp. Requires AmneziaWG 2.x clients (embedded into every peer config automatically).",
+    BTN_GEN_IPARAMS: "Generate",
     TH_PEER_NAME: "Name",
     TH_PEER_IP: "IP",
     TH_PEER_POLICY: "Routing policy",
@@ -210,7 +211,8 @@ ru: {
     BTN_GEN_OBFS: "Сгенерировать случайные",
     HINT_OBFS: "Эти значения встраиваются в конфиг каждого пира — клиент должен совпадать с сервером точь-в-точь. Смена параметров отключит пиров, пока они не переимпортируют конфиги.",
     LBL_IPARAMS: "I1–I5 (продвинутое, сигнатурные пакеты AWG 2.x)",
-    HINT_IPARAMS: "Необязательно. Формат: теги <code>&lt;b 0x…&gt;</code>. Нужны клиенты AmneziaWG 2.x.",
+    HINT_IPARAMS: "Необязательно. Junk/сигнатурные пакеты перед handshake — маскируют поток. «Сгенерировать» заполнит I1–I2 уникальной случайной подписью. Теги: <code>&lt;b 0xHEX&gt;</code> фикс. байты, <code>&lt;r N&gt;</code> случайные байты, <code>&lt;rc N&gt;</code> случайные буквы, <code>&lt;rd N&gt;</code> случайные цифры, <code>&lt;t&gt;</code> таймстамп. Нужны клиенты AmneziaWG 2.x (встраиваются в конфиг каждого пира автоматически).",
+    BTN_GEN_IPARAMS: "Сгенерировать",
     TH_PEER_NAME: "Имя",
     TH_PEER_IP: "IP",
     TH_PEER_POLICY: "Политика маршрутизации",
@@ -458,6 +460,32 @@ function genObfs(){
         if (!used[v]) { used[v] = 1; hs.push(v); }
     }
     sv('awgs_h1_f', hs[0]); sv('awgs_h2_f', hs[1]); sv('awgs_h3_f', hs[2]); sv('awgs_h4_f', hs[3]);
+    markDirty();
+}
+
+// Generate AWG 2.0 signature packets for I1-I5. Grammar (verified against the daemon's
+// newObfChain, our router-build v0.2.19): a chain of <tag val> tokens — <b 0xHEX> fixed
+// bytes, <r N> N random bytes, <rc N> random letters, <rd N> random digits, <t> timestamp.
+// The I-packets are standalone junk datagrams sent BEFORE the handshake init (src is nil),
+// so <d>/<ds>/<dz> data-wrapping tags don't apply here, and the receiver just drops them
+// (they carry no H1 magic) — pure sender-side DPI camouflage. We emit two packets: a fixed
+// random byte signature (unique per server, defeats signature-DB matching of the default AWG
+// fingerprint) + a random tail for entropy. Both peers get identical params — the server
+// embeds these into every peer's .conf — so nothing to sync manually.
+function awgsRandHex(nBytes){
+    var b = new Uint8Array(nBytes), i, s = '';
+    if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(b);
+    else for (i = 0; i < nBytes; i++) b[i] = Math.floor(Math.random() * 256);
+    for (i = 0; i < b.length; i++) s += ('0' + b[i].toString(16)).slice(-2);
+    return s;
+}
+function genIparams(){
+    if (!confirm(T('MSG_GEN_CONFIRM'))) return;
+    function ri(min, max){ return Math.floor(Math.random() * (max - min + 1)) + min; }
+    // I1: fixed byte signature + random byte padding. I2: another signature + random letters.
+    sv('awgs_i1_f', '<b 0x' + awgsRandHex(ri(8, 16)) + '><r ' + ri(4, 16) + '>');
+    sv('awgs_i2_f', '<b 0x' + awgsRandHex(ri(8, 16)) + '><rc ' + ri(4, 12) + '>');
+    sv('awgs_i3_f', ''); sv('awgs_i4_f', ''); sv('awgs_i5_f', '');
     markDirty();
 }
 
@@ -1015,6 +1043,7 @@ function initial(){
                 <tr>
                     <th data-i18n="LBL_IPARAMS">I1–I5 (advanced)</th>
                     <td>
+                        <input type="button" class="button_gen awg-mini" value="Generate" data-i18n-val="BTN_GEN_IPARAMS" onclick="genIparams();" style="margin-bottom:5px;">
                         <div class="awg-hint" data-i18n-html="HINT_IPARAMS"></div>
                         <input type="text" id="awgs_i1_f" class="input_32_table" style="width:96%;" placeholder="I1" onchange="markDirty();">
                         <input type="text" id="awgs_i2_f" class="input_32_table" style="width:96%;" placeholder="I2" onchange="markDirty();">
