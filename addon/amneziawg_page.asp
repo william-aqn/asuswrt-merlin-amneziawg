@@ -558,6 +558,7 @@ en: {
     NOHS_KS: " — and with the <b>kill-switch ON</b>, all VPN-routed traffic is blocked, so those devices have no internet until the handshake succeeds",
     DNSGEO_USER: "⚠ Domain-based geo lists are active ({0} domains in dnsmasq), but <b>DNS interception is off</b> (compatibility mode). Domains feed the routing only for clients that use the router's DNS — devices with DoH/private DNS bypass the VPN, so in practice mostly the IP lists (GeoIP/Antifilter) route. Not running zapret/Xray/b4? Turn compatibility mode off to re-enable interception.",
     DNSGEO_AUTO: "⚠ Domain-based geo lists are active ({1} domains), but DNS interception is <b>disabled automatically because of {0}</b>. Domains populate only for clients that use the router's DNS; IP lists keep working.",
+    GEO_MATCHALL: "⛔ A rule in your <b>custom dnsmasq config</b> is routing <b>every</b> domain into a geo set, so Geo mode sends <b>all</b> traffic through the VPN (every site shows the VPN IP and geo-restricted services stop working). The offending line:<div style=\"margin:6px 0;\"><code>{0}</code></div>The <code>https://</code> (or a stray <code>//</code>) leaves an empty segment, which dnsmasq treats as “match everything”. Fix it in your custom dnsmasq config (<code>/jffs/configs/dnsmasq.conf.add</code>): keep only the bare domain — e.g. <code>ipset=/example.com/awg_dst</code> — then restart dnsmasq or reboot. AmneziaWG's own generated rules are fine; this is a hand-added line.",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">After the changes, click <b>«Apply»</b>. GeoIP routing by IP keeps working in the meantime.</span>",
     XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> is running in <b>transparent-proxy mode (TPROXY, «redirect all traffic»)</b>. Its routing rule sits <b>ahead</b> of AmneziaWG's (ip-rule priority 19 vs 98), so LAN traffic is grabbed by Xray before it reaches the tunnel — <b>devices you assigned to AmneziaWG actually go out through Xray</b>, not the tunnel.",
     XRAY_CAP_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>In <b>XRAYUI</b>, turn off <b>«Redirect all traffic» / transparent routing (TPROXY)</b> — or exclude AmneziaWG's endpoint and the <b>awg0</b> interface from its capture.</li><li>Or keep only <b>one</b> VPN active at a time (XRAYUI <i>or</i> AmneziaWG).</li></ul>",
@@ -950,6 +951,7 @@ ru: {
     NOHS_KS: " — а с <b>включённым килл-свичом</b> весь VPN-трафик блокируется, поэтому на этих устройствах интернета не будет, пока рукопожатие не пройдёт",
     DNSGEO_USER: "⚠ Выбраны доменные гео-списки ({0} доменов в dnsmasq), но <b>перехват DNS выключен</b> (режим совместимости). Домены наполняют маршрутизацию только у устройств, использующих DNS роутера, — устройства с DoH/приватным DNS пройдут мимо VPN, т.е. фактически работают в основном IP-списки (GeoIP/Antifilter). Если zapret/Xray/b4 не используются — выключите режим совместимости, и перехват включится.",
     DNSGEO_AUTO: "⚠ Выбраны доменные гео-списки ({1} доменов), но перехват DNS <b>отключён автоматически из-за {0}</b>. Домены будут наполняться только у устройств, использующих DNS роутера; IP-списки работают как обычно.",
+    GEO_MATCHALL: "⛔ Правило в вашем <b>пользовательском конфиге dnsmasq</b> отправляет в гео-набор <b>все</b> домены, поэтому в режиме Гео через VPN уходит <b>весь</b> трафик (на всех сайтах виден IP VPN, гео-сервисы перестают работать). Проблемная строка:<div style=\"margin:6px 0;\"><code>{0}</code></div>Из-за <code>https://</code> (или лишнего <code>//</code>) появляется пустой сегмент, а его dnsmasq трактует как «совпадает со всем». Исправьте в своём конфиге dnsmasq (<code>/jffs/configs/dnsmasq.conf.add</code>): оставьте только домен — например <code>ipset=/example.com/awg_dst</code> — и перезапустите dnsmasq или перезагрузите роутер. Правила, которые генерирует сам AmneziaWG, тут ни при чём — строка добавлена вручную.",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>",
     XRAY_CAP_HEADER: "⛔ <b>XRAYUI / Xray</b> работает в режиме <b>прозрачного проксирования (TPROXY, «перенаправить весь трафик»)</b>. Его правило маршрутизации стоит <b>впереди</b> правила AmneziaWG (приоритет ip-rule 19 против 98), поэтому LAN-трафик забирает Xray раньше, чем тот дойдёт до туннеля — <b>устройства, назначенные на AmneziaWG, по факту уходят через Xray</b>, а не в туннель.",
     XRAY_CAP_FIX: "<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li>В <b>XRAYUI</b> отключите <b>«Перенаправлять весь трафик» / прозрачную маршрутизацию (TPROXY)</b> — либо исключите из перехвата endpoint AmneziaWG и интерфейс <b>awg0</b>.</li><li>Либо держите включённым только <b>один</b> VPN за раз (XRAYUI <i>или</i> AmneziaWG).</li></ul>",
@@ -3780,6 +3782,7 @@ function updateStatusUI(s){
     renderXrayCaptureWarning(s);
     renderFwVpnWarning(s);
     renderDnsGeoWarning(s);
+    renderGeoMatchallWarning(s);
     renderNoHandshakeWarning(s);
 }
 
@@ -3830,10 +3833,11 @@ function renderXrayCaptureWarning(s){
     el.innerHTML = html;
     el.style.display = '';
 }
-// Unsupported-kernel blocker (red, informational — no button, nothing the user can change). On
-// Linux < 3.0 (some old Broadcom boxes, e.g. RT-AC68U on 2.6.36) the daemon can't send packets
-// (sendmmsg ENOSYS), so the tunnel never passes traffic; the backend refuses do_start and flags
-// status.kernel_unsup. This is the deeper blocker — shown ABOVE and instead of the CTF banner.
+// Unsupported-kernel banner — RETIRED in 1.2.61. Old kernels (Linux 2.6.x, e.g. RT-AC68U) are now
+// supported (smfix daemon 1.2.58 + the drain_ip_rules fix 1.2.61), so the backend hard-codes
+// status.kernel_unsup = false and this renderer stays dormant — the scaffold is kept only so the
+// field can't accidentally render a stale banner. Left in place in case a future old-kernel
+// warning ever needs it (KERNEL_UNSUP_HEADER/BODY text would need updating first).
 function renderKernelUnsupWarning(s){
     var el = document.getElementById('awg_kernel_warn');
     if(!el) return;
@@ -3912,6 +3916,20 @@ function renderDnsGeoWarning(s){
         var cause = escHtml(w.indexOf(':') > 0 ? w.slice(w.indexOf(':') + 1) : w);
         el.innerHTML = T('DNSGEO_AUTO', cause, doms);
     }
+    el.style.display = '';
+}
+
+// Foreign match-all ipset directive (red). A rule hand-written in the user's OWN dnsmasq config
+// routes EVERY domain into one of our geo sets — the empty //-segment left by a `https://` scheme
+// (or a bare `#`) is dnsmasq's "match everything" — so Geo mode sends the WHOLE LAN through the
+// tunnel (every site shows the VPN IP; geo-blocked services break). Backend can't fix the user's
+// own line, only surface it: status.geo_matchall_warn = the offending line (already trimmed) | "".
+function renderGeoMatchallWarning(s){
+    var el = document.getElementById('awg_geo_matchall_warn');
+    if(!el) return;
+    var ln = (s && s.geo_matchall_warn) || '';
+    if(!ln){ el.style.display = 'none'; el.innerHTML = ''; return; }
+    el.innerHTML = T('GEO_MATCHALL', escHtml(ln));
     el.style.display = '';
 }
 
@@ -4422,6 +4440,7 @@ function initAutocompleteIp(){
                 <div id="awg_kernel_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_ctf_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_xray_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
+                <div id="awg_geo_matchall_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a1a1a; border:1px solid #d9534f; border-radius:5px; color:#e8a0a0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_fwvpn_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; border:1px solid; border-radius:5px; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_dnsgeo_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_nohs_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>

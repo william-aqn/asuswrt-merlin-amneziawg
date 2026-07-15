@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.61"
+AWG_VERSION="1.2.62"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -397,6 +397,41 @@ destroy_owned_sets(){
 geo_set_ours(){
     [ "$1" = 1 ] && return 0
     grep -qxF "$2" "$OWNED_SETS" 2>/dev/null
+}
+
+# A FOREIGN dnsmasq ipset=/nftset= directive — hand-written in the user's OWN custom config, not
+# our generated conf — that dumps EVERY resolved domain into one of our geo sets. dnsmasq turns an
+# empty domain segment (or a bare '#') into a zero-length "match everything" domain (option.c: an
+# empty /-segment and '#' take the SAME branch), so a line like `ipset=/https://foo/awg_dst` (the
+# `//` in the scheme is an empty segment) silently routes the WHOLE internet into awg_dst — in Geo
+# mode that pushes ALL LAN traffic through the tunnel (field report 2026-07-13: geo "broke", every
+# site showed the VPN IP, geo-blocked TV apps died; the fix was removing the `https://`). We can't
+# stop dnsmasq honouring the user's own line, so we surface it loudly. Scans the include file
+# (dnsmasq.conf.add) + the conf-file= includes it declares, NEVER our own conf (whose domain
+# normaliser strips schemes/empties, so it can't emit this). Echoes the first offending line
+# (trimmed) when found, nothing otherwise. Only the TYPO signature (empty segment / http(s): scheme)
+# is flagged — a deliberate `/#/awg_dst` is a conscious "route everything" choice, left alone.
+geo_foreign_matchall(){
+    [ -f "$DNSMASQ_INCLUDE" ] || return 0
+    local _sets="" _gid _f _scan="$DNSMASQ_INCLUDE"
+    for _gid in $(geo_ids); do _sets="$_sets $(geo_ipset "$_gid") $(geo_exc_ipset "$_gid")"; done
+    for _f in $(awk -F= '/conf-file=/{print $2}' "$DNSMASQ_INCLUDE" 2>/dev/null); do
+        [ "$_f" = "$DNSMASQ_AWG_CONF" ] && continue
+        [ -f "$_f" ] && _scan="$_scan $_f"
+    done
+    awk -v sets="$_sets" '
+        BEGIN{ n=split(sets,a," "); for(i=1;i<=n;i++) if(a[i]!="") OUR[a[i]]=1 }
+        /^[[:space:]]*(ipset|nftset)=/{
+            line=$0; sub(/^[[:space:]]*/,"",line); sub(/[[:space:]]+$/,"",line)
+            val=line; sub(/^(ipset|nftset)=/,"",val); sub(/[[:space:]].*$/,"",val)
+            m=split(val,f,"/"); if(m<3) next
+            # last /-field is the comma-joined set list (nftset: table#..#set — set is after last #)
+            nset=split(f[m],ss,","); hit=0
+            for(i=1;i<=nset;i++){ t=ss[i]; sub(/.*#/,"",t); if(t in OUR){ hit=1; break } }
+            if(!hit) next
+            # domains are f[2]..f[m-1]; an empty segment or an http(s): scheme colon = match-all typo
+            for(i=2;i<m;i++) if(f[i]=="" || f[i] ~ /^https?:$/){ print line; exit }
+        }' $_scan 2>/dev/null
 }
 
 # Map a device/default policy ref to a geo policy id: vpn_geo -> 1, vpn_geo_<id> -> <id>.
@@ -1265,18 +1300,19 @@ ctf_active(){
     return 0
 }
 
-# True on a 2.6.x/2.4.x kernel — where AmneziaWG does not work, so do_start refuses up front.
-# TWO distinct blockers were found on the RT-AC68U (2.6.36), both real:
-#   1. sendmmsg() ENOSYS — the batched UDP send amneziawg-go uses for ALL egress landed in Linux
-#      3.0, so the daemon couldn't send a single packet. FIXED (1.2.58): the fork daemon falls
-#      back to per-packet sendmsg (version suffix -smfix); proven to send + handshake.
-#   2. Policy-routing bring-up (ip rules 97-100 + fwmark + table 300 + iptables) DESTABILISES WAN
-#      on 2.6.36 — confirmed 2026-07-13 with the smfix daemon + CTF off: TX flowed (358 B sent)
-#      but RX stayed 0, the box became WAN-unreachable and rebooted. UNSOLVED (likely the
-#      Entware-iproute2-vs-2.6.36 fragility family). This is why the guard STAYS even though the
-#      daemon is fixed — disabling CTF or fixing the daemon is not enough on these kernels.
-# Detect by kernel version (ground truth). Supersedes the CTF banner here. Lift only once (2) is
-# solved (isolate the breaking ip/iptables op in QEMU 2.6.32, NOT on a live box).
+# True on a 2.6.x/2.4.x kernel (RT-AC68U class). These boxes are now SUPPORTED — both historical
+# blockers are fixed and the start guard was removed (1.2.61):
+#   1. sendmmsg() ENOSYS — amneziawg-go's batched UDP send landed in Linux 3.0, so the daemon
+#      couldn't send a single packet. FIXED (1.2.58): the fork daemon falls back to per-packet
+#      sendmsg (version suffix -smfix); proven to send + handshake on a real AC68U.
+#   2. Policy-routing bring-up "bricked" the box — traced (1.2.61) to drain_ip_rules' blind
+#      `ip rule del`, which on Broadcom 2.6.36 + Entware iproute2 deletes the SYSTEM routing rules
+#      (there a no-match `del` removes a foreign rule instead of failing) -> "Network unreachable"
+#      -> the daemon's own handshake couldn't egress (TX>0/RX=0) -> reboot. FIXED by draining only
+#      our own rules by confirmed priority. Verified end-to-end: handshake, bidirectional transfer,
+#      system rules intact, no reboot.
+# No longer a start guard — kept ONLY to LABEL old kernels in `diag` (the name is legacy). CTF, if
+# present, must still be disabled first (that's the separate ctf_active guard, a Broadcom issue).
 kernel_pre_sendmmsg(){
     case "$(uname -r 2>/dev/null)" in
         2.6.*|2.4.*) return 0 ;;
@@ -2240,6 +2276,15 @@ setup_firewall(){
         fi
     fi
 
+    # Warn (journal) if the user's OWN dnsmasq config carries a match-all ipset line that dumps
+    # every domain into a geo set — in Geo mode that silently routes ALL traffic through the VPN.
+    # We never touch their line; the page also shows a red banner (status.geo_matchall_warn).
+    # Gated on geo_in_use — matches the status-banner gate, so a box with the line but Geo OFF
+    # doesn't get a scary "Geo will send EVERY site through the VPN" journal entry for an inert line.
+    local _fmatch=""
+    if geo_in_use; then _fmatch=$(geo_foreign_matchall); fi
+    [ -n "$_fmatch" ] && log_msg "WARNING: a dnsmasq directive in your custom config routes ALL domains into a geo set — Geo mode will send EVERY site through the VPN. Offending line: $_fmatch (remove the 'https://' / empty segment, keep only the bare domain)"
+
     # --- Create custom chain in mangle table ---
     iptables -t mangle -N "$AWG_CHAIN" 2>/dev/null || iptables -t mangle -F "$AWG_CHAIN"
 
@@ -2890,7 +2935,8 @@ do_diag(){
     if nft list ruleset 2>/dev/null | grep -qE 'queue (num|to)'; then _b4_be="${_b4_be:+$_b4_be+}nft"; fi
     echo "NFQUEUE backend seen : ${_b4_be:-none}"
     echo "compat (no DNS hijack): $([ "$(get_setting awg_no_dns_intercept)" = "1" ] && echo "ON (coexist)" || echo off)"
-    echo "kernel / sendmmsg    : $(uname -r) -> $(kernel_pre_sendmmsg && echo 'PRE-3.0: no sendmmsg — daemon CANNOT send packets, tunnel never passes traffic (needs patched daemon); start refused' || echo 'ok (>=3.0)')"
+    echo "geo match-all ipset  : $(_fm=$(geo_foreign_matchall); [ -n "$_fm" ] && echo "FOREIGN line routes ALL domains into a geo set -> Geo sends EVERY site via VPN: $_fm" || echo none)"
+    echo "kernel / sendmmsg    : $(uname -r) -> $(kernel_pre_sendmmsg && echo 'pre-3.0 (2.6.x): no native sendmmsg — daemon uses the bundled smfix per-packet fallback; SUPPORTED since 1.2.61 (guard removed; disable CTF first if present)' || echo 'ok (>=3.0)')"
     echo "Broadcom CTF (HW-NAT) : $(grep -q '^ctf ' /proc/modules 2>/dev/null && echo "module loaded" || echo "no module") ctf_disable=$(nvram get ctf_disable 2>/dev/null) force=$(nvram get ctf_disable_force 2>/dev/null) -> $(ctf_active && echo 'ACTIVE (BLOCKS tunnel start — disable + reboot)' || echo 'not blocking')"
     echo "conntrack count/max  : $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo '?')/$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo '?')"
     echo "ip rule fwmark 0x100 :"; ip rule show 2>/dev/null | grep -i 'fwmark 0x100' | sed 's/^/  /'
@@ -3245,18 +3291,13 @@ do_start(){
         return 0
     fi
 
-    # Unsupported-kernel guard (see kernel_pre_sendmmsg): on Linux < 3.0 the daemon can't send a
-    # single UDP packet (sendmmsg ENOSYS), so the tunnel can NEVER pass traffic — and starting it
-    # only destabilises the box. Refuse up front with a clear reason; status kernel_unsup drives a
-    # page banner. Checked BEFORE the CTF guard because it's the deeper blocker (on these boxes
-    # disabling CTF wouldn't help). Removed once the daemon carries a sendmmsg fallback.
-    # Old kernels (Linux 2.6.x — RT-AC68U class) are SUPPORTED again as of 1.2.61: the daemon
-    # carries the sendmmsg→sendmsg fallback (1.2.58) AND drain_ip_rules no longer wipes the
-    # system routing table on Broadcom 2.6.36 + Entware iproute2 (the blind `ip rule del` bug
-    # fixed here — that was THE reason the full start "bricked" the AC68U). Verified end-to-end
-    # on a real RT-AC68U: handshake completes, RX/TX both flow, inbound stays up, no reboot. CTF
-    # (if present) must still be off first — the ctf guard above handles that. So no kernel guard
-    # here anymore. If a NEW 2.6.x-specific issue turns up, autostart-off still makes a bad start
+    # No unsupported-kernel guard here anymore (see kernel_pre_sendmmsg). Old kernels (Linux 2.6.x
+    # — RT-AC68U class) are SUPPORTED as of 1.2.61: the daemon carries the sendmmsg→sendmsg fallback
+    # (1.2.58) AND drain_ip_rules no longer wipes the system routing table on Broadcom 2.6.36 +
+    # Entware iproute2 (the blind `ip rule del` bug — THE reason the full start "bricked" the
+    # AC68U). Verified end-to-end on a real RT-AC68U: handshake completes, RX/TX both flow, inbound
+    # stays up, no reboot. CTF (if present) must still be off first — the ctf guard below handles
+    # that. If a NEW 2.6.x-specific issue turns up, autostart-off still makes a bad start
     # self-recover (reboot → tunnel stopped).
 
     # Broadcom CTF guard (see ctf_active): on a CTF-accelerated box, standing up our policy
@@ -3904,6 +3945,18 @@ EOF
             fi
         fi
     fi
+    # A FOREIGN match-all dnsmasq directive (hand-written in the user's own custom config) that
+    # dumps EVERY domain into one of our geo sets — dnsmasq treats the empty //-segment left by a
+    # `https://` scheme (or a bare `#`) as "match all", so Geo mode routes the WHOLE LAN through the
+    # tunnel (field report 2026-07-13). We only surface it (the line is the user's to fix). Gated on
+    # geo actually being in use — otherwise our sets don't route and the line is inert.
+    local geo_matchall_warn=""
+    if geo_in_use; then
+        # Strip control chars (CR/TAB/etc — unescaped they'd make JSON.parse throw) and truncate
+        # BEFORE the backslash/quote escaping, so `cut` can never split an escape pair in half.
+        geo_matchall_warn=$(geo_foreign_matchall | head -1 | tr -d '\000-\037' | cut -c1-200 | sed 's/\\/\\\\/g; s/"/\\"/g')
+    fi
+
     # Can we offer a "Stop Xray" button? Only if XRAYUI's own entry point is present (so the stop
     # goes through its cleanup_firewall and actually removes the TPROXY rules).
     local xray_ctl=false
@@ -3933,7 +3986,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","geo_matchall_warn":"${geo_matchall_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
