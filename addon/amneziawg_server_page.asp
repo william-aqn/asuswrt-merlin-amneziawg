@@ -1047,10 +1047,10 @@ function initial(){
                 <tr>
                     <th>H1–H4</th>
                     <td>
-                        <input type="text" id="awgs_h1_f" class="input_12_table" maxlength="21" onchange="markDirty();">
-                        <input type="text" id="awgs_h2_f" class="input_12_table" maxlength="21" onchange="markDirty();">
-                        <input type="text" id="awgs_h3_f" class="input_12_table" maxlength="21" onchange="markDirty();">
-                        <input type="text" id="awgs_h4_f" class="input_12_table" maxlength="21" onchange="markDirty();">
+                        <input type="text" id="awgs_h1_f" class="input_12_table" style="width:46%; margin:2px 1%; font-family:monospace; box-sizing:border-box;" maxlength="21" placeholder="H1" onchange="markDirty();">
+                        <input type="text" id="awgs_h2_f" class="input_12_table" style="width:46%; margin:2px 1%; font-family:monospace; box-sizing:border-box;" maxlength="21" placeholder="H2" onchange="markDirty();">
+                        <input type="text" id="awgs_h3_f" class="input_12_table" style="width:46%; margin:2px 1%; font-family:monospace; box-sizing:border-box;" maxlength="21" placeholder="H3" onchange="markDirty();">
+                        <input type="text" id="awgs_h4_f" class="input_12_table" style="width:46%; margin:2px 1%; font-family:monospace; box-sizing:border-box;" maxlength="21" placeholder="H4" onchange="markDirty();">
                     </td>
                 </tr>
                 <tr>
