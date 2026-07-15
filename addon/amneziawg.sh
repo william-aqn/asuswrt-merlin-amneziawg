@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.2.62"
+AWG_VERSION="1.3.0"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -69,6 +69,21 @@ SCRIPT_NAME="amneziawg"
 RT_TABLE=300
 AWG_CHAIN="AWG"
 LOCKDIR="/tmp/.awg_lock"
+# Per-instance daemon telemetry files. Variables (not literals) so the SERVER role script
+# (amneziawg_server.sh), which sources this file in lib mode and overrides IFACE/LOCKDIR/
+# UI_LOG/…, gets its own copies — two concurrent daemons (client awg0 + server awgs0) must
+# never truncate each other's launch log or overwrite each other's exit-status file.
+DAEMON_LOG="/tmp/awg_daemon.log"
+DAEMON_RC="/tmp/awg_daemon.rc"
+# --- AWG server role (amneziawg_server.sh) — read-only coexistence constants ---
+# The client script needs limited visibility into the server instance: per-peer policy
+# routing (server peers are policy sources exactly like LAN devices), the mangle
+# "peer-subnet -> direct" exclusion and the table-300 hairpin route. Server settings live
+# under the awgs_ prefix — deliberately NOT matched by any `^awg_` pattern (4th char). The
+# server script itself sources this file in lib mode (AWG_LIB_MODE=1) and overrides the
+# instance globals; see the guard above the main dispatch.
+AWGS_IFACE="awgs0"
+AWGS_SCRIPT="$ADDON_DIR/amneziawg_server.sh"
 GEOLOCK="/tmp/.awg_geolock"   # long-running background geo-download mutex (separate from LOCKDIR)
 V2FLY_GEOIP_BASE="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text"
 GEOIP_SERVICES="telegram google facebook twitter netflix cloudflare fastly cloudfront"
@@ -1016,17 +1031,21 @@ download_all_geo(){
 # marker-delimited block, so re-running (services-start, service events) never
 # duplicates or corrupts either one.
 mount_menu_tree(){
-    local page="$1"
+    local page="$1" srv_page="$2"
     # Firmware UI language at mount time — gives the header widget a zero-flicker first paint
     # (it self-corrects from the status JSON "lang" field on its first poll if this goes stale).
     local pref_lang=$(nvram get preferred_lang 2>/dev/null)
     [ -z "$pref_lang" ] && pref_lang="EN"
     [ ! -f /tmp/menuTree.js ] && cp /www/require/modules/menuTree.js /tmp/
-    # Remove our previous tab line (precise match — does not touch the widget block)
-    sed -i '/tabName: "AmneziaWG"/d' /tmp/menuTree.js
+    # Remove our previous tab lines (substring match — also catches 'AmneziaWG Server';
+    # does not touch the widget block)
+    sed -i '/tabName: "AmneziaWG/d' /tmp/menuTree.js
     # Remove our previous widget block (marker range; independent of the word "AmneziaWG")
     sed -i '/\/\* AWG_WIDGET_START \*\//,/\/\* AWG_WIDGET_END \*\//d' /tmp/menuTree.js
-    # Insert the AmneziaWG tab after the OpenVPN entry
+    # Insert the tabs after the OpenVPN entry. Both `a` commands anchor on the same OpenVPN
+    # line, so the SERVER entry goes in first and the client entry lands above it — final
+    # menu order: AmneziaWG, then AmneziaWG Server.
+    [ -n "$srv_page" ] && sed -i "/url: \"Advanced_VPN_OpenVPN.asp\"/a {url: \"$srv_page\", tabName: \"AmneziaWG Server\"}," /tmp/menuTree.js
     sed -i "/url: \"Advanced_VPN_OpenVPN.asp\"/a {url: \"$page\", tabName: \"AmneziaWG\"}," /tmp/menuTree.js
     # Append the tiny widget loader (runs on every page; version-stamped for cache-busting)
     cat >> /tmp/menuTree.js <<AWGEOF
@@ -2296,6 +2315,15 @@ setup_firewall(){
 
     iptables -t mangle -A "$AWG_CHAIN" -m addrtype --dst-type LOCAL -j RETURN
     [ -n "$lan_net" ] && iptables -t mangle -A "$AWG_CHAIN" -d "$lan_net" -j RETURN
+    # AWG-server peer subnet: LAN->peer and peer->peer traffic must never be pulled into the
+    # client tunnel by a device/default policy — RETURN it like the LAN net. Emitted whenever
+    # a subnet is configured (cheap, and the rule is correct even while the server is down).
+    local srv_net
+    srv_net=$(get_setting awgs_subnet)
+    case "$srv_net" in
+        */*) iptables -t mangle -A "$AWG_CHAIN" -d "$srv_net" -j RETURN 2>/dev/null ;;
+        *)   srv_net="" ;;
+    esac
     iptables -t mangle -A "$AWG_CHAIN" -p udp -m multiport --dports 67,68,123 -j RETURN
     iptables -t mangle -A "$AWG_CHAIN" -d 224.0.0.0/4 -j RETURN
     [ -n "$endpoint" ] && iptables -t mangle -A "$AWG_CHAIN" -d "$endpoint" -j RETURN
@@ -2389,6 +2417,13 @@ setup_firewall(){
 
     # --- Single fwmark rule for all marked traffic ---
     ip_rule_replace fwmark "$FWMARK" lookup $RT_TABLE prio 98
+
+    # Hairpin route for the AWG-server peer subnet: a vpn_all source (LAN device or a
+    # policied peer) looks up table $RT_TABLE for EVERYTHING via its from-rule, and without
+    # this route its traffic to 10.9.x peers would follow the /1 defaults into the tunnel.
+    # Dev-scoped, so the kernel purges it automatically when awgs0 goes away; the server's
+    # own start re-adds it symmetrically (whichever side comes up second wins).
+    [ -n "$srv_net" ] && iface_exists "$AWGS_IFACE" && ip route add "$srv_net" dev "$AWGS_IFACE" table $RT_TABLE 2>/dev/null
 
     # --- Force DNS through dnsmasq whenever VPN is active ---
     # The global :53 DNAT + DoH/DoT REJECT is the one piece that collides with a co-resident
@@ -2499,6 +2534,38 @@ setup_firewall(){
     log_msg "Firewall configured: $(geo_ipset_total) IPs, $(geo_domain_total) domains"
 }
 
+# Server-role peers that carry an explicit routing policy, emitted as clients.list lines
+# ("ip,name,policy," — no MAC; peer tunnel IPs are stable per AllowedIPs). Source of truth:
+# awgs_peers (+ awgs_peers1..N overflow chunks, same ~2900-char convention as awg_initdata) —
+# entries ';'-separated, fields '|'-separated:
+#   name|ip|policy|allowed_mode|enabled|pubkey|privkey|psk      (see amneziawg_server.sh)
+# Only enabled peers with a known policy token are emitted. Names are sanitized on save, but
+# re-sanitize here (strip , ; ") so a hand-edited setting can't break the CSV parse or the
+# status JSON downstream. base64 key fields can't collide with either separator.
+server_peer_policy_entries(){
+    local raw _i _chunk
+    raw=$(get_setting awgs_peers)
+    [ -z "$raw" ] && return 0
+    _i=1
+    while [ "$_i" -le 10 ]; do
+        _chunk=$(get_setting "awgs_peers${_i}")
+        [ -z "$_chunk" ] && break
+        raw="${raw}${_chunk}"
+        _i=$((_i + 1))
+    done
+    printf '%s\n' "$raw" | tr ';' '\n' | awk -F'|' '
+        NF>=5 && $5=="1" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {
+            # strict octets (0-255): a hand-edited 999.x IP must not reach ip_rule_replace
+            n=split($2, oct, "."); ok=1
+            for (i=1; i<=4; i++) if (oct[i]+0 > 255) ok=0
+            if (!ok) next
+            pol=$3
+            if (pol!="direct" && pol!="vpn_all" && pol!="vpn_geo" && pol !~ /^vpn_geo_[0-9]+$/) next
+            name=$1; gsub(/[,;"]/,"",name)
+            print $2 "," name "," pol ","
+        }'
+}
+
 save_clients(){
     local clients=$(get_setting awg_clients)
     if [ -n "$clients" ]; then
@@ -2506,6 +2573,13 @@ save_clients(){
     else
         > "$CLIENTS_FILE"
     fi
+    # AWG-server peers ride the SAME per-device policy machinery: appended here, they get
+    # vpn_all/vpn_geo/direct via the very pass-1/pass-2 rules below (and flush_conntrack
+    # covers them automatically). Deliberate v1 kill-switch semantics: these rules live and
+    # die with the CLIENT tunnel's firewall, so when it is down peer traffic fails OPEN to
+    # the WAN — same fail-open the LAN devices have (документировано; строгий per-peer
+    # blackhole — отдельной опцией позже).
+    server_peer_policy_entries >> "$CLIENTS_FILE" 2>/dev/null
 }
 
 # Check if geo databases exist locally (GeoIP CIDRs or antifilter lists)
@@ -2889,11 +2963,11 @@ do_diag(){
     probe_bin "amneziawg-go --version" "$AWG_GO" --version
     probe_bin "awg (usage)"            "$AWG_BIN"
     probe_bin "awg genkey (crypto)"    "$AWG_BIN" genkey
-    echo "--- last amneziawg-go output (/tmp/awg_daemon.log) ---"
-    [ -f /tmp/awg_daemon.log ] && sed 's/^/  /' /tmp/awg_daemon.log || echo "  (none)"
-    echo "  last daemon exit (this launch): $(cat /tmp/awg_daemon.rc 2>/dev/null || echo '(none — daemon still running or never exited)')"
+    echo "--- last amneziawg-go output ($DAEMON_LOG) ---"
+    [ -f $DAEMON_LOG ] && sed 's/^/  /' $DAEMON_LOG || echo "  (none)"
+    echo "  last daemon exit (this launch): $(cat $DAEMON_RC 2>/dev/null || echo '(none — daemon still running or never exited)')"
     echo "  Go runtime cap (computed now): GOMEMLIMIT=$(compute_go_memlimit) GOGC=$AWG_GOGC"
-    grep -qiF 'out of memory' /tmp/awg_daemon.log 2>/dev/null && \
+    grep -qiF 'out of memory' $DAEMON_LOG 2>/dev/null && \
         echo "  >>> last daemon exit was a Go runtime OUT-OF-MEMORY: heap hit the ceiling under load (box low on RAM for this throughput) <<<"
     echo "--- runtime / network / TUN ---"
     echo "memory (free):"; free 2>/dev/null | sed 's/^/  /'
@@ -3099,19 +3173,19 @@ compute_go_memlimit(){
     printf '%dMiB' "$_lim_mib"
 }
 
-# Launch amneziawg-go detached, stdout+stderr into /tmp/awg_daemon.log and — critically — its
+# Launch amneziawg-go detached, stdout+stderr into $DAEMON_LOG and — critically — its
 # EXIT STATUS appended as a final "[daemon exited rc=N]" line. A daemon that dies WITHOUT
 # printing anything (SIGILL/SIGSEGV, or a Go runtime that just aborts on an unsupported ancient
 # kernel — RT-AC68U's 2.6.36 is below Go 1.24's Linux 3.2 floor) used to be indistinguishable
 # from a hang; the rc line names it (132=SIGILL, 139=SIGSEGV, plain N = clean error exit).
 # $1 = optional LOG_LEVEL (e.g. "verbose").
 launch_daemon(){
-    # Exit status goes to a PER-LAUNCH file (/tmp/awg_daemon.rc, truncated here): parsing the
+    # Exit status goes to a PER-LAUNCH file ($DAEMON_RC, truncated here): parsing the
     # rc out of awg_daemon.log was ambiguous during restarts — the PREVIOUS daemon's wrapper
     # could append its "[daemon exited rc=0]" a beat after this launch truncated the log, and
     # a later create-failure would then misreport a stale rc for a daemon that actually hung.
     # The log line stays for humans; code reads the rc file.
-    rm -f /tmp/awg_daemon.rc 2>/dev/null
+    rm -f $DAEMON_RC 2>/dev/null
     # Soft heap ceiling for the Go runtime (see compute_go_memlimit): caps the unbounded
     # message-buffer pool so a heavy inbound burst can't drive the daemon into
     # `fatal error: runtime: out of memory` and crash-loop the tunnel on a low-RAM box.
@@ -3128,17 +3202,17 @@ launch_daemon(){
     # literal prefixes in explicit branches (not `${1:+LOG_LEVEL=$1} cmd`).
     if [ -n "$1" ]; then
         ( [ -n "$_glim" ] && export GOMEMLIMIT="$_glim" GOGC="$AWG_GOGC"
-          WG_PROCESS_FOREGROUND=1 LOG_LEVEL="$1" "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
+          WG_PROCESS_FOREGROUND=1 LOG_LEVEL="$1" "$AWG_GO" "$IFACE" > $DAEMON_LOG 2>&1
           _rc=$?
-          echo "rc=$_rc at $(date '+%H:%M:%S')" > /tmp/awg_daemon.rc
-          echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log
+          echo "rc=$_rc at $(date '+%H:%M:%S')" > $DAEMON_RC
+          echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> $DAEMON_LOG
           record_daemon_oom "$_rc" "$_glim" ) &
     else
         ( [ -n "$_glim" ] && export GOMEMLIMIT="$_glim" GOGC="$AWG_GOGC"
-          WG_PROCESS_FOREGROUND=1 "$AWG_GO" "$IFACE" > /tmp/awg_daemon.log 2>&1
+          WG_PROCESS_FOREGROUND=1 "$AWG_GO" "$IFACE" > $DAEMON_LOG 2>&1
           _rc=$?
-          echo "rc=$_rc at $(date '+%H:%M:%S')" > /tmp/awg_daemon.rc
-          echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> /tmp/awg_daemon.log
+          echo "rc=$_rc at $(date '+%H:%M:%S')" > $DAEMON_RC
+          echo "[daemon exited rc=$_rc at $(date '+%H:%M:%S')]" >> $DAEMON_LOG
           record_daemon_oom "$_rc" "$_glim" ) &
     fi
 }
@@ -3150,7 +3224,7 @@ launch_daemon(){
 # fatal-OOM prints — an intentional kill (SIGTERM/SIGKILL on stop/restart) never matches,
 # so this can't false-fire on a normal teardown.
 record_daemon_oom(){
-    if grep -qiF 'out of memory' /tmp/awg_daemon.log 2>/dev/null; then
+    if grep -qiF 'out of memory' $DAEMON_LOG 2>/dev/null; then
         # The Go runtime's OWN fatal-OOM (heap-commit refused). rc is typically 2.
         awg_incident "amneziawg-go OOM-crashed (rc=${1:-?}) — Go heap hit its ceiling under load (GOMEMLIMIT=${2:-unset}); box is low on RAM for this throughput"
     elif [ "${1:-}" = 137 ] && dmesg 2>/dev/null | grep -iE 'killed process|out of memory' | grep -qi 'amneziawg-go'; then
@@ -3167,7 +3241,7 @@ record_daemon_oom(){
 # Daemon log minus the harmless wireguard-go "kernel has first class support" banner box, so
 # error paths quote the ACTUAL failure lines instead of 10 lines of box-drawing. $1 = max lines.
 daemon_log_gist(){
-    grep -av '─\|│\|┌\|└\|first class support\|amneziawg-linux-kernel-module' /tmp/awg_daemon.log 2>/dev/null \
+    grep -av '─\|│\|┌\|└\|first class support\|amneziawg-linux-kernel-module' $DAEMON_LOG 2>/dev/null \
         | grep -v '^[[:space:]]*$' | tail -n "${1:-6}"
 }
 
@@ -3419,13 +3493,13 @@ do_start(){
         # Name the failure mode from the captured exit status: a SILENT death (banner only, no
         # error line — the RT-AC68U/kernel-2.6.36 signature) vs a clean error exit vs a hang.
         local drc dgist
-        drc=$(sed -n 's/^rc=\([0-9]*\).*/\1/p' /tmp/awg_daemon.rc 2>/dev/null)
+        drc=$(sed -n 's/^rc=\([0-9]*\).*/\1/p' $DAEMON_RC 2>/dev/null)
         log_msg "ERROR: amneziawg-go failed to create interface"
         case "$drc" in
             "")  log_msg "  daemon is still running but $IFACE never appeared after 10s (hung in TUN create?)" ;;
             132) log_msg "  daemon exited rc=132 (SIGILL — this CPU can't run this build)" ;;
             139) log_msg "  daemon exited rc=139 (SIGSEGV — daemon crashed; on kernels older than 3.2 (e.g. RT-AC68U 2.6.36) the Go runtime is unsupported and dies like this)" ;;
-            *)   if grep -qiF 'out of memory' /tmp/awg_daemon.log 2>/dev/null; then
+            *)   if grep -qiF 'out of memory' $DAEMON_LOG 2>/dev/null; then
                      log_msg "  daemon exited rc=$drc (Go runtime OUT OF MEMORY — box too low on RAM even with GOMEMLIMIT=$(compute_go_memlimit); free some memory or reduce load)"
                  else
                      log_msg "  daemon exited rc=$drc"
@@ -3442,7 +3516,7 @@ do_start(){
         if wait_for_iface "$IFACE" 10; then
             log_msg "  verbose retry succeeded — continuing start (transient failure)"
         else
-            drc=$(sed -n 's/^rc=\([0-9]*\).*/\1/p' /tmp/awg_daemon.rc 2>/dev/null)
+            drc=$(sed -n 's/^rc=\([0-9]*\).*/\1/p' $DAEMON_RC 2>/dev/null)
             dgist=$(daemon_log_gist 8 | tr '\n' '|')
             log_msg "  verbose retry failed too (rc=${drc:-none}); daemon output: ${dgist:-<nothing after the banner>}"
             local dmesg_tail
@@ -3479,7 +3553,7 @@ do_start(){
             log_msg "  awg=$(elf_arch "$AWG_BIN") host=$(uname -m); run '$ADDON_DIR/amneziawg.sh diag'"
         else
             log_msg "ERROR: setconf failed (exit $sc_rc) after $sc_try retries: ${sc_err:-<no stderr>}"
-            [ -s /tmp/awg_daemon.log ] && log_msg "  daemon log: $(tr '\n' '|' < /tmp/awg_daemon.log)"
+            [ -s $DAEMON_LOG ] && log_msg "  daemon log: $(tr '\n' '|' < $DAEMON_LOG)"
             # A non-SIGILL setconf failure is almost always the daemon REJECTING an obfuscation
             # parameter (EINVAL → "Unable to modify interface: Invalid argument"). Two probes name
             # it, neither leaks secrets:
@@ -3501,7 +3575,7 @@ do_start(){
             if wait_for_iface "$IFACE" 5 && wait_for_uapi "$IFACE" 8; then
                 "$AWG_BIN" setconf "$IFACE" "$CONF" >/dev/null 2>&1
                 local vrej
-                vrej=$(grep -iE 'fail|invalid|error|parse|unable|reject|must be|overlap|not.*valid' /tmp/awg_daemon.log 2>/dev/null \
+                vrej=$(grep -iE 'fail|invalid|error|parse|unable|reject|must be|overlap|not.*valid' $DAEMON_LOG 2>/dev/null \
                        | grep -ivF 'first class support' | head -3 | tr '\n' '|')
                 [ -n "$vrej" ] && log_msg "  verbose reject: $vrej"
             fi
@@ -4265,13 +4339,33 @@ do_install_page(){
 
     am_get_webui_page "$ADDON_DIR/amneziawg_page.asp"
     [ "$am_webui_page" = "none" ] && { log_msg "ERROR: No page slot"; return 1; }
+    local cli_page="$am_webui_page"
 
-    cp "$ADDON_DIR/amneziawg_page.asp" "/www/user/$am_webui_page"
+    cp "$ADDON_DIR/amneziawg_page.asp" "/www/user/$cli_page"
     # Publish the global header widget to the web root before binding the loader
     [ -f "$ADDON_DIR/amneziawg_widget.js" ] && cp "$ADDON_DIR/amneziawg_widget.js" /www/user/awg_widget.js 2>/dev/null
-    mount_menu_tree "$am_webui_page"
+
+    # AWG-server role page (its own slot + the in-browser QR generator asset). Guarded per
+    # step: a missing server page (older/partial install) must never fail the client install.
+    [ -f "/tmp/amneziawg_server_page.asp" ] && cp /tmp/amneziawg_server_page.asp "$ADDON_DIR/amneziawg_server_page.asp"
+    local srv_page=""
+    if [ -f "$ADDON_DIR/amneziawg_server_page.asp" ]; then
+        am_get_webui_page "$ADDON_DIR/amneziawg_server_page.asp"
+        if [ "$am_webui_page" != "none" ]; then
+            srv_page="$am_webui_page"
+            cp "$ADDON_DIR/amneziawg_server_page.asp" "/www/user/$srv_page"
+        else
+            log_msg "WARNING: no free page slot for the AmneziaWG Server page — client page installed alone"
+        fi
+    fi
+    [ -f "$ADDON_DIR/awg_qr.js" ] && cp "$ADDON_DIR/awg_qr.js" /www/user/awg_qr.js 2>/dev/null
+    [ -f "$AWGS_SCRIPT" ] && chmod +x "$AWGS_SCRIPT" 2>/dev/null
+
+    mount_menu_tree "$cli_page" "$srv_page"
 
     echo "{\"running\":false,\"starting\":false,\"stopping\":false,\"version\":\"${AWG_VERSION}\",\"killswitch\":false,\"coexist_warn\":false,\"dpi_tool\":\"\",\"peers\":[],\"log\":\"Installed.\"}" > "$STATUS_FILE"
+    # Seed the server status file too, so the server page's first poll isn't a 404.
+    [ -f /www/user/awgs_status.htm ] || echo "{\"running\":false,\"starting\":false,\"stopping\":false,\"version\":\"${AWG_VERSION}\",\"peers\":[],\"log\":\"\"}" > /www/user/awgs_status.htm 2>/dev/null
 
     [ ! -f /jffs/scripts/service-event ] && echo "#!/bin/sh" > /jffs/scripts/service-event
     chmod +x /jffs/scripts/service-event 2>/dev/null
@@ -4286,12 +4380,15 @@ do_install_page(){
         echo '/jffs/addons/amneziawg/amneziawg.sh wan_event "$1" "$2"  # AmneziaWG' >> /jffs/scripts/wan-event
     fi
 
-    # Firewall restart hook
+    # Firewall restart hook. Rewritten idempotently on every install_page (sed-delete +
+    # re-append, the postconf-hook convention) so upgrades gain the SERVER line too — the
+    # old grep-not-found gate would have frozen existing installs on the client-only line.
+    # Both lines contain "amneziawg" (the path), so uninstall's `sed /amneziawg/d` drops both.
     [ ! -f /jffs/scripts/firewall-start ] && echo "#!/bin/sh" > /jffs/scripts/firewall-start
     chmod +x /jffs/scripts/firewall-start 2>/dev/null
-    if ! grep -q "amneziawg" /jffs/scripts/firewall-start; then
-        echo '/jffs/addons/amneziawg/amneziawg.sh firewall_restart  # AmneziaWG' >> /jffs/scripts/firewall-start
-    fi
+    sed -i '/amneziawg/d' /jffs/scripts/firewall-start 2>/dev/null
+    echo '/jffs/addons/amneziawg/amneziawg.sh firewall_restart  # AmneziaWG' >> /jffs/scripts/firewall-start
+    echo '[ -f /jffs/addons/amneziawg/amneziawg_server.sh ] && sh /jffs/addons/amneziawg/amneziawg_server.sh firewall_restart  # AmneziaWG server' >> /jffs/scripts/firewall-start
 
     # dnsmasq.postconf hook (Merlin-native), ONE tagged "amneziawg" line, two guards:
     #   1. tunnel-DNS — while $TUNNEL_DNS_FLAG exists, strip the firmware's upstream directives
@@ -4311,7 +4408,12 @@ do_install_page(){
     [ ! -f /jffs/scripts/dnsmasq.postconf ] && printf '#!/bin/sh\n' > /jffs/scripts/dnsmasq.postconf
     chmod +x /jffs/scripts/dnsmasq.postconf 2>/dev/null
     sed -i '/# amneziawg/d' /jffs/scripts/dnsmasq.postconf 2>/dev/null
-    echo '. /usr/sbin/helper.sh; [ -f /tmp/.awg_tunnel_dns ] && { pc_delete "servers-file=" "$1"; pc_delete "resolv-file=" "$1"; }; [ -f /opt/amneziawg/dnsmasq_awg.conf ] || pc_delete "conf-file=/opt/amneziawg/dnsmasq_awg.conf" "$1"; [ -f /opt/amneziawg/dnsmasq_analyze.conf ] || pc_delete "conf-file=/opt/amneziawg/dnsmasq_analyze.conf" "$1"  # amneziawg dnsmasq guard' >> /jffs/scripts/dnsmasq.postconf
+    # 3rd guard (server role): serve DNS to AWG-server peers by appending interface=awgs0 —
+    # but ONLY while the interface actually exists at this dnsmasq (re)start. This is why the
+    # line lives in the POSTCONF hook and not in a persistent include: it re-evaluates on
+    # every dnsmasq start, so a crashed/stopped server can never leave a dangling
+    # `interface=` that would be fatal to the firmware's dnsmasq (the conf-file= lesson).
+    echo '. /usr/sbin/helper.sh; [ -f /tmp/.awg_tunnel_dns ] && { pc_delete "servers-file=" "$1"; pc_delete "resolv-file=" "$1"; }; [ -f /opt/amneziawg/dnsmasq_awg.conf ] || pc_delete "conf-file=/opt/amneziawg/dnsmasq_awg.conf" "$1"; [ -f /opt/amneziawg/dnsmasq_analyze.conf ] || pc_delete "conf-file=/opt/amneziawg/dnsmasq_analyze.conf" "$1"; [ -d /sys/class/net/awgs0 ] && pc_append "interface=awgs0" "$1"  # amneziawg dnsmasq guard' >> /jffs/scripts/dnsmasq.postconf
 
     [ ! -f /jffs/scripts/services-start ] && echo "#!/bin/sh" > /jffs/scripts/services-start
     chmod +x /jffs/scripts/services-start 2>/dev/null
@@ -4319,8 +4421,8 @@ do_install_page(){
 
     [ -f "$GEO_DIR/v2fly_categories.txt" ] && cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
 
-    log_msg "Page installed: $am_webui_page"
-    echo "Installed. Access: VPN > AmneziaWG"
+    log_msg "Page installed: $cli_page${srv_page:+ + server page: $srv_page}"
+    echo "Installed. Access: VPN > AmneziaWG${srv_page:+ (server mode: VPN > AmneziaWG Server)}"
 }
 
 do_mount_ui(){
@@ -4331,9 +4433,19 @@ do_mount_ui(){
     done
     am_get_webui_page "$ADDON_DIR/amneziawg_page.asp"
     if [ "$am_webui_page" != "none" ]; then
-        cp "$ADDON_DIR/amneziawg_page.asp" "/www/user/$am_webui_page"
+        local cli_page="$am_webui_page" srv_page=""
+        cp "$ADDON_DIR/amneziawg_page.asp" "/www/user/$cli_page"
         [ -f "$ADDON_DIR/amneziawg_widget.js" ] && cp "$ADDON_DIR/amneziawg_widget.js" /www/user/awg_widget.js 2>/dev/null
-        mount_menu_tree "$am_webui_page"
+        # AWG-server role page (second slot) + the QR generator asset — mirrors do_install_page.
+        if [ -f "$ADDON_DIR/amneziawg_server_page.asp" ]; then
+            am_get_webui_page "$ADDON_DIR/amneziawg_server_page.asp"
+            if [ "$am_webui_page" != "none" ]; then
+                srv_page="$am_webui_page"
+                cp "$ADDON_DIR/amneziawg_server_page.asp" "/www/user/$srv_page"
+            fi
+        fi
+        [ -f "$ADDON_DIR/awg_qr.js" ] && cp "$ADDON_DIR/awg_qr.js" /www/user/awg_qr.js 2>/dev/null
+        mount_menu_tree "$cli_page" "$srv_page"
     fi
 
     [ -f "$GEO_DIR/v2fly_categories.txt" ] && cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
@@ -4348,6 +4460,10 @@ do_mount_ui(){
 
 do_uninstall(){
     do_stop user   # user intent: remove the watchdog cron too
+
+    # AWG-server role first (its own daemon awgs-go, firewall rules, crons, status files).
+    # 'stop user' mirrors the client semantics: deliberate stop -> drop the server crons too.
+    [ -f "$AWGS_SCRIPT" ] && sh "$AWGS_SCRIPT" stop user 2>/dev/null
 
     # Belt-and-suspenders: do_stop -> cleanup_firewall already strips our dnsmasq include, but
     # do_stop can early-return on a lock-acquire failure, which would leave the persistent
@@ -4371,9 +4487,13 @@ do_uninstall(){
     [ -f /jffs/scripts/dnsmasq.postconf ] && sed -i '/amneziawg/d' /jffs/scripts/dnsmasq.postconf
     rm -f "$TUNNEL_DNS_FLAG"
 
-    local page=$(ls /www/user/ 2>/dev/null | while read f; do grep -l "AmneziaWG" "/www/user/$f" 2>/dev/null; done | head -1)
-    [ -n "$page" ] && rm -f "$page"
+    # Remove EVERY page slot we own (client + server pages both contain "AmneziaWG").
+    local page
+    for page in /www/user/user*.asp; do
+        grep -q "AmneziaWG" "$page" 2>/dev/null && rm -f "$page"
+    done
     rm -f "$STATUS_FILE" /www/user/awg_widget.js /www/user/v2fly_categories.htm /www/user/awg_changelog.htm /www/user/awg_update.htm /www/user/awg_log.htm /www/user/awg_diag.htm
+    rm -f /www/user/awg_qr.js /www/user/awgs_status.htm /www/user/awgs_log.htm
     rm -f "$ANALYZE_FILE" "$ANALYZE_DNS_CONF" "$ANALYZE_DNS_LOG" /tmp/.awg_analyze_*
 
     rm -f "$AWG_INCIDENTS"
@@ -4381,7 +4501,8 @@ do_uninstall(){
     rm -rf "$ADDON_DIR"
 
     if [ -f /tmp/menuTree.js ]; then
-        sed -i '/tabName: "AmneziaWG"/d' /tmp/menuTree.js
+        # Substring match (no closing quote) — removes BOTH tabs: "AmneziaWG" and "AmneziaWG Server"
+        sed -i '/tabName: "AmneziaWG/d' /tmp/menuTree.js
         sed -i '/\/\* AWG_WIDGET_START \*\//,/\/\* AWG_WIDGET_END \*\//d' /tmp/menuTree.js
         umount /www/require/modules/menuTree.js 2>/dev/null
         mount -o bind /tmp/menuTree.js /www/require/modules/menuTree.js
@@ -4749,6 +4870,16 @@ finalize_ipk_install(){
     # (dnsreload_defer_end on every post-commit exit path).
     dnsreload_defer_begin
 
+    # AWG-server role: remember whether it was serving, then stop it deterministically for
+    # the package swap (the prerm's uninstall would kill it anyway). It is RESTARTED on every
+    # post-commit exit path — unlike the client tunnel (left stopped by design), a stopped
+    # server locks out the remote peer who launched this very update through it.
+    local _srv_restore=0
+    if [ -f "$AWGS_SCRIPT" ] && iface_exists "$AWGS_IFACE"; then
+        _srv_restore=1
+        sh "$AWGS_SCRIPT" stop 2>/dev/null
+    fi
+
     # Preserve geo lists across the upgrade unless "wipe before update" is on. The
     # package prerm runs 'rm -rf /opt/amneziawg', so move geo to a sibling dir (same
     # filesystem = instant rename, no extra space) that survives, and restore it after.
@@ -4790,6 +4921,7 @@ finalize_ipk_install(){
         if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
         conn_history_restore
         dnsreload_defer_end
+        [ "$_srv_restore" = 1 ] && [ -f "$AWGS_SCRIPT" ] && sh "$AWGS_SCRIPT" start 2>/dev/null
         update_status; return 1
     fi
     # Post-install integrity gate: opkg can exit 0 yet write a 0-byte binary under memory
@@ -4811,6 +4943,7 @@ finalize_ipk_install(){
             if [ -d "$geo_bak" ]; then mkdir -p "$AWG_DIR"; mv "$geo_bak" "$GEO_DIR" 2>/dev/null; fi
             conn_history_restore
             dnsreload_defer_end
+            [ "$_srv_restore" = 1 ] && [ -f "$AWGS_SCRIPT" ] && sh "$AWGS_SCRIPT" start 2>/dev/null
             update_status; return 1
         fi
         log_msg "Update: force-reinstall recovered the binaries"
@@ -4836,6 +4969,9 @@ finalize_ipk_install(){
     # Fire the ONE dnsmasq reload owed for the whole update (its job settles rc first, so
     # dnsmasq restarts once, right after this service-event returns — not 3-4 times).
     dnsreload_defer_end
+    # Bring the AWG server back if it was serving before the update (NEW script version) —
+    # the remote peer who launched this update through it gets access back automatically.
+    [ "$_srv_restore" = 1 ] && [ -f "$AWGS_SCRIPT" ] && sh "$AWGS_SCRIPT" start 2>/dev/null
     log_msg "Update: complete — now on $label. Start VPN from the UI."
     # Refresh status with the NEW script (this process still runs the old code in memory,
     # so calling update_status directly would re-write the OLD version number).
@@ -5137,6 +5273,16 @@ do_firewall_restart(){
 
 do_service_event(){
     local event="$2"
+    # AWG-server role events (awgsrv*) are owned by amneziawg_server.sh — hand the whole
+    # event over (the dispatcher hook line in /jffs/scripts/service-event matches ^awg, so
+    # they all arrive here first). Kept out of the client ui_log_reset list below: the
+    # server script resets ITS OWN on-page log.
+    case "$event" in
+        awgsrv*)
+            [ -f "$AWGS_SCRIPT" ] && sh "$AWGS_SCRIPT" service_event "$1" "$2"
+            return 0
+            ;;
+    esac
     case "$event" in
         awgstart|awgstop|awgrestart|awgforceapply|awgsaveconf|awgupdategeo|awgdoupdate) ui_log_reset ;;
     esac
@@ -5234,6 +5380,14 @@ do_service_event(){
 
 # --- Main ---
 
+# Library mode: amneziawg_server.sh (the AWG-server role) sources this file for the hardened
+# shared helpers (launch_daemon, locks, waits, reload_dnsmasq, validate_*, …) and then
+# overrides the instance globals (IFACE/LOCKDIR/UI_LOG/CONF/DAEMON_LOG/DAEMON_RC/…) for its
+# own awgs0 instance. It must NOT run the client migrations or the dispatch below. `return`
+# at top level is valid ONLY in a sourced script — the guard condition keeps normal
+# executions (AWG_LIB_MODE unset) from ever reaching it.
+[ -n "$AWG_LIB_MODE" ] && return 0
+
 # Rename any pre-1.1.89 credential-flavored config keys to neutral names before any command
 # reads them (cheap no-op once migrated), so existing installs keep working after upgrade.
 migrate_field_names
@@ -5266,6 +5420,18 @@ case "$1" in
     service_event)  do_service_event "$2" "$3" ;;
     wan_event)      do_wan_event "$2" "$3" ;;
     firewall_restart) do_firewall_restart fast ;;
+    apply_policies)
+        # Re-apply device/peer policies WITHOUT a VPN restart — same guarded path the
+        # awgsaveconf event uses. Called by amneziawg_server.sh when its peer list (or a
+        # peer's policy) changes / on server start-stop, so setup_firewall re-reads
+        # server_peer_policy_entries. No-op while the client tunnel is down.
+        if is_running && acquire_lock; then
+            arm_lan_deadman "$(pidof amneziawg-go 2>/dev/null | awk '{print $1}')"
+            setup_firewall
+            release_lock
+        fi
+        update_status
+        ;;
     download_geo)   download_all_geo ;;
     ensure_geo)     ensure_geo ;;
     analyze_start)  do_analyze_start ;;

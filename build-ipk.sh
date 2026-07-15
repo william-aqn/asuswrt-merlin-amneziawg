@@ -69,6 +69,7 @@ for file in /opt/amneziawg/amneziawg-go /opt/amneziawg/awg; do
 done
 chmod +x /opt/etc/init.d/S99amneziawg
 chmod +x /jffs/addons/amneziawg/amneziawg.sh
+[ -f /jffs/addons/amneziawg/amneziawg_server.sh ] && chmod +x /jffs/addons/amneziawg/amneziawg_server.sh
 ln -sf /opt/amneziawg/awg /opt/bin/awg
 mkdir -p /opt/amneziawg/geo/geoip /opt/amneziawg/geo/domains
 mkdir -p -m 700 /var/run/amneziawg
@@ -154,11 +155,17 @@ PRERMEOF
     cp addon/amneziawg.sh            "$DATA_DIR/jffs/addons/amneziawg/amneziawg.sh"
     cp addon/amneziawg_page.asp      "$DATA_DIR/jffs/addons/amneziawg/amneziawg_page.asp"
     cp addon/amneziawg_widget.js     "$DATA_DIR/jffs/addons/amneziawg/amneziawg_widget.js"
+    cp addon/amneziawg_server.sh     "$DATA_DIR/jffs/addons/amneziawg/amneziawg_server.sh"
+    cp addon/amneziawg_server_page.asp "$DATA_DIR/jffs/addons/amneziawg/amneziawg_server_page.asp"
+    cp addon/awg_qr.js               "$DATA_DIR/jffs/addons/amneziawg/awg_qr.js"
 
     chmod 755 "$DATA_DIR/opt/amneziawg/amneziawg-go"
     chmod 755 "$DATA_DIR/opt/amneziawg/awg"
     chmod 755 "$DATA_DIR/jffs/addons/amneziawg/amneziawg.sh"
+    chmod 755 "$DATA_DIR/jffs/addons/amneziawg/amneziawg_server.sh"
     chmod 644 "$DATA_DIR/jffs/addons/amneziawg/amneziawg_page.asp"
+    chmod 644 "$DATA_DIR/jffs/addons/amneziawg/amneziawg_server_page.asp"
+    chmod 644 "$DATA_DIR/jffs/addons/amneziawg/awg_qr.js"
     chmod 644 "$DATA_DIR/jffs/addons/amneziawg/amneziawg_widget.js"
 
     cd "$DATA_DIR/opt/bin"
@@ -174,12 +181,22 @@ case "$1" in
         # web-UI "Autostart after reboot" toggle (awg_autostart). To force a start regardless
         # of the toggle: /jffs/addons/amneziawg/amneziawg.sh start
         /jffs/addons/amneziawg/amneziawg.sh boot_start
+        # AWG-server role (opt-in: awgs_autostart=1 + configured keys; see amneziawg_server.sh)
+        [ -f /jffs/addons/amneziawg/amneziawg_server.sh ] && /jffs/addons/amneziawg/amneziawg_server.sh boot_start
         ;;
     stop)
         /jffs/addons/amneziawg/amneziawg.sh stop
+        [ -f /jffs/addons/amneziawg/amneziawg_server.sh ] && /jffs/addons/amneziawg/amneziawg_server.sh stop
         ;;
     restart)
         /jffs/addons/amneziawg/amneziawg.sh restart
+        # Restart the server role only if it is actually up (don't start a stopped server)
+        [ -d /sys/class/net/awgs0 ] && [ -f /jffs/addons/amneziawg/amneziawg_server.sh ] && /jffs/addons/amneziawg/amneziawg_server.sh restart
+        ;;
+    server)
+        # Pass-through CLI for the server role: S99amneziawg server {start|stop|status|diag|…}
+        shift
+        exec /jffs/addons/amneziawg/amneziawg_server.sh "$@"
         ;;
     update)
         /jffs/addons/amneziawg/amneziawg.sh update "$2"
@@ -188,7 +205,7 @@ case "$1" in
         /jffs/addons/amneziawg/amneziawg.sh diag
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|update [version]|diag}"
+        echo "Usage: $0 {start|stop|restart|server <cmd>|update [version]|diag}"
         exit 1
         ;;
 esac
