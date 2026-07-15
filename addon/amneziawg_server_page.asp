@@ -77,6 +77,13 @@ function escHtml(s){
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// Neutralize the firmware's global loading overlay. Our form submits to hidden_frame (no full
+// page reload), but the firmware's apply path still fires showLoading() and greys the whole
+// page — and hideLoading() never runs without the reload, so the page stays frozen after
+// «Apply» (field-reported). The client page stubs these the same way; do it here too.
+function showLoading(){}
+function hideLoading(){}
+
 /* ---- i18n (firmware language: RU -> ru, else en) ---- */
 var AWG_LANG = (function(){
     try { return (httpApi.nvramGet(["preferred_lang"]).preferred_lang === 'RU') ? 'ru' : 'en'; }
@@ -453,13 +460,19 @@ function genObfs(){
     sv('awgs_jc_f', ri(3, 10));
     var jmin = ri(10, 60); sv('awgs_jmin_f', jmin); sv('awgs_jmax_f', jmin + ri(20, 60));
     sv('awgs_s1_f', ri(15, 120)); sv('awgs_s2_f', ri(15, 120));
-    // H1-H4: distinct random 32-bit values >4 (avoid the reserved 1-4 message types)
-    var used = {}, hs = [];
-    while (hs.length < 4) {
-        var v = ri(5, 2147483647);
-        if (!used[v]) { used[v] = 1; hs.push(v); }
+    // H1-H4: AWG 2.0 magic-header RANGES (start-end). The daemon rolls a random header value
+    // inside each range for every packet and the receiver validates it falls in-range — a
+    // moving header instead of one fixed number, harder for DPI to fingerprint. The 4 ranges
+    // MUST be disjoint (they distinguish the 4 WG message types) and > 4 (1-4 are reserved):
+    // split the 32-bit space into 4 bands and take a random sub-range within each, so they can
+    // never overlap. Both peers get identical H1-H4 (embedded into every peer config).
+    var HMAX = 4294967295, band = Math.floor((HMAX - 16) / 4);
+    for (var k = 0; k < 4; k++) {
+        var lo = 16 + k * band, hi = 16 + (k + 1) * band - 1;
+        var width = ri(100000, 5000000);
+        var start = ri(lo, hi - width);
+        sv('awgs_h' + (k + 1) + '_f', start + '-' + (start + width));
     }
-    sv('awgs_h1_f', hs[0]); sv('awgs_h2_f', hs[1]); sv('awgs_h3_f', hs[2]); sv('awgs_h4_f', hs[3]);
     markDirty();
 }
 
@@ -1034,10 +1047,10 @@ function initial(){
                 <tr>
                     <th>H1–H4</th>
                     <td>
-                        <input type="text" id="awgs_h1_f" class="input_12_table" maxlength="10" onchange="markDirty();">
-                        <input type="text" id="awgs_h2_f" class="input_12_table" maxlength="10" onchange="markDirty();">
-                        <input type="text" id="awgs_h3_f" class="input_12_table" maxlength="10" onchange="markDirty();">
-                        <input type="text" id="awgs_h4_f" class="input_12_table" maxlength="10" onchange="markDirty();">
+                        <input type="text" id="awgs_h1_f" class="input_12_table" maxlength="21" onchange="markDirty();">
+                        <input type="text" id="awgs_h2_f" class="input_12_table" maxlength="21" onchange="markDirty();">
+                        <input type="text" id="awgs_h3_f" class="input_12_table" maxlength="21" onchange="markDirty();">
+                        <input type="text" id="awgs_h4_f" class="input_12_table" maxlength="21" onchange="markDirty();">
                     </td>
                 </tr>
                 <tr>
