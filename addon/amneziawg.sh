@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.3.14"
+AWG_VERSION="1.3.15"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3355,10 +3355,25 @@ AWG_GOMEMLIMIT_AVAIL_PCT=60   # opportunistic ceiling from MemAvailable when the
 # WG_PREALLOCATED_BUFFERS_PER_POOL for MANUAL experiments only.
 AWG_GOTUNE_BELOW_MIB=768
 
-# TRUE when the box has enough RAM to run the daemon in the stock upstream profile
-# (MemTotal readable AND >= AWG_GOTUNE_BELOW_MIB). Unreadable meminfo => NOT roomy —
-# fail toward the OOM protections, the pre-1.3.13 status quo.
+# STRICT-OVERCOMMIT GUARD (1.3.15): MemTotal is the WRONG lens when the kernel runs
+# vm.overcommit_memory=2 (strict accounting): the budget that matters is CommitLimit -
+# Committed_AS, and a Go runtime aborts with `runtime: out of memory` the moment a
+# heap-arena mmap exceeds it — REGARDLESS of free physical RAM. Field (2026-07-16): the
+# same 2GB RT-BE88U that OOM-looped in 1.3.13 turned out to run overcommit=2 with
+# CommitLimit ~1GB and only ~190MiB headroom while IDLE — 1.3.14's "roomy => stock GC"
+# verdict left its daemons one speedtest away from OOM, and even launching two tiny test
+# daemons failed at startup. So: overcommit=2 => NOT roomy (the full GC tune applies),
+# and compute_go_memlimit additionally clamps GOMEMLIMIT to a fraction of the LIVE
+# commit headroom (floor 64MiB), so the ceiling fits the budget that actually exists
+# instead of quoting 448MiB the box cannot commit.
+AWG_GOMEMLIMIT_COMMIT_PCT=50  # % of (CommitLimit - Committed_AS) usable per daemon
+
+# TRUE when the box has enough RAM to run the daemon with stock Go GC
+# (MemTotal readable AND >= AWG_GOTUNE_BELOW_MIB, and NOT under strict overcommit
+# accounting). Unreadable meminfo => NOT roomy — fail toward the OOM protections,
+# the pre-1.3.13 status quo.
 box_is_roomy(){
+    [ "$(awk '{print $1; exit}' /proc/sys/vm/overcommit_memory 2>/dev/null)" = "2" ] && return 1
     _bmt_kb=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
     case "$_bmt_kb" in ''|*[!0-9]*) return 1 ;; esac
     [ "$_bmt_kb" -ge $(( AWG_GOTUNE_BELOW_MIB * 1024 )) ]
@@ -3408,6 +3423,20 @@ compute_go_memlimit(){
     [ "$_lim_mib" -le 0 ] && return 0
     [ "$_lim_mib" -lt 96 ]  && _lim_mib=96
     [ "$_lim_mib" -gt 448 ] && _lim_mib=448
+    # Strict-overcommit clamp (see AWG_GOMEMLIMIT_COMMIT_PCT): under vm.overcommit=2 the
+    # RAM-based ceiling can vastly exceed what the box can actually commit — refit it to
+    # the live commit headroom, floor 64MiB (unreadable counters => RAM ceiling stands).
+    if [ "$(awk '{print $1; exit}' /proc/sys/vm/overcommit_memory 2>/dev/null)" = "2" ]; then
+        _cl_kb=$(awk '/^CommitLimit:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+        _ca_kb=$(awk '/^Committed_AS:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+        case "$_cl_kb" in ''|*[!0-9]*) _cl_kb='' ;; esac
+        case "$_ca_kb" in ''|*[!0-9]*) _cl_kb='' ;; esac
+        if [ -n "$_cl_kb" ] && [ "$_cl_kb" -gt "$_ca_kb" ]; then
+            _hr_mib=$(( (_cl_kb - _ca_kb) * AWG_GOMEMLIMIT_COMMIT_PCT / 100 / 1024 ))
+            [ "$_hr_mib" -lt 64 ] && _hr_mib=64
+            [ "$_hr_mib" -lt "$_lim_mib" ] && _lim_mib=$_hr_mib
+        fi
+    fi
     printf '%dMiB' "$_lim_mib"
 }
 
@@ -3419,7 +3448,7 @@ go_tune_desc(){
         printf 'stock Go GC (MemTotal >= %sMiB: no GOMEMLIMIT/GOGC caps) + buffer pool capped at 1024 (compiled default — flow control that keeps a slow egress path from ballooning the heap)' "$AWG_GOTUNE_BELOW_MIB"
     else
         _gtd=$(compute_go_memlimit)
-        printf 'GOMEMLIMIT=%s GOGC=%s + buffer pool capped at 1024 (low-RAM box, MemTotal < %sMiB — OOM protection under load)' "${_gtd:-unset}" "$AWG_GOGC" "$AWG_GOTUNE_BELOW_MIB"
+        printf 'GOMEMLIMIT=%s GOGC=%s + buffer pool capped at 1024 (constrained box: MemTotal < %sMiB or strict vm.overcommit — OOM protection under load)' "${_gtd:-unset}" "$AWG_GOGC" "$AWG_GOTUNE_BELOW_MIB"
     fi
 }
 
