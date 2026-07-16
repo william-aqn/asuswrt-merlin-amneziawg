@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.3.6"
+AWG_VERSION="1.3.7"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -932,9 +932,13 @@ download_geosite(){
     # then overwrite a good DB with garbage and silently empty every GeoSite category. Require
     # at least one real category marker (mirrors the GeoIP/antifilter validators); otherwise
     # keep the existing v2fly_all.yml.
-    if fetch_with_mirrors "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" "$tmp_yml" 120 && [ -s "$tmp_yml" ] && grep -q '^  - name: ' "$tmp_yml"; then
+    if fetch_with_mirrors "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml" "$tmp_yml" 120 && [ -s "$tmp_yml" ] && grep -q '^ *- name: ' "$tmp_yml"; then
         mv "$tmp_yml" "$GEO_DIR/v2fly_all.yml"
-        grep '  - name: ' "$GEO_DIR/v2fly_all.yml" | sed 's/.*- name: //' | sort > "$GEO_DIR/v2fly_categories.txt"
+        # 2026-07: upstream switched to quoting the name scalars (`- name: "xai"`) — strip the
+        # quotes here, or the UI autocomplete offers `"xai"` and users save quote-polluted
+        # category lists into custom_settings (field-seen; harmless to the sanitized read
+        # paths but it pollutes settings and eats the value-length budget).
+        grep '^ *- name: ' "$GEO_DIR/v2fly_all.yml" | sed 's/.*- name: *//; s/^["'\'' ]*//; s/["'\'' ]*$//' | grep -v '^$' | sort -u > "$GEO_DIR/v2fly_categories.txt"
         cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
         log_msg "GeoSite: $(wc -l < "$GEO_DIR/v2fly_categories.txt") categories downloaded"
     else
@@ -1133,7 +1137,7 @@ apply_custom_geo(){
 # category share the file). Stale category files no longer selected by anyone are removed.
 build_geosite_domains(){
     mkdir -p "$GEO_DIR/domains"
-    local union=" $(geo_union_geosite) " f cat
+    local union=" $(geo_union_geosite) " f cat _gs_cats=0 _gs_ok=0
     for f in "$GEO_DIR"/domains/v2fly_*.txt; do
         [ -f "$f" ] || continue
         cat=$(basename "$f" .txt); cat=${cat#v2fly_}
@@ -1142,12 +1146,32 @@ build_geosite_domains(){
     [ -f "$GEO_DIR/v2fly_all.yml" ] || return 0
     for cat in $(geo_union_geosite); do
         [ -z "$cat" ] && continue
+        # 2026-07: upstream switched dlc.dat_plain.yml to quoted name scalars (`- name: "xai"`;
+        # rule lines were always quoted) — the old exact `$NF==c` match kept the quotes and
+        # silently wrote EMPTY files for every category (only custom domains reached dnsmasq,
+        # plus a misleading "pre-resolve: ipset UNCHANGED" warning). Accept quoted AND unquoted
+        # names/rules at any list indent; c arrives quote-free (geo_union_geosite sanitizes).
+        # Trailing ":@attr" tags are kept as before — the dnsmasq conf builder strips them.
         awk -v c="$cat" '
-            /^  - name: / { if(found) exit; name=$NF; found=(name==c); next }
-            found && /^      - "domain:/ { sub(/.*"domain:/,""); sub(/".*/,""); print }
-            found && /^      - "full:/ { sub(/.*"full:/,""); sub(/".*/,""); print }
+            /^ *- name:/ {
+                if (found) exit
+                name=$0; sub(/^ *- name: */,"",name)
+                sub(/^["'\'' ]*/,"",name); sub(/["'\'' ]*$/,"",name)
+                found=(name==c); next
+            }
+            found && /^ *- ["'\'' ]*domain:/ { sub(/^ *- ["'\'' ]*domain:/,""); sub(/["'\'' ]*$/,""); print }
+            found && /^ *- ["'\'' ]*full:/ { sub(/^ *- ["'\'' ]*full:/,""); sub(/["'\'' ]*$/,""); print }
         ' "$GEO_DIR/v2fly_all.yml" > "$GEO_DIR/domains/v2fly_${cat}.txt"
+        _gs_cats=$((_gs_cats+1))
+        [ -s "$GEO_DIR/domains/v2fly_${cat}.txt" ] && _gs_ok=$((_gs_ok+1))
     done
+    # Self-diagnosis (the fingerprint of the 2026-07 breakage): DB present, categories selected,
+    # yet EVERY extraction came out empty — the upstream YAML format changed again, or none of
+    # the selected names exist anymore. One empty file among non-empty ones is NOT flagged
+    # (that's just a single renamed/typo'd category).
+    if [ "$_gs_cats" -gt 0 ] && [ "$_gs_ok" -eq 0 ]; then
+        log_msg "WARNING: GeoSite extraction produced 0 domains for ALL $_gs_cats selected categories — the v2fly DB format may have changed (check for an addon update), or the selected category names no longer exist"
+    fi
 }
 
 # One-time: remove flat GeoCustom outputs from the pre-shared-pool (single-policy) layout.
