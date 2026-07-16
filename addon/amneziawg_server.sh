@@ -529,7 +529,7 @@ do_srv_start(){
     ip link del "$IFACE" 2>/dev/null
     rm -f /var/run/amneziawg/"$IFACE".sock 2>/dev/null
 
-    log_msg "Go runtime cap: GOMEMLIMIT=$(compute_go_memlimit) GOGC=$AWG_GOGC"
+    log_msg "Go runtime: $(go_tune_desc)"
     launch_daemon
     if ! wait_for_iface "$IFACE" 10; then
         local drc dgist

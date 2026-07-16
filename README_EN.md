@@ -266,7 +266,7 @@ CLI: `/opt/etc/init.d/S99amneziawg server {start|stop|status|restart|diag}`. Aut
 ### Building amneziawg-go (the userspace daemon)
 
 > **The daemon is built from our fork [`william-aqn/amneziawg-go`](https://github.com/william-aqn/amneziawg-go), not from upstream.** The reason is two router-critical fixes not yet accepted upstream (while the PRs are pending, the build comes from the fork):
-> - **[PR #152](https://github.com/amnezia-vpn/amneziawg-go/pull/152)** — a bounded buffer pool (`PreallocatedBuffersPerPool`): the cure for `runtime: out of memory` under load on low-memory routers;
+> - **[PR #152](https://github.com/amnezia-vpn/amneziawg-go/pull/152)** — a bounded buffer pool (`PreallocatedBuffersPerPool`) adjustable via the `WG_PREALLOCATED_BUFFERS_PER_POOL` environment variable: the cure for `runtime: out of memory` under load on low-memory routers. The build default is 1024; since 1.3.13 the addon un-caps it at launch on routers with ≥ 768 MiB RAM (`0` = upstream's stock Linux profile — full throughput);
 > - **[PR #153](https://github.com/amnezia-vpn/amneziawg-go/pull/153)** — a `sendmmsg`/`recvmmsg` → per-packet `sendmsg`/`recvmsg` fallback on `ENOSYS`: without it, on Linux kernels < 3.0 (RT-AC68U / 2.6.36) the daemon cannot send a single packet and the tunnel passes no traffic.
 >
 > The fork branch **`router-build`** = the `v0.2.19` tag (same AmneziaWG 1.5/2.0 parameters) + both patches as separate commits. **Once both PRs are merged upstream**, the build returns to `amnezia-vpn/amneziawg-go` — a two-line change (`AWG_GO_REPO`/`AWG_GO_REF`) in `.github/workflows/release.yml`.

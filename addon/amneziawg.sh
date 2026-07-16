@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.3.12"
+AWG_VERSION="1.3.13"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3171,7 +3171,7 @@ do_diag(){
     echo "--- last amneziawg-go output ($DAEMON_LOG) ---"
     [ -f $DAEMON_LOG ] && sed 's/^/  /' $DAEMON_LOG || echo "  (none)"
     echo "  last daemon exit (this launch): $(cat $DAEMON_RC 2>/dev/null || echo '(none — daemon still running or never exited)')"
-    echo "  Go runtime cap (computed now): GOMEMLIMIT=$(compute_go_memlimit) GOGC=$AWG_GOGC"
+    echo "  Go runtime tune (computed now): $(go_tune_desc)"
     grep -qiF 'out of memory' $DAEMON_LOG 2>/dev/null && \
         echo "  >>> last daemon exit was a Go runtime OUT-OF-MEMORY: heap hit the ceiling under load (box low on RAM for this throughput) <<<"
     echo "--- runtime / network / TUN ---"
@@ -3335,9 +3335,32 @@ AWG_GOGC=50
 # a transiently-starved launch window can't depress it below the daemon's own working set.
 AWG_GOMEMLIMIT_TOTAL_PCT=38   # stable floor from MemTotal (survives churn)
 AWG_GOMEMLIMIT_AVAIL_PCT=60   # opportunistic ceiling from MemAvailable when the box is roomy
+# LOW-RAM-ONLY GATE (1.3.13): ALL of the daemon tuning — GOMEMLIMIT + GOGC=50 AND the
+# bounded buffer pool — applies only when MemTotal is BELOW this many MiB; roomier boxes
+# launch the daemon in the stock upstream Linux profile (no GC caps, pool un-capped via
+# WG_PREALLOCATED_BUFFERS_PER_POOL=0 — honored by the -poolcfg daemon, silently ignored
+# by older builds). Why: GOGC=50 makes the collector run twice as often as stock and that
+# CPU comes straight out of the crypto workers, and the 1024-buffer pool is backpressure
+# by construction near saturation — a measurable throughput cut on boxes that were never
+# at OOM risk (field report: strong boxes got slower after the tune). Low-RAM boxes keep
+# everything: every field OOM was a <=512MB box (RT-AX82U 512MB, RT-AC68U 256MB —
+# MemTotal reads ~440-510MB there), while 1GB-class boxes report ~880MB+. The pool's
+# COMPILED default stays 1024, so any launch that bypasses launch_daemon (manual SSH
+# runs) keeps the OOM protection.
+AWG_GOTUNE_BELOW_MIB=768
+
+# TRUE when the box has enough RAM to run the daemon in the stock upstream profile
+# (MemTotal readable AND >= AWG_GOTUNE_BELOW_MIB). Unreadable meminfo => NOT roomy —
+# fail toward the OOM protections, the pre-1.3.13 status quo.
+box_is_roomy(){
+    _bmt_kb=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+    case "$_bmt_kb" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$_bmt_kb" -ge $(( AWG_GOTUNE_BELOW_MIB * 1024 )) ]
+}
 
 # Compute a GOMEMLIMIT for amneziawg-go as an integer MiB clamped to [96, 448].
-# Empty output (parse failure) => launch_daemon leaves the env unset (behaviour as before).
+# Empty output (high-RAM box per AWG_GOTUNE_BELOW_MIB, or meminfo parse failure) =>
+# launch_daemon leaves the whole Go env untouched (stock runtime, full throughput).
 #
 # WHY THIS EXISTS: amneziawg-go inherits wireguard-go's message-buffer pool, which is
 # UNBOUNDED (`const PreallocatedBuffersPerPool = 0` — literally "allow infinite memory
@@ -3364,6 +3387,10 @@ AWG_GOMEMLIMIT_AVAIL_PCT=60   # opportunistic ceiling from MemAvailable when the
 # transiently low MemAvailable and got a 110MiB ceiling BELOW its own working set, guaranteeing
 # the OOM. Now the MemTotal floor keeps it stable across such windows.
 compute_go_memlimit(){
+    # High-RAM boxes are exempt from the whole tune — empty output, stock Go runtime.
+    # (Unreadable meminfo => box_is_roomy is false => the arithmetic below runs and, with
+    # MemTotal unparsable, computes from MemAvailable alone — the pre-1.3.13 behaviour.)
+    box_is_roomy && return 0
     _total_kb=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
     _avail_kb=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
     [ -z "$_avail_kb" ] && _avail_kb=$(awk '/^MemFree:/{print $2; exit}' /proc/meminfo 2>/dev/null)
@@ -3376,6 +3403,18 @@ compute_go_memlimit(){
     [ "$_lim_mib" -lt 96 ]  && _lim_mib=96
     [ "$_lim_mib" -gt 448 ] && _lim_mib=448
     printf '%dMiB' "$_lim_mib"
+}
+
+# One-line description of the Go-runtime tuning decision for logs/diag. Every site that
+# names the tune goes through this helper, so the wording cannot drift from what
+# launch_daemon actually applies (client and server share both).
+go_tune_desc(){
+    if box_is_roomy; then
+        printf 'stock upstream profile (MemTotal >= %sMiB): no GOMEMLIMIT/GOGC caps, buffer pool un-capped (WG_PREALLOCATED_BUFFERS_PER_POOL=0, honored by the -poolcfg daemon) — full throughput' "$AWG_GOTUNE_BELOW_MIB"
+    else
+        _gtd=$(compute_go_memlimit)
+        printf 'GOMEMLIMIT=%s GOGC=%s + buffer pool capped at 1024 (low-RAM box, MemTotal < %sMiB — OOM protection under load)' "${_gtd:-unset}" "$AWG_GOGC" "$AWG_GOTUNE_BELOW_MIB"
+    fi
 }
 
 # Launch amneziawg-go detached, stdout+stderr into $DAEMON_LOG and — critically — its
@@ -3391,12 +3430,19 @@ launch_daemon(){
     # a later create-failure would then misreport a stale rc for a daemon that actually hung.
     # The log line stays for humans; code reads the rc file.
     rm -f $DAEMON_RC 2>/dev/null
-    # Soft heap ceiling for the Go runtime (see compute_go_memlimit): caps the unbounded
-    # message-buffer pool so a heavy inbound burst can't drive the daemon into
-    # `fatal error: runtime: out of memory` and crash-loop the tunnel on a low-RAM box.
-    # Exported INSIDE the subshell (not as a literal prefix) so it never leaks to the
-    # parent and so an empty value simply leaves the env untouched.
+    # Soft heap ceiling for the Go runtime — LOW-RAM boxes only, empty (no env, stock
+    # runtime) on roomy ones (see compute_go_memlimit / AWG_GOTUNE_BELOW_MIB): caps heap
+    # growth so a heavy inbound burst can't drive the daemon into `fatal error: runtime:
+    # out of memory` and crash-loop the tunnel. Exported INSIDE the subshell (not as a
+    # literal prefix) so it never leaks to the parent and so an empty value simply leaves
+    # the env untouched.
     _glim=$(compute_go_memlimit)
+    # Roomy boxes additionally run the daemon with an UN-CAPPED buffer pool — the stock
+    # upstream Linux profile (the compiled router default is 1024). The -poolcfg daemon
+    # reads this env at start; an older daemon silently ignores it and stays capped —
+    # safe either way. Low-RAM boxes: env unset, the compiled 1024 cap stands.
+    _pool=''
+    box_is_roomy && _pool=0
     # WG_PROCESS_FOREGROUND=1: without it amneziawg-go DAEMONIZES — the process we launch is
     # only a short-lived parent that forks the real daemon and exits 0 once the device is up.
     # The wrapper then recorded THAT exit ("[daemon exited rc=0]" on every successful start —
@@ -3407,6 +3453,7 @@ launch_daemon(){
     # literal prefixes in explicit branches (not `${1:+LOG_LEVEL=$1} cmd`).
     if [ -n "$1" ]; then
         ( [ -n "$_glim" ] && export GOMEMLIMIT="$_glim" GOGC="$AWG_GOGC"
+          [ -n "$_pool" ] && export WG_PREALLOCATED_BUFFERS_PER_POOL="$_pool"
           WG_PROCESS_FOREGROUND=1 LOG_LEVEL="$1" "$AWG_GO" "$IFACE" > $DAEMON_LOG 2>&1
           _rc=$?
           echo "rc=$_rc at $(date '+%H:%M:%S')" > $DAEMON_RC
@@ -3414,6 +3461,7 @@ launch_daemon(){
           record_daemon_oom "$_rc" "$_glim" ) &
     else
         ( [ -n "$_glim" ] && export GOMEMLIMIT="$_glim" GOGC="$AWG_GOGC"
+          [ -n "$_pool" ] && export WG_PREALLOCATED_BUFFERS_PER_POOL="$_pool"
           WG_PROCESS_FOREGROUND=1 "$AWG_GO" "$IFACE" > $DAEMON_LOG 2>&1
           _rc=$?
           echo "rc=$_rc at $(date '+%H:%M:%S')" > $DAEMON_RC
@@ -3692,7 +3740,7 @@ do_start(){
     # install is visible in the log without running 'diag' separately.
     log_msg "Platform $(uname -m): amneziawg-go=$(elf_arch "$AWG_GO") awg=$(elf_arch "$AWG_BIN")"
     log_msg "ipset binary: ${AWG_IPSET_BIN:-NONE (no working ipset found — geo will be disabled)}${AWG_IPSET_LIB:+ (LD_LIBRARY_PATH=$AWG_IPSET_LIB)}"
-    log_msg "Go runtime cap: GOMEMLIMIT=$(compute_go_memlimit) GOGC=$AWG_GOGC (bounds heap growth under load — prevents daemon OOM on low-RAM boxes)"
+    log_msg "Go runtime: $(go_tune_desc)"
     launch_daemon
     if ! wait_for_iface "$IFACE" 10; then
         # Name the failure mode from the captured exit status: a SILENT death (banner only, no
@@ -3705,7 +3753,7 @@ do_start(){
             132) log_msg "  daemon exited rc=132 (SIGILL — this CPU can't run this build)" ;;
             139) log_msg "  daemon exited rc=139 (SIGSEGV — daemon crashed; on kernels older than 3.2 (e.g. RT-AC68U 2.6.36) the Go runtime is unsupported and dies like this)" ;;
             *)   if grep -qiF 'out of memory' $DAEMON_LOG 2>/dev/null; then
-                     log_msg "  daemon exited rc=$drc (Go runtime OUT OF MEMORY — box too low on RAM even with GOMEMLIMIT=$(compute_go_memlimit); free some memory or reduce load)"
+                     log_msg "  daemon exited rc=$drc (Go runtime OUT OF MEMORY — box too low on RAM; Go tune: $(go_tune_desc); free some memory or reduce load)"
                  else
                      log_msg "  daemon exited rc=$drc"
                  fi ;;
