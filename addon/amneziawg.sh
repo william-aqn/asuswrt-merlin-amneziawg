@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.3.8"
+AWG_VERSION="1.3.9"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -609,6 +609,25 @@ ipt_add_once(){
     iptables -t "$_tbl" "$_how" "$_chain" "$@" && return 0
     sleep 1
     iptables -t "$_tbl" "$_how" "$_chain" "$@"
+}
+
+# Full-table mangle dump that survives firmware-proprietary targets. Entware iptables
+# (1.4.21, first on our PATH) aborts `-t mangle -S` at ASUS's SKIPLOG target ("Can't find
+# library for target", rc=1), truncating the dump mid-PREROUTING — in a field diag
+# (RT-BE88U @1.3.8) our own PREROUTING jump and the whole AWG chain vanished from the
+# "mangle marks" section while the watchdog's -C probes saw every rule. Same pattern as
+# the server's srv_mangle_dump: firmware binary first (it knows its own targets), keep a
+# dump only on rc=0, else fall back to the possibly-truncated PATH-resolved one.
+mangle_dump(){
+    local _b _out
+    for _b in /usr/sbin/iptables /sbin/iptables; do
+        [ -x "$_b" ] || continue
+        if _out=$("$_b" -t mangle -S 2>/dev/null); then
+            printf '%s\n' "$_out"
+            return 0
+        fi
+    done
+    iptables -t mangle -S 2>/dev/null
 }
 
 save_and_set_rp_filter(){
@@ -3116,7 +3135,7 @@ do_diag(){
     echo "--- routing (rule / table $RT_TABLE / fwmark marks) ---"
     echo "ip rule:"; ip rule show 2>/dev/null | sed 's/^/  /'
     echo "ip route table $RT_TABLE:"; ip route show table "$RT_TABLE" 2>/dev/null | sed 's/^/  /'
-    echo "mangle marks:"; iptables -t mangle -S 2>/dev/null | grep -iE 'awg|0x100|MARK' | head -30 | sed 's/^/  /'
+    echo "mangle marks:"; mangle_dump | grep -iE 'awg|0x100|MARK' | head -60 | sed 's/^/  /'
     echo "rule copy counts (running tunnel expects TCPMSS=2, ACCEPT/MASQ=1 each; more = duplicates):"
     echo "  TCPMSS clamp   : $(iptables -t mangle -S FORWARD 2>/dev/null | grep -c TCPMSS)"
     echo "  INPUT accept   : $(iptables -S INPUT 2>/dev/null | grep -c -- "-i $IFACE -j ACCEPT")"
@@ -3703,13 +3722,17 @@ do_start(){
         || iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
         || iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    if [ -n "$lan_net" ]; then
-        iptables -t nat -C POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE 2>/dev/null \
-            || iptables -t nat -I POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE
-    else
-        iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null \
-            || iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
-    fi
+    # MASQUERADE everything leaving the tunnel, NOT just the LAN subnet. The provider's
+    # server accepts only our tunnel address (AllowedIPs / cryptokey routing), so ANY source
+    # egressing awg0 unNATed is silently dropped on the far end — and the default
+    # vpn_geo/vpn_all policy marks EVERY unlisted source (the PREROUTING chain is
+    # interface-agnostic), including firmware VPN-server clients (stock WireGuard wgs1
+    # 10.6.0.x, OpenVPN/IPSec subnets). The old lan_net-scoped rule left exactly those dead
+    # for geo destinations while the router web UI (dst-type LOCAL -> RETURN) kept working
+    # (field case RT-BE88U @1.3.8). Router-local egress already sources the tunnel IP, so
+    # the unconditional rule is a no-op for it.
+    iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null \
+        || iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
 
     # Arm the LAN deadman BEFORE the risky part: setup_firewall does the ipset load, DNS
     # interception and dnsmasq reload — the steps that can lock the router out. If they
@@ -3828,6 +3851,8 @@ do_stop(){
     ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     local lan_net
     lan_net=$(get_lan_net)
+    # The lan_net-scoped masq is the pre-1.3.9 layout — keep draining it so the first
+    # stop after an upgrade clears rules installed by the old version.
     [ -n "$lan_net" ] && ipt_drain -t nat -D POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE
     ipt_drain -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE
 
@@ -5349,6 +5374,7 @@ do_firewall_restart(){
     ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     local lan_net_old
     lan_net_old=$(get_lan_net)
+    # (lan_net-scoped variant = pre-1.3.9 layout; drained for upgrades)
     [ -n "$lan_net_old" ] && ipt_drain -t nat -D POSTROUTING -s "$lan_net_old" -o "$IFACE" -j MASQUERADE
     ipt_drain -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE
     cleanup_firewall
@@ -5381,13 +5407,10 @@ do_firewall_restart(){
         || iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
         || iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    if [ -n "$lan_net" ]; then
-        iptables -t nat -C POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE 2>/dev/null \
-            || iptables -t nat -I POSTROUTING -s "$lan_net" -o "$IFACE" -j MASQUERADE
-    else
-        iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null \
-            || iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
-    fi
+    # Unconditional masq — see do_start for why the lan_net-scoped variant broke
+    # firmware-VPN-server clients (wgs1/OpenVPN subnets riding the default policy).
+    iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null \
+        || iptables -t nat -I POSTROUTING -o "$IFACE" -j MASQUERADE
 
     setup_firewall
 
