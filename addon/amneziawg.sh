@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.3.11"
+AWG_VERSION="1.3.12"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -68,6 +68,7 @@ DNSRELOAD_PENDING="/tmp/.awg_dnsreload_pending" # >=1 reload was swallowed while
 SCRIPT_NAME="amneziawg"
 RT_TABLE=300
 AWG_CHAIN="AWG"
+AWG_PRIO_CHAIN="AWG_PRIO"   # priority-over-xray chain, hooked FIRST in mangle PREROUTING
 LOCKDIR="/tmp/.awg_lock"
 # Per-instance daemon telemetry files. Variables (not literals) so the SERVER role script
 # (amneziawg_server.sh), which sources this file in lib mode and overrides IFACE/LOCKDIR/
@@ -1745,6 +1746,10 @@ cleanup_firewall(){
     iptables -t mangle -F "$AWG_CHAIN" 2>/dev/null
     iptables -t mangle -X "$AWG_CHAIN" 2>/dev/null
 
+    # Remove the Xray-priority chain (hooked ahead of XRAYUI) too — it lives and dies with our
+    # firewall.
+    cleanup_xray_priority
+
     # Remove every copy of our policy ip rules (prio 97-100 + table/fwmark fallback)
     drain_ip_rules
 
@@ -2082,6 +2087,118 @@ emit_geo_rules(){
         [ "$#" -gt 0 ] && iptables -t mangle -A "$AWG_CHAIN" "$@" -j RETURN
     fi
     return 0
+}
+
+# --- Priority over a co-resident xray transparent proxy (XRAYUI «redirect all») ---
+# xray captures LAN traffic in mangle PREROUTING (TPROXY -> fwmark 0x10000 -> ip-rule prio 19),
+# BEFORE the routing decision — ahead of our fwmark 0x100 (prio 98) and source rules (prio 99).
+# So a device the user assigned to AmneziaWG (vpn_all / vpn_geo) is grabbed by xray, not the
+# tunnel. This chain, hooked at the TOP of PREROUTING (before XRAYUI), marks such a device's
+# tunnel-bound packets 0x100 and ACCEPTs them — ACCEPT ends the mangle traversal, so xray never
+# sees them and prio-98 routes them into awg0. Built ONLY while xray is actually capturing;
+# direct devices RETURN (they keep flowing through xray). We never touch xray's own rules — this
+# is our chain, ahead of its. Verified on a live RT-BE88U (server-peer twin of this, 1.3.10).
+# Geo priority is include-mode only for now; an exclude-mode policy is left to xray (logged).
+_xray_prio_geo(){
+    local pgid="$1"; shift
+    local incset
+    incset=$(geo_ipset "$pgid")
+    ipset list "$incset" >/dev/null 2>&1 && geo_set_ours "$pgid" "$incset" || return 1
+    if [ "$(geo_mode "$pgid")" = direct ]; then
+        log_msg "NOTE: geo policy $pgid is exclude-mode — Xray-priority not applied to it (its traffic keeps using Xray)"
+        return 1
+    fi
+    iptables -t mangle -A "$AWG_PRIO_CHAIN" "$@" -m set --match-set "$incset" dst -j MARK --set-mark "$FWMARK"
+    iptables -t mangle -A "$AWG_PRIO_CHAIN" "$@" -m set --match-set "$incset" dst -j ACCEPT
+    # Per-device only (a selector was passed): RETURN the device's NON-geo traffic so it can't
+    # inherit a vpn_all default blanket below and be forced into the tunnel — it keeps going to
+    # Xray/direct, exactly as emit_geo_rules does for the main chain. The default-geo case (no
+    # selector) intentionally has no RETURN: unmatched traffic falls off the chain end to Xray.
+    [ "$#" -gt 0 ] && iptables -t mangle -A "$AWG_PRIO_CHAIN" "$@" -j RETURN
+    return 0
+}
+
+setup_xray_priority(){
+    # Only meaningful while a transparent-proxy xray is actually grabbing LAN traffic.
+    if ! xray_redirect_active; then
+        cleanup_xray_priority
+        return 0
+    fi
+
+    local lan_net endpoint srv_net default_policy
+    lan_net=$(get_lan_net); endpoint=$(get_endpoint)
+    srv_net=$(get_setting awgs_subnet); case "$srv_net" in */*) ;; *) srv_net="" ;; esac
+    default_policy=$(get_setting awg_default_policy); [ -z "$default_policy" ] && default_policy="direct"
+
+    iptables -t mangle -N "$AWG_PRIO_CHAIN" 2>/dev/null || iptables -t mangle -F "$AWG_PRIO_CHAIN"
+
+    # Same exclusions as the main chain: LOCAL / LAN / server-subnet / DHCP-NTP / multicast /
+    # endpoint must NEVER be diverted to awg0 — RETURN them (they cascade to xray's own RETURNs
+    # and to normal routing).
+    iptables -t mangle -A "$AWG_PRIO_CHAIN" -m addrtype --dst-type LOCAL -j RETURN
+    [ -n "$lan_net" ] && iptables -t mangle -A "$AWG_PRIO_CHAIN" -d "$lan_net" -j RETURN
+    [ -n "$srv_net" ] && iptables -t mangle -A "$AWG_PRIO_CHAIN" -d "$srv_net" -j RETURN 2>/dev/null
+    # AWG-SERVER PEERS defer to their OWN Xray control (the per-peer «bypass Xray» option,
+    # amneziawg_server.sh, default OFF) — never let this LAN-device chain force a peer into the
+    # tunnel and override that choice. Peers ride the client engine (their IPs land in
+    # clients.list), so RETURN peer-SOURCED traffic here BEFORE the device loop can mark it; the
+    # server's own PREROUTING rule (if «bypass Xray» is on for that peer) still sits ahead of us.
+    [ -n "$srv_net" ] && iptables -t mangle -A "$AWG_PRIO_CHAIN" -s "$srv_net" -j RETURN 2>/dev/null
+    iptables -t mangle -A "$AWG_PRIO_CHAIN" -p udp -m multiport --dports 67,68,123 -j RETURN
+    iptables -t mangle -A "$AWG_PRIO_CHAIN" -d 224.0.0.0/4 -j RETURN
+    [ -n "$endpoint" ] && iptables -t mangle -A "$AWG_PRIO_CHAIN" -d "$endpoint" -j RETURN
+
+    local dev_id name policy mac sel
+    if [ -f "$CLIENTS_FILE" ] && [ -s "$CLIENTS_FILE" ]; then
+        # Pass 1: direct devices -> RETURN, so the default blanket below can't sweep them into
+        # the tunnel; they keep flowing to xray.
+        while IFS=',' read -r dev_id name policy mac || [ -n "$dev_id" ]; do
+            dev_id=$(echo "$dev_id" | tr -d ' '); policy=$(echo "$policy" | tr -d ' '); mac=$(echo "$mac" | tr -d ' ')
+            [ -z "$dev_id" ] && continue
+            [ "$policy" = "direct" ] || continue
+            if [ -n "$mac" ]; then iptables -t mangle -A "$AWG_PRIO_CHAIN" -m mac --mac-source "$mac" -j RETURN
+            else iptables -t mangle -A "$AWG_PRIO_CHAIN" -s "$dev_id" -j RETURN; fi
+        done < "$CLIENTS_FILE"
+        # Pass 2: vpn devices -> priority into the tunnel, ahead of xray.
+        while IFS=',' read -r dev_id name policy mac || [ -n "$dev_id" ]; do
+            dev_id=$(echo "$dev_id" | tr -d ' '); policy=$(echo "$policy" | tr -d ' '); mac=$(echo "$mac" | tr -d ' ')
+            [ -z "$dev_id" ] && continue
+            if [ -n "$mac" ]; then sel="-m mac --mac-source $mac"; else sel="-s $dev_id"; fi
+            case "$policy" in
+                vpn_all)
+                    iptables -t mangle -A "$AWG_PRIO_CHAIN" $sel -j MARK --set-mark "$FWMARK"
+                    iptables -t mangle -A "$AWG_PRIO_CHAIN" $sel -j ACCEPT
+                    ;;
+                vpn_geo|vpn_geo_*)
+                    _xray_prio_geo "$(geo_policy_of_ref "$policy")" $sel
+                    ;;
+            esac
+        done < "$CLIENTS_FILE"
+    fi
+    # Default policy blanket (after the per-device rules): a non-direct default means unlisted
+    # devices go to VPN too — give them priority over xray as well.
+    case "$default_policy" in
+        vpn_all)
+            iptables -t mangle -A "$AWG_PRIO_CHAIN" -j MARK --set-mark "$FWMARK"
+            iptables -t mangle -A "$AWG_PRIO_CHAIN" -j ACCEPT
+            ;;
+        vpn_geo|vpn_geo_*)
+            _xray_prio_geo "$(geo_policy_of_ref "$default_policy")"
+            ;;
+    esac
+
+    # Hook FIRST in PREROUTING (before XRAYUI). ipt_add_once appends; we need position 1, so
+    # guard + insert-at-1 by hand. The subsequent flush_conntrack in setup_firewall re-paths the
+    # (IP-keyed) vpn devices' live xray sessions, so no separate flush is needed here.
+    iptables -t mangle -C PREROUTING -j "$AWG_PRIO_CHAIN" 2>/dev/null \
+        || iptables -t mangle -I PREROUTING 1 -j "$AWG_PRIO_CHAIN"
+    log_msg "Xray active — non-direct devices given priority into the tunnel ahead of Xray (AWG_PRIO)"
+}
+
+cleanup_xray_priority(){
+    ipt_drain -t mangle -D PREROUTING -j "$AWG_PRIO_CHAIN"
+    iptables -t mangle -F "$AWG_PRIO_CHAIN" 2>/dev/null
+    iptables -t mangle -X "$AWG_PRIO_CHAIN" 2>/dev/null
 }
 
 setup_firewall(){
@@ -2575,6 +2692,12 @@ setup_firewall(){
     elif [ "$_want_intercept" = 1 ]; then
         setup_dns_interception
     fi
+
+    # --- Give AmneziaWG-assigned devices priority over a co-resident xray transparent proxy.
+    #     Built (and hooked ahead of XRAYUI) ONLY while xray is actually capturing; otherwise it
+    #     tears itself down. Placed BEFORE flush_conntrack so the flush re-paths those devices'
+    #     live xray-captured sessions onto the new chain in one shot. ---
+    setup_xray_priority
 
     # --- Flush conntrack of already-marked flows so they re-establish through the tunnel.
     #     NOTE: this re-routes only flows that ALREADY carry our fwmark; a device just
@@ -4904,6 +5027,24 @@ do_watchdog(){
         log_msg "WATCHDOG: marking probe inconclusive (${AWG_MARKS_ERR:-$AWG_MARKS_MISSING unconfirmed}) — NOT healing on a sick probe; next tick re-checks"
     elif [ -n "$_mblip" ]; then
         log_msg "WATCHDOG: transient marking-probe failure ($_mblip) — cleared on retry, firewall intact, no action"
+    fi
+
+    # Xray-priority reconcile (only while the tunnel is up). xray may have started AFTER our
+    # firewall was built (so non-direct devices are being grabbed by xray with no priority chain
+    # present) or stopped since (a stale chain hooked ahead of nothing). Act only on the drift —
+    # cheap and idempotent — so we don't flush/rebuild the chain on every tick. (If the marking
+    # heal above already ran do_firewall_restart, setup_xray_priority ran with it and this is a
+    # no-op.)
+    if is_running; then
+        if xray_redirect_active; then
+            iptables -t mangle -C PREROUTING -j "$AWG_PRIO_CHAIN" 2>/dev/null || {
+                log_msg "WATCHDOG: xray now capturing but AWG_PRIO absent — installing tunnel priority"
+                setup_xray_priority
+            }
+        elif iptables -t mangle -C PREROUTING -j "$AWG_PRIO_CHAIN" 2>/dev/null; then
+            log_msg "WATCHDOG: xray no longer capturing — removing stale AWG_PRIO chain"
+            cleanup_xray_priority
+        fi
     fi
 }
 
