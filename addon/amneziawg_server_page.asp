@@ -138,6 +138,8 @@ en: {
     TH_PEER_ACT: "Config",
     OPT_MODE_FULL: "All traffic",
     OPT_MODE_LAN: "Home network only",
+    BYPASS_XRAY: "bypass Xray",
+    BYPASS_XRAY_TT: "Force this peer into the client tunnel (double hop) even while Xray runs — a rule is inserted ahead of Xray's transparent proxy so this peer's traffic isn't captured by it. Needs the client tunnel up. Direct peers are unaffected.",
     OPT_DIRECT: "Direct",
     OPT_VPN_ALL: "VPN: all traffic",
     OPT_VPN_GEO: "VPN: Geo only",
@@ -229,6 +231,8 @@ ru: {
     TH_PEER_ACT: "Конфиг",
     OPT_MODE_FULL: "Весь трафик",
     OPT_MODE_LAN: "Только домашняя сеть",
+    BYPASS_XRAY: "мимо Xray",
+    BYPASS_XRAY_TT: "Заворачивать трафик этого пира в клиентский туннель (двойной хоп) даже при работающем Xray — правило ставится перед перехватом Xray, чтобы трафик пира в него не попадал. Нужен поднятый клиентский туннель. На Direct-пиров не влияет.",
     OPT_DIRECT: "Напрямую",
     OPT_VPN_ALL: "VPN: весь трафик",
     OPT_VPN_GEO: "VPN: только Гео",
@@ -330,8 +334,9 @@ function loadPeers(){
     for (var i = 0; i < entries.length; i++) {
         var f = entries[i].split('|');
         if (f.length < 8) continue;
+        // 9th field (xbypass) is optional — old 8-field records default it to false.
         awgsPeers.push({ name: f[0], ip: f[1], policy: f[2] || 'direct', mode: f[3] || 'full',
-                         enabled: f[4] === '1', pub: f[5], priv: f[6], psk: f[7] });
+                         enabled: f[4] === '1', pub: f[5], priv: f[6], psk: f[7], xbypass: f[8] === '1' });
     }
 }
 function serializePeers(){
@@ -339,7 +344,7 @@ function serializePeers(){
     for (var i = 0; i < awgsPeers.length; i++) {
         var p = awgsPeers[i];
         parts.push([sanitizeName(p.name), p.ip, p.policy, p.mode, p.enabled ? '1' : '0',
-                    p.pub, p.priv, p.psk].join('|'));
+                    p.pub, p.priv, p.psk, p.xbypass ? '1' : '0'].join('|'));
     }
     return parts.join(';');
 }
@@ -535,7 +540,9 @@ function renderPeers(){
         html += '<tr>' +
           '<td width="16%"><input type="text" maxlength="24" value="' + escHtml(p.name) + '" onchange="peerEdit(' + i + ',\'name\',this.value)"></td>' +
           '<td width="12%" style="font-family:monospace; font-size:12px;">' + escHtml(p.ip) + '</td>' +
-          '<td width="20%"><select onchange="peerEdit(' + i + ',\'policy\',this.value)">' + policyOptions(p.policy) + '</select></td>' +
+          '<td width="20%"><select onchange="peerEdit(' + i + ',\'policy\',this.value)">' + policyOptions(p.policy) + '</select>' +
+              (p.policy !== 'direct' ? '<label style="display:block; font-size:10px; color:#b6bdc7; margin-top:3px; cursor:pointer;" title="' + escHtml(T('BYPASS_XRAY_TT')) + '"><input type="checkbox"' + (p.xbypass ? ' checked' : '') + ' onchange="peerEdit(' + i + ',\'xbypass\',this.checked)" style="vertical-align:middle;"> ' + escHtml(T('BYPASS_XRAY')) + '</label>' : '') +
+          '</td>' +
           '<td width="16%"><select onchange="peerEdit(' + i + ',\'mode\',this.value)">' +
               '<option value="full"' + (p.mode !== 'lan' ? ' selected' : '') + '>' + escHtml(T('OPT_MODE_FULL')) + '</option>' +
               '<option value="lan"' + (p.mode === 'lan' ? ' selected' : '') + '>' + escHtml(T('OPT_MODE_LAN')) + '</option>' +
@@ -556,6 +563,9 @@ function peerEdit(i, field, val){
     if (field === 'name') val = sanitizeName(val);
     awgsPeers[i][field] = val;
     markDirty();
+    // The «Bypass Xray» checkbox only shows for a VPN policy — re-render on a policy change
+    // so it appears/disappears; a peer switched to Direct drops the (now meaningless) flag.
+    if (field === 'policy') { if (val === 'direct') awgsPeers[i].xbypass = false; renderPeers(); }
 }
 function addPeer(){
     loadQrLib(function(ok){
@@ -564,7 +574,7 @@ function addPeer(){
         if (!ip) { alert(T('MSG_PEERS_FULL')); return; }
         var priv = AWGKeys.genPrivkey();
         awgsPeers.push({ name: 'peer-' + ip.split('.')[3], ip: ip, policy: 'direct', mode: 'full',
-                         enabled: true, pub: AWGKeys.pubFromPriv(priv), priv: priv, psk: AWGKeys.genPsk() });
+                         enabled: true, pub: AWGKeys.pubFromPriv(priv), priv: priv, psk: AWGKeys.genPsk(), xbypass: false });
         renderPeers();
         markDirty();
     });

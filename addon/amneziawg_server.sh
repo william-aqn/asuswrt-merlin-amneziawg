@@ -275,7 +275,9 @@ srv_generate_config(){
     # One [Peer] per ENABLED stored peer. Keys are validated per-peer; a malformed entry is
     # SKIPPED with a named log line (one broken peer must not take the whole server down).
     local _added=0
-    srv_peers_raw | while IFS='|' read -r p_name p_ip p_policy p_mode p_enabled p_pub p_priv p_psk; do
+    # NB: read the 9th field (p_xbypass) too — without it a peer record's trailing "|xbypass"
+    # would spill into p_psk (read dumps the remainder into the last var), corrupting the PSK.
+    srv_peers_raw | while IFS='|' read -r p_name p_ip p_policy p_mode p_enabled p_pub p_priv p_psk p_xbypass; do
         [ "$p_enabled" = "1" ] || continue
         srv_valid_ip4 "$p_ip" || { log_msg "WARNING: peer '$p_name' skipped — bad tunnel IP '$p_ip'"; continue; }
         echo "$p_pub" | grep -qE '^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$' || { log_msg "WARNING: peer '$p_name' skipped — bad public key"; continue; }
@@ -352,6 +354,9 @@ srv_setup_firewall(){
     else
         ipt_drain -t nat -D POSTROUTING -s "$subnet" -o br0 -j MASQUERADE
     fi
+
+    # Per-peer «мимо Xray» rules (opt-in): reconcile to the current peer set.
+    srv_setup_xray_bypass
 }
 
 srv_cleanup_firewall(){
@@ -375,6 +380,68 @@ srv_cleanup_firewall(){
     [ -n "$wan_if" ] && ipt_drain -t nat -D POSTROUTING -s "$subnet" -o "$wan_if" -j MASQUERADE
     ipt_drain -t nat -D POSTROUTING -s "$subnet" -o awg0 -j MASQUERADE
     ipt_drain -t nat -D POSTROUTING -s "$subnet" -o br0 -j MASQUERADE
+    srv_cleanup_xray_bypass
+}
+
+# =============================================================
+# Per-peer Xray bypass (opt-in flag «мимо Xray» in the peer row)
+# =============================================================
+# When Xray/XRAYUI runs in transparent-proxy «redirect all» mode it captures the peer subnet
+# in mangle PREROUTING (TPROXY -> fwmark 0x10000 -> its own table), AHEAD of the routing
+# decision — so a vpn_* peer's traffic is grabbed by Xray before our `from <peer> lookup 300`
+# (prio 99) rule can send it into the CLIENT tunnel awg0. The bypass inserts, at the TOP of
+# mangle PREROUTING (so it's evaluated BEFORE XRAYUI regardless of chain order), an ACCEPT for
+# the peer's source IP. ACCEPT terminates the mangle-table traversal for that packet, so it
+# never reaches XRAYUI, never gets the 0x10000 mark, and falls through to routing — where our
+# prio-99 rule double-hops it via awg0. Verified on a live RT-BE88U: with the rule the peer's
+# flows flipped from fwmark 0x10000 (Xray) to 0 (our path). Harmless with Xray absent (the
+# packet was going to prio 99 anyway). Only vpn_* peers get it; Direct peers stay on Xray.
+# We never touch Xray's own rules — this is our own rule, ahead of its chain.
+
+# Tunnel IPs of peers that opted into the bypass (enabled, VPN policy, xbypass flag set).
+srv_xray_bypass_ips(){
+    srv_peers_raw | awk -F'|' '
+        NF>=9 && $5=="1" && $9=="1" && $3!="" && $3!="direct" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $2}'
+}
+
+# IPs of the bypass rules currently installed (mangle PREROUTING `-s <subnet-ip>/32 -j ACCEPT`).
+# Scoped to OUR tunnel subnet by an exact literal prefix so we can never enumerate/remove a
+# foreign ACCEPT. Full-table read via srv_mangle_dump (firmware binary — survives the Entware
+# SKIPLOG-truncation), though our rules sit at position 1, before the truncation point anyway.
+srv_bypass_rule_ips(){
+    local base
+    base=$(srv_subnet); base=${base%.0/24}
+    srv_mangle_dump | awk -v b="$base" '
+        $1=="-A" && $2=="PREROUTING" && $3=="-s" && $6=="ACCEPT" && index($4, b ".")==1 && $4 ~ /\/32$/ {
+            sub(/\/32$/,"",$4); print $4 }'
+}
+
+# Reconcile the bypass rules to the current peer set: drop rules for peers that no longer opt
+# in (removed / disabled / switched to Direct), add the ones that do. A freshly-added rule
+# also flushes that peer's live conntrack so Xray-captured sessions re-path immediately; an
+# already-present rule is left untouched (no needless flush on every Apply/watchdog tick).
+srv_setup_xray_bypass(){
+    local want ip
+    want=" $(srv_xray_bypass_ips | tr '\n' ' ') "
+    srv_bypass_rule_ips | while read -r ip; do
+        case "$want" in *" $ip "*) : ;; *) ipt_drain -t mangle -D PREROUTING -s "$ip" -j ACCEPT ;; esac
+    done
+    for ip in $(srv_xray_bypass_ips); do
+        srv_valid_ip4 "$ip" || continue
+        if ! iptables -t mangle -C PREROUTING -s "$ip" -j ACCEPT 2>/dev/null; then
+            iptables -t mangle -I PREROUTING -s "$ip" -j ACCEPT
+            which conntrack >/dev/null 2>&1 && conntrack -D -s "$ip" >/dev/null 2>&1
+            log_msg "Xray bypass: peer $ip routed into the client tunnel (double hop), past Xray"
+        fi
+    done
+}
+
+# Remove every bypass rule we own (teardown on stop; also prunes any stragglers).
+srv_cleanup_xray_bypass(){
+    local ip
+    srv_bypass_rule_ips | while read -r ip; do
+        ipt_drain -t mangle -D PREROUTING -s "$ip" -j ACCEPT
+    done
 }
 
 # =============================================================
@@ -710,6 +777,11 @@ do_srv_watchdog(){
         srv_setup_firewall
         ip route add "$(srv_subnet)" dev "$IFACE" table $RT_TABLE 2>/dev/null
     fi
+
+    # Reconcile the per-peer Xray bypass. Cheap-gated on the store (no iptables call) so a
+    # server without any opt-in peer skips the mangle dump entirely; a full firewall restart
+    # is already covered above via srv_setup_firewall, this only catches a stray removal.
+    [ -n "$(srv_xray_bypass_ips)" ] && srv_setup_xray_bypass
 }
 
 # Re-apply rules after a firmware firewall restart (firewall-start hook; cheap fast-path).
