@@ -578,6 +578,39 @@ ipt_drain(){
     return 0
 }
 
+# Idempotent, transient-proof iptables add. The bare `-C … || -I/-A …` pattern has a hidden
+# failure mode: `-C` exits non-zero not only for "rule absent" (rc=1) but ALSO when the PROBE
+# ITSELF fails — Entware iptables (1.4.21) takes the global xtables lock for EVERY operation
+# including -C, nothing here passes -w (firmware builds don't know it), so a collision with a
+# concurrent iptables (the every-minute status cron, a firewall event, another addon) exits
+# rc=4 "Another app is currently holding the xtables lock" — and the `||` then ADDS A
+# DUPLICATE of a rule that was there all along. A duplicate :53 DNAT is the nasty case:
+# cleanup used to delete ONE copy, so the leftover kept hijacking LAN DNS after a stop.
+# So: retry the probe through transient failures (rc>=2), add only on a confirmed rc=1
+# (absent — kernel table reads are atomic, rc=1 is trustworthy), and give the add itself one
+# retry too (it takes the same lock). On a persistently sick probe, do NOT add (better a
+# missing rule that the next apply/reconcile re-asserts than a dup that outlives cleanup).
+# Usage: ipt_add_once <table> <-I|-A> <chain> <rule tokens…>
+ipt_add_once(){
+    local _tbl="$1" _how="$2" _chain="$3" _n=0 _rc
+    shift 3
+    while :; do
+        iptables -t "$_tbl" -C "$_chain" "$@" 2>/dev/null
+        _rc=$?
+        [ $_rc -eq 0 ] && return 0        # already in place — the whole point of the guard
+        [ $_rc -eq 1 ] && break           # confirmed absent -> add below
+        _n=$((_n + 1))
+        if [ $_n -ge 3 ]; then
+            log_msg "WARNING: iptables probe kept failing (rc=$_rc) — NOT adding to $_tbl/$_chain this pass (the next apply/reconcile re-asserts it)"
+            return 1
+        fi
+        sleep 1
+    done
+    iptables -t "$_tbl" "$_how" "$_chain" "$@" && return 0
+    sleep 1
+    iptables -t "$_tbl" "$_how" "$_chain" "$@"
+}
+
 save_and_set_rp_filter(){
     for iface in all awg0 br0; do
         local f="/proc/sys/net/ipv4/conf/$iface/rp_filter"
@@ -1525,13 +1558,15 @@ setup_dns_interception(){
     # Remember the IP we DNAT to so cleanup can remove the rule even if br0's IP
     # changes later (otherwise an orphaned DNAT to the old IP breaks LAN DNS).
     echo "$router_ip" > /tmp/.awg_dns_ip 2>/dev/null
-    iptables -t nat -C PREROUTING -i br0 -p udp --dport 53 -j DNAT --to "$router_ip" 2>/dev/null || iptables -t nat -I PREROUTING -i br0 -p udp --dport 53 -j DNAT --to "$router_ip"
-    iptables -t nat -C PREROUTING -i br0 -p tcp --dport 53 -j DNAT --to "$router_ip" 2>/dev/null || iptables -t nat -I PREROUTING -i br0 -p tcp --dport 53 -j DNAT --to "$router_ip"
-    iptables -C FORWARD -i br0 -p tcp --dport 853 -j REJECT 2>/dev/null || iptables -I FORWARD -i br0 -p tcp --dport 853 -j REJECT
+    # ipt_add_once (not bare `-C || -I`): an xtables-lock blip on the -C used to add a
+    # DUPLICATE DNAT that single-shot cleanup couldn't fully remove (see the helper's comment).
+    ipt_add_once nat -I PREROUTING -i br0 -p udp --dport 53 -j DNAT --to "$router_ip"
+    ipt_add_once nat -I PREROUTING -i br0 -p tcp --dport 53 -j DNAT --to "$router_ip"
+    ipt_add_once filter -I FORWARD -i br0 -p tcp --dport 853 -j REJECT
     local doh_ip
     for doh_ip in 8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112; do
-        iptables -C FORWARD -i br0 -d "$doh_ip" -p tcp --dport 443 -j REJECT 2>/dev/null || iptables -I FORWARD -i br0 -d "$doh_ip" -p tcp --dport 443 -j REJECT
-        iptables -C FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT 2>/dev/null || iptables -I FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT
+        ipt_add_once filter -I FORWARD -i br0 -d "$doh_ip" -p tcp --dport 443 -j REJECT
+        ipt_add_once filter -I FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT
     done
     log_msg "DNS interception enabled"
 }
@@ -1617,13 +1652,15 @@ cleanup_dns_interception(){
     router_ip=$(cat /tmp/.awg_dns_ip 2>/dev/null)
     [ -z "$router_ip" ] && router_ip=$(get_router_ip)
     [ -z "$router_ip" ] && router_ip="192.168.1.1"
-    iptables -t nat -D PREROUTING -i br0 -p udp --dport 53 -j DNAT --to "$router_ip" 2>/dev/null
-    iptables -t nat -D PREROUTING -i br0 -p tcp --dport 53 -j DNAT --to "$router_ip" 2>/dev/null
-    iptables -D FORWARD -i br0 -p tcp --dport 853 -j REJECT 2>/dev/null
+    # Drain EVERY copy (ipt_drain), not a single -D: a duplicate added by a past lock-blip
+    # race (pre-1.3.8) must not outlive the teardown and keep hijacking LAN DNS.
+    ipt_drain -t nat -D PREROUTING -i br0 -p udp --dport 53 -j DNAT --to "$router_ip"
+    ipt_drain -t nat -D PREROUTING -i br0 -p tcp --dport 53 -j DNAT --to "$router_ip"
+    ipt_drain -D FORWARD -i br0 -p tcp --dport 853 -j REJECT
     local doh_ip
     for doh_ip in 8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1 9.9.9.9 149.112.112.112; do
-        iptables -D FORWARD -i br0 -d "$doh_ip" -p tcp --dport 443 -j REJECT 2>/dev/null
-        iptables -D FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT 2>/dev/null
+        ipt_drain -D FORWARD -i br0 -d "$doh_ip" -p tcp --dport 443 -j REJECT
+        ipt_drain -D FORWARD -i br0 -d "$doh_ip" -p udp --dport 443 -j REJECT
     done
     rm -f /tmp/.awg_dns_ip 2>/dev/null
 }
@@ -1683,8 +1720,9 @@ ip_rule_replace(){
 }
 
 cleanup_firewall(){
-    # Unhook from PREROUTING, flush and delete custom chain
-    iptables -t mangle -D PREROUTING -j "$AWG_CHAIN" 2>/dev/null
+    # Unhook from PREROUTING (drain: a duplicate jump left by a past lock-blip race would
+    # keep the chain referenced and make the -X below fail silently), flush, delete.
+    ipt_drain -t mangle -D PREROUTING -j "$AWG_CHAIN"
     iptables -t mangle -F "$AWG_CHAIN" 2>/dev/null
     iptables -t mangle -X "$AWG_CHAIN" 2>/dev/null
 
@@ -2435,9 +2473,10 @@ setup_firewall(){
             ;;
     esac
 
-    # --- Hook chain into PREROUTING ---
-    iptables -t mangle -C PREROUTING -j "$AWG_CHAIN" 2>/dev/null || \
-        iptables -t mangle -A PREROUTING -j "$AWG_CHAIN"
+    # --- Hook chain into PREROUTING (ipt_add_once: a lock-blip on the -C guard must not
+    #     stack a duplicate jump — packets would traverse AWG twice and cleanup's single
+    #     -D used to leave the extra copy behind) ---
+    ipt_add_once mangle -A PREROUTING -j "$AWG_CHAIN"
 
     # --- Single fwmark rule for all marked traffic ---
     ip_rule_replace fwmark "$FWMARK" lookup $RT_TABLE prio 98
@@ -4653,6 +4692,33 @@ repin_endpoint_route(){
 
 # --- Watchdog (called by cron every 5 min) ---
 
+# One-shot probe of the two things a firmware firewall restart actually clobbers while the
+# tunnel stays up: our mangle PREROUTING hook (the packet marking) and the table-$RT_TABLE
+# policy route. THREE-way verdict, because `iptables -C` exit codes are NOT binary:
+#   0 = both present; 1 = something is genuinely ABSENT (kernel table reads are atomic, so
+#       rc=1 is trustworthy; it also covers "chain gone" — same thing for us);
+#   2 = the PROBE ITSELF failed — table state UNKNOWN. iptables rc>=2 is lock/exec trouble,
+#       not absence: Entware iptables 1.4.21 takes the global xtables lock for EVERY op
+#       including -C (and no -w is available across the fleet), so a collision with any
+#       concurrent iptables exits rc=4 "Another app is currently holding the xtables lock";
+#       a sick binary gives 139, fork pressure its own codes.
+# Detail for the journal lands in AWG_MARKS_MISSING / AWG_MARKS_ERR (reset on each call).
+awg_marks_state(){
+    AWG_MARKS_MISSING=""; AWG_MARKS_ERR=""
+    local _rc _err
+    _err=$(iptables -t mangle -C PREROUTING -j "$AWG_CHAIN" 2>&1); _rc=$?
+    if [ $_rc -ge 2 ]; then
+        AWG_MARKS_ERR="iptables -C rc=$_rc: $(printf '%s' "$_err" | tr '\n' ' ' | cut -c1-160)"
+        return 2
+    fi
+    if [ $_rc -eq 1 ]; then AWG_MARKS_MISSING="mangle PREROUTING hook"; return 1; fi
+    ip route show table $RT_TABLE 2>/dev/null | grep -q "0.0.0.0/1"
+    _rc=$?
+    if [ $_rc -ge 2 ]; then AWG_MARKS_ERR="route probe rc=$_rc"; return 2; fi
+    if [ $_rc -eq 1 ]; then AWG_MARKS_MISSING="policy route in table $RT_TABLE"; return 1; fi
+    return 0
+}
+
 do_watchdog(){
     # Heartbeat FIRST (before any early return): proves in diag that the cron actually fires.
     # A watchdog that silently never runs is indistinguishable from a healthy one otherwise.
@@ -4780,10 +4846,39 @@ do_watchdog(){
     # route and rebuild — lighter than a full restart, self-heals within ~5 min even
     # if the firewall-start hook didn't fire. (Old code checked only the route and
     # missed the far more common mangle-reset case.)
-    if ! iptables -t mangle -C PREROUTING -j "$AWG_CHAIN" 2>/dev/null \
-       || ! ip route show table $RT_TABLE 2>/dev/null | grep -q "0.0.0.0/1"; then
-        log_msg "WATCHDOG: routing/marking incomplete, re-applying firewall/routes"
+    # CONFIRM before healing — the heal is expensive and user-visible: full teardown +
+    # ~5 s ipset/policy rebuild + flush_conntrack cutting the VPN clients' live flows =
+    # "VPN vanishes for 10-15 s". The old single-shot `iptables -C` here false-fired on
+    # xtables-lock collisions with the every-minute status cron (crond starts both jobs
+    # in the same second on every 5th minute; a collision exits 4, which a bare `!`
+    # reads as "rules gone" — see awg_marks_state) — field case TUF-AX3000_V2 @1.2.61:
+    # several phantom re-applies an evening, each a 10-15 s VPN drop. Rules now:
+    #   - heal only on TWO "absent" reads 2 s apart (a real firewall wipe is still gone
+    #     2 s later; a lock blip is not; absent reads are atomic, so they need not be
+    #     consecutive — an unknown between two absents doesn't un-confirm them);
+    #   - a sick probe (rc>=2) = state UNKNOWN: never tear down a possibly-working
+    #     firewall on it — log the reason (visible in the journal, so the field can
+    #     confirm the mechanism) and let the next tick re-check.
+    local _mstate=0 _mabsent=0 _mtry=1 _mblip=""
+    while [ $_mtry -le 3 ]; do
+        awg_marks_state; _mstate=$?
+        case $_mstate in
+            0) break ;;                                              # intact — done
+            1) _mabsent=$((_mabsent + 1)); [ $_mabsent -ge 2 ] && break ;;
+            *) [ -z "$_mblip" ] && _mblip="$AWG_MARKS_ERR" ;;        # probe sick — retry
+        esac
+        _mtry=$((_mtry + 1))
+        [ $_mtry -le 3 ] && sleep 2
+    done
+    if [ $_mabsent -ge 2 ]; then
+        log_msg "WATCHDOG: routing/marking incomplete ($AWG_MARKS_MISSING, confirmed by re-read), re-applying firewall/routes"
         do_firewall_restart
+    elif [ $_mstate -ne 0 ]; then
+        # Never reached a clean "intact" read, but couldn't confirm a wipe either
+        # (persistent lock blips / a single unconfirmed absent). Nothing destructive.
+        log_msg "WATCHDOG: marking probe inconclusive (${AWG_MARKS_ERR:-$AWG_MARKS_MISSING unconfirmed}) — NOT healing on a sick probe; next tick re-checks"
+    elif [ -n "$_mblip" ]; then
+        log_msg "WATCHDOG: transient marking-probe failure ($_mblip) — cleared on retry, firewall intact, no action"
     fi
 }
 
@@ -5230,10 +5325,17 @@ do_firewall_restart(){
     # rebuild — skip the full teardown+rebuild and its brief leak/blackhole window. Internal
     # callers (awgupdategeo, update_geo, watchdog heal) call WITHOUT "fast" to force a full
     # rebuild (e.g. to reload a freshly downloaded ipset).
-    if [ "$1" = "fast" ] \
-       && iptables -t mangle -C PREROUTING -j "$AWG_CHAIN" 2>/dev/null \
-       && ip route show table $RT_TABLE 2>/dev/null | grep -q "0.0.0.0/1"; then
-        return 0
+    # awg_marks_state (not a bare -C): an xtables-lock blip used to read as "clobbered" and
+    # burn a needless full rebuild. Verified-present (0) skips; a sick probe retries once,
+    # then falls through to the rebuild — the safe default right after a REAL firewall
+    # restart, when the rules are most likely genuinely gone.
+    if [ "$1" = "fast" ]; then
+        awg_marks_state
+        case $? in
+            0) return 0 ;;
+            2) sleep 1
+               awg_marks_state && return 0 ;;
+        esac
     fi
     log_msg "Firewall restart detected, re-applying routes and rules"
     acquire_lock || { log_msg "Cannot acquire lock, aborting firewall restart"; return 1; }
