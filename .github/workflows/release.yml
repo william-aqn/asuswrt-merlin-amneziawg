@@ -28,9 +28,11 @@ env:
   #   2. sendmmsg/recvmmsg -> sendmsg/recvmsg ENOSYS fallback — without it the daemon can't send
   #      a single packet on Linux < 3.0 (RT-AC68U / 2.6.36), so the tunnel never passes traffic,
   #   3. runtime pool-size control (upstream PR #152): the daemon reads
-  #      WG_PREALLOCATED_BUFFERS_PER_POOL at start (0 = unbounded) — the addon launcher un-caps
-  #      the pool on high-RAM boxes (>= 768MiB) for full throughput; the compiled default stays
-  #      the router-safe 1024 for any launch without the env.
+  #      WG_PREALLOCATED_BUFFERS_PER_POOL at start (0 = unbounded). The addon launcher does NOT
+  #      set it: 1.3.13 un-capped high-RAM boxes and a 2GB RT-BE88U OOM-crash-looped within
+  #      minutes (a slow UDP-TX leg + line-rate RX balloons the heap — the cap is FLOW CONTROL,
+  #      not just low-RAM armor; reverted 1.3.14). The env stays honored for manual experiments;
+  #      the compiled default stays the router-safe 1024.
   # The branch is based on the v0.2.19 tag (AWG_GO_TAG), so it keeps the AmneziaWG 1.5/2.0
   # obfuscation params (I1-I5, S3/S4) + "handle empty I1-I5" fix — reproducible, not floating
   # master. When upstream merges the PRs, point AWG_GO_REPO back to amnezia-vpn + drop the
@@ -81,10 +83,11 @@ jobs:
           #      real backpressure (excess UDP dropped by the kernel). NB the 64KB MaxSegmentSize
           #      is deliberately NOT shrunk — the cap is size-agnostic and UDP-GRO kernels (>=4.18)
           #      can coalesce up to 64KB. Since 1.3.13 the bound is a VAR overridable at start via
-          #      WG_PREALLOCATED_BUFFERS_PER_POOL (0 = unbounded — the addon launcher sets that on
-          #      high-RAM boxes for full throughput; the compiled default must STAY 1024 so any
-          #      launch without the env keeps the OOM protection). Assert BOTH the router-safe
-          #      default and the env hook, so neither can silently vanish:
+          #      WG_PREALLOCATED_BUFFERS_PER_POOL (0 = unbounded — for MANUAL experiments only:
+          #      the launcher never sets it since 1.3.14, un-capping field-OOMed a 2GB box — the
+          #      cap is flow control; the compiled default must STAY 1024 so every launch keeps
+          #      it). Assert BOTH the router-safe default and the env hook, so neither can
+          #      silently vanish:
           grep -q 'var PreallocatedBuffersPerPool uint32 = 1024' amneziawg-go/device/queueconstants_default.go
           grep -q 'WG_PREALLOCATED_BUFFERS_PER_POOL' amneziawg-go/main.go
           #   2. SENDMMSG/RECVMMSG -> per-packet ENOSYS FALLBACK — StdNetBind uses WriteBatch/

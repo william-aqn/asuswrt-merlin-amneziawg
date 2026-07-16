@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.3.13"
+AWG_VERSION="1.3.14"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3335,18 +3335,24 @@ AWG_GOGC=50
 # a transiently-starved launch window can't depress it below the daemon's own working set.
 AWG_GOMEMLIMIT_TOTAL_PCT=38   # stable floor from MemTotal (survives churn)
 AWG_GOMEMLIMIT_AVAIL_PCT=60   # opportunistic ceiling from MemAvailable when the box is roomy
-# LOW-RAM-ONLY GATE (1.3.13): ALL of the daemon tuning — GOMEMLIMIT + GOGC=50 AND the
-# bounded buffer pool — applies only when MemTotal is BELOW this many MiB; roomier boxes
-# launch the daemon in the stock upstream Linux profile (no GC caps, pool un-capped via
-# WG_PREALLOCATED_BUFFERS_PER_POOL=0 — honored by the -poolcfg daemon, silently ignored
-# by older builds). Why: GOGC=50 makes the collector run twice as often as stock and that
-# CPU comes straight out of the crypto workers, and the 1024-buffer pool is backpressure
-# by construction near saturation — a measurable throughput cut on boxes that were never
-# at OOM risk (field report: strong boxes got slower after the tune). Low-RAM boxes keep
-# everything: every field OOM was a <=512MB box (RT-AX82U 512MB, RT-AC68U 256MB —
-# MemTotal reads ~440-510MB there), while 1GB-class boxes report ~880MB+. The pool's
-# COMPILED default stays 1024, so any launch that bypasses launch_daemon (manual SSH
-# runs) keeps the OOM protection.
+# LOW-RAM-ONLY GATE (1.3.13): the GC tune — GOMEMLIMIT + GOGC=50 — applies only when
+# MemTotal is BELOW this many MiB; roomier boxes launch the daemon with stock Go GC.
+# Why: GOGC=50 makes the collector run twice as often as stock and that CPU comes
+# straight out of the crypto workers — a measurable throughput cut on boxes that were
+# never at OOM risk (field report: strong boxes got slower after the tune). Low-RAM
+# boxes keep the caps: every field OOM was a <=512MB box (RT-AX82U 512MB, RT-AC68U
+# 256MB — MemTotal reads ~440-510MB there), while 1GB-class boxes report ~880MB+.
+#
+# The BUFFER POOL CAP (PreallocatedBuffersPerPool=1024, compiled into the daemon) stays
+# on ALL boxes — it is NOT just low-RAM armor, it is load-bearing FLOW CONTROL. 1.3.13
+# un-capped it on roomy boxes (WG_PREALLOCATED_BUFFERS_PER_POOL=0) and a 2GB RT-BE88U
+# field-crashed within minutes: awgs-go's UDP-TX leg to a Wi-Fi peer drains far slower
+# than local RX fills (the "10 Mbit down / 364 Mbit up" asymmetry), so without the cap
+# the heap ballooned at line rate and the Go runtime OOM-aborted — 3 incidents in 6 min
+# (2026-07-16, incidents.log), watchdog crash-looped the server. With the cap the same
+# imbalance just throttles (WaitPool.Get blocks the reader): slow but ALIVE. Reverted in
+# 1.3.14: launch_daemon never sets the env; the -poolcfg daemon keeps honoring
+# WG_PREALLOCATED_BUFFERS_PER_POOL for MANUAL experiments only.
 AWG_GOTUNE_BELOW_MIB=768
 
 # TRUE when the box has enough RAM to run the daemon in the stock upstream profile
@@ -3410,7 +3416,7 @@ compute_go_memlimit(){
 # launch_daemon actually applies (client and server share both).
 go_tune_desc(){
     if box_is_roomy; then
-        printf 'stock upstream profile (MemTotal >= %sMiB): no GOMEMLIMIT/GOGC caps, buffer pool un-capped (WG_PREALLOCATED_BUFFERS_PER_POOL=0, honored by the -poolcfg daemon) — full throughput' "$AWG_GOTUNE_BELOW_MIB"
+        printf 'stock Go GC (MemTotal >= %sMiB: no GOMEMLIMIT/GOGC caps) + buffer pool capped at 1024 (compiled default — flow control that keeps a slow egress path from ballooning the heap)' "$AWG_GOTUNE_BELOW_MIB"
     else
         _gtd=$(compute_go_memlimit)
         printf 'GOMEMLIMIT=%s GOGC=%s + buffer pool capped at 1024 (low-RAM box, MemTotal < %sMiB — OOM protection under load)' "${_gtd:-unset}" "$AWG_GOGC" "$AWG_GOTUNE_BELOW_MIB"
@@ -3437,12 +3443,9 @@ launch_daemon(){
     # literal prefix) so it never leaks to the parent and so an empty value simply leaves
     # the env untouched.
     _glim=$(compute_go_memlimit)
-    # Roomy boxes additionally run the daemon with an UN-CAPPED buffer pool — the stock
-    # upstream Linux profile (the compiled router default is 1024). The -poolcfg daemon
-    # reads this env at start; an older daemon silently ignores it and stays capped —
-    # safe either way. Low-RAM boxes: env unset, the compiled 1024 cap stands.
-    _pool=''
-    box_is_roomy && _pool=0
+    # NB: the buffer-pool cap is deliberately NOT touched here — the compiled 1024
+    # default applies everywhere (see the AWG_GOTUNE_BELOW_MIB block: un-capping
+    # field-crashed a 2GB box in minutes; the cap is flow control, not a RAM knob).
     # WG_PROCESS_FOREGROUND=1: without it amneziawg-go DAEMONIZES — the process we launch is
     # only a short-lived parent that forks the real daemon and exits 0 once the device is up.
     # The wrapper then recorded THAT exit ("[daemon exited rc=0]" on every successful start —
@@ -3453,7 +3456,6 @@ launch_daemon(){
     # literal prefixes in explicit branches (not `${1:+LOG_LEVEL=$1} cmd`).
     if [ -n "$1" ]; then
         ( [ -n "$_glim" ] && export GOMEMLIMIT="$_glim" GOGC="$AWG_GOGC"
-          [ -n "$_pool" ] && export WG_PREALLOCATED_BUFFERS_PER_POOL="$_pool"
           WG_PROCESS_FOREGROUND=1 LOG_LEVEL="$1" "$AWG_GO" "$IFACE" > $DAEMON_LOG 2>&1
           _rc=$?
           echo "rc=$_rc at $(date '+%H:%M:%S')" > $DAEMON_RC
@@ -3461,7 +3463,6 @@ launch_daemon(){
           record_daemon_oom "$_rc" "$_glim" ) &
     else
         ( [ -n "$_glim" ] && export GOMEMLIMIT="$_glim" GOGC="$AWG_GOGC"
-          [ -n "$_pool" ] && export WG_PREALLOCATED_BUFFERS_PER_POOL="$_pool"
           WG_PROCESS_FOREGROUND=1 "$AWG_GO" "$IFACE" > $DAEMON_LOG 2>&1
           _rc=$?
           echo "rc=$_rc at $(date '+%H:%M:%S')" > $DAEMON_RC
