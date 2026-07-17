@@ -2701,7 +2701,6 @@ function geoHydratePolicies(){
         var pid = list[k].id;
         geoLoadedIds.push(pid);
         var vip = (custom_settings[geoKeyJs(pid,'v2fly_ip')] || '').replace(/["']/g, '');
-        if(!vip && pid === 1) vip = v2flyIpList.join(',');   // legacy default-display for policy 1
         geoPolicies.push({
             id: pid,
             name: list[k].name || encodeURIComponent(pid === 1 ? T('GEO_TAB_DEFAULT') : T('GEO_TAB_DEFAULT_NAME', pid)),

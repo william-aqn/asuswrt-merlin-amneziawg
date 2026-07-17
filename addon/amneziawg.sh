@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.4.1"
+AWG_VERSION="1.4.2"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -87,7 +87,6 @@ AWGS_IFACE="awgs0"
 AWGS_SCRIPT="$ADDON_DIR/amneziawg_server.sh"
 GEOLOCK="/tmp/.awg_geolock"   # long-running background geo-download mutex (separate from LOCKDIR)
 V2FLY_GEOIP_BASE="https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text"
-GEOIP_SERVICES="telegram google facebook twitter netflix cloudflare fastly cloudfront"
 
 # ROOT-CAUSE FIX for "Entware coreutils broken" false alarms: the firmware's httpd exports
 # LD_LIBRARY_PATH=/lib:/usr/lib and EVERY child inherits it (httpd → service-event → this script
@@ -1055,15 +1054,16 @@ download_geoip_service(){
     return 1
 }
 
-# Selected GeoIP services for policy <id> (default id 1). The legacy default GEOIP_SERVICES
-# fallback applies ONLY to id 1 (back-compat for installs with an empty field); additional
-# policies treat an empty field as "nothing selected".
+# Selected GeoIP services for policy <id> (default id 1) — read from settings ONLY: an empty
+# field means "nothing selected" for EVERY policy, id 1 included. The legacy implicit default
+# (telegram google facebook twitter netflix cloudflare fastly cloudfront) was removed in 1.4.2:
+# in exclude (direct) mode it silently forced those services + three major CDNs DIRECT past the
+# VPN, and the user couldn't turn it off — a cleared field just re-armed the fallback (field
+# case: TUF-AX3000_V2 @1.4.1, "banks direct, rest via VPN" broken by it). Whoever wants the old
+# set types it into the field explicitly.
 selected_geoip(){
-    local id="${1:-1}" s
-    s=$(get_setting "$(geo_key "$id" v2fly_ip)" | tr ',' ' ' | tr 'A-Z' 'a-z')
-    s=$(echo $s)
-    [ -z "$s" ] && [ "$id" = 1 ] && s="$GEOIP_SERVICES"
-    echo "$s"
+    local id="${1:-1}"
+    echo $(get_setting "$(geo_key "$id" v2fly_ip)" | tr ',' ' ' | tr 'A-Z' 'a-z')
 }
 
 # Remove shared GeoIP .cidr files no longer selected by ANY policy (prune by union).
