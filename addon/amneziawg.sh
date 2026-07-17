@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.4.2"
+AWG_VERSION="1.4.3"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1819,6 +1819,29 @@ dns_ok(){
     return 1
 }
 
+# All IPv4 answers for one name via the router's own dnsmasq (127.0.0.1), one per line. Feeds the
+# self-feeding geo pre-resolve (1.4.3). Format-agnostic across the fleet's THREE nslookup flavors
+# (old busybox "Address 1: <ip> <host>", new busybox "Address: <ip>", Entware BIND "Address: <ip>"
+# — /opt/bin can shadow busybox, and the AWG_PATH_SANE=0 fallback swaps flavors again): only lines
+# AFTER the first "Name:" marker count — that skips the resolver's own Server/Address header —
+# then every token is shape+octet-validated. dns_ok's `^Name:` grep is proof the marker exists on
+# every flavor here. AAAA tokens fail the IPv4 shape test naturally; 0.0.0.0 and loopback answers
+# are dropped (AdGuard-family upstreams answer 0.0.0.0 for blocked names — routing those would
+# just add noise entries). No busybox-awk landmines: no {n,m} intervals, no gawk-isms.
+resolve_domain_v4(){
+    nslookup "$1" 127.0.0.1 2>/dev/null | awk '
+        /^Name:/ { seen = 1; next }
+        seen && $1 ~ /^Address/ {
+            for (i = 2; i <= NF; i++) {
+                if ($i !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) continue
+                split($i, o, ".")
+                if (o[1]+0 > 255 || o[2]+0 > 255 || o[3]+0 > 255 || o[4]+0 > 255) continue
+                if (o[1] == "127" || $i == "0.0.0.0") continue
+                print $i
+            }
+        }'
+}
+
 setup_ipv6_block(){
     local ipv6_svc
     ipv6_svc=$(nvram get ipv6_service 2>/dev/null)
@@ -2228,33 +2251,71 @@ reload_dnsmasq(){
         # it, so they never touch the DNAT. setup_dns_interception self-guards on dnsmasq up.
         [ "$1" = "1" ] && setup_dns_interception
         # Only when the conf actually carries domain rules: a filter-AAAA-only conf (CIDR-only
-        # geo selection, no domains) has nothing to pre-resolve, and the "ipset UNCHANGED —
-        # domain IPs are NOT landing in the set" warning it produced was pure false alarm.
+        # geo selection, no domains) has nothing to pre-resolve.
         if [ -f "$DNSMASQ_AWG_CONF" ] && grep -q '^ipset=' "$DNSMASQ_AWG_CONF" 2>/dev/null; then
-            # Snapshot the LIVE geo ipset entry count before/after the pre-resolve so the log shows
-            # whether domains actually landed in the set — not just that the ipset= RULES were
-            # written ("Firewall configured: N IPs, M domains" is a build-time snapshot + a rule
-            # tally, NOT proof of population). A no-growth result is the fingerprint of "domains
-            # don't route": either the resolver is down, or clients/the geo conf never feed the set.
+            # SELF-FEEDING pre-resolve (1.4.3). It used to only fire queries through dnsmasq and
+            # count on dnsmasq's ipset hook to populate the sets — but that hook runs ONLY on
+            # FORWARDED (upstream) answers, never on cache hits. Every firewall rebuild destroys
+            # + re-creates the sets with STATIC content only, and when the geo conf is unchanged
+            # the restart above is rightly skipped (md5 sig) — so with a warm dnsmasq cache the
+            # wiped domain IPs could NOT return until their TTLs expired: excluded domains leaked
+            # into the VPN (exclude mode) / geo domains fell out of it (include mode) for minutes
+            # to hours after every Apply. Field case TUF-AX3000_V2 @1.4.1: the cold-cache run fed
+            # +213 entries, the warm-cache rebuild 17 min later only +42 — the other ~170 bank
+            # domains routed via VPN. (The old "a restart usually fixes it" advice worked ONLY
+            # because a restart cools the cache — it misdiagnosed the cause as an unloaded conf.)
+            # Now each answer is parsed (resolve_domain_v4) and added to the line's own target
+            # set(s) BY US, cache hit or not; dnsmasq's hook still covers live client traffic
+            # afterwards. Adds are one-by-one WITHOUT -exist/`restore -!`: the exist flag RESETS
+            # the timeout of an already-present entry, which would demote the user's permanent
+            # (timeout 0) custom IPs to expiring 24h ones — a plain add's EEXIST is swallowed
+            # instead, exactly how dnsmasq's own hook behaves. Parallel jobs append to ONE shared
+            # O_APPEND file (each echo is a single short atomic write — no interleaving, no
+            # per-job file fan that a huge domain list would turn into a giant cat glob).
             _pre_ips=$(geo_ipset_total)
+            _prl="/tmp/.awg_prerslv.$$"
+            # Pre-clean: .out below is APPENDED to, and $$ here is the PARENT's pid (the known
+            # subshell gotcha) — a killed-mid-run predecessor from the same parent must not leak
+            # its half-written pairs into this run.
+            rm -f "${_prl}".* 2>/dev/null
+            # "domain set1,set2" pairs straight from the conf we just built ($NF = the comma-set
+            # target list; domains were charset-validated at emit time, so plain read splits
+            # safely — and the list file, not a pipe, keeps the loop in THIS shell so the final
+            # `wait` really covers the last sub-10 batch (the piped version orphaned it).
+            awk -F/ '/^ipset=/{for(i=2;i<NF;i++)print $i " " $NF}' "$DNSMASQ_AWG_CONF" > "${_prl}.lst"
             bg_count=0
-            awk -F/ '/^ipset=/{for(i=2;i<NF;i++)print $i}' "$DNSMASQ_AWG_CONF" | while read -r domain; do
+            while read -r domain dsets; do
                 [ -z "$domain" ] && continue
-                nslookup "$domain" 127.0.0.1 >/dev/null 2>&1 &
+                (
+                    for _rip in $(resolve_domain_v4 "$domain"); do
+                        for _rst in $(echo "$dsets" | tr ',' ' '); do
+                            [ -n "$_rst" ] && echo "$_rst $_rip"
+                        done
+                    done >> "${_prl}.out"
+                ) &
                 bg_count=$((bg_count + 1))
                 [ $bg_count -ge 10 ] && { wait; bg_count=0; }
-            done
+            done < "${_prl}.lst"
             wait
+            sort -u "${_prl}.out" 2>/dev/null > "${_prl}.add"
+            _fed=0; _tried=0
+            while read -r _rst _rip; do
+                [ -n "$_rip" ] || continue
+                _tried=$((_tried + 1))
+                ipset add "$_rst" "$_rip" 2>/dev/null && _fed=$((_fed + 1))
+            done < "${_prl}.add"
+            rm -f "${_prl}".* 2>/dev/null
             _post_ips=$(geo_ipset_total)
-            if [ "$_post_ips" != "$_pre_ips" ]; then
-                # "changed", not "grew": with timeout>0 domain entries the count can legitimately
-                # go DOWN between snapshots (expiry outpacing adds) — the old "grew 24189 -> 22253"
-                # wording confused reports. Both directions mean the resolver IS feeding the sets.
-                log_msg "Geo domain pre-resolve: ipset ${_pre_ips} -> ${_post_ips} entries (resolver feeding the sets$([ "$_post_ips" -lt "$_pre_ips" ] 2>/dev/null && echo '; net shrink = old entries expiring faster than adds'))"
+            if [ "$_tried" -gt 0 ]; then
+                # _fed = entries the add actually created; the rest of _tried already existed
+                # (EEXIST) — e.g. a second run right after a successful one legitimately logs
+                # "0 new of N". Live count ("Firewall configured: N IPs" is a build-time tally,
+                # not proof of population — THIS line is the proof).
+                log_msg "Geo domain pre-resolve: self-fed $_fed new of $_tried resolved set entries (ipset ${_pre_ips} -> ${_post_ips}) — cache-proof, domain routing active without a dnsmasq restart"
             elif dns_ok; then
-                log_msg "Geo domain pre-resolve: ipset UNCHANGED at ${_pre_ips} — resolver answers real names but domain IPs are NOT landing in the set (geo conf not loaded into dnsmasq, or restart was skipped) — a restart usually fixes it"
+                log_msg "Geo domain pre-resolve: resolver answers real names but returned no usable IPv4 for any geo domain (upstream blocking/empty answers?) — domains will fill on later client queries"
             else
-                log_msg "Geo domain pre-resolve: ipset UNCHANGED at ${_pre_ips} — router DNS not resolving real names yet (WAN/upstream/DoT not ready); domains will fill on later client queries"
+                log_msg "Geo domain pre-resolve: router DNS not resolving real names yet (WAN/upstream/DoT not ready); domains will fill on later client queries"
             fi
         fi
     ) </dev/null >/dev/null 2>&1 &
