@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.3.16"
+AWG_VERSION="1.3.17"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1733,18 +1733,38 @@ drain_ip_rules(){
 # whole rebuild. $@ = the spec after `ip rule` (e.g. `from 1.2.3.4 lookup main prio 97`).
 ip_rule_replace(){
     # Same old-kernel hazard as drain_ip_rules: a bare `ip rule del "$@"` when this exact rule
-    # doesn't exist yet mis-deletes a system rule on Broadcom 2.6.36. Our specs always carry a
-    # `prio N` (N in 97-100); delete ONLY while a rule actually exists at that priority (system
-    # rules sit at 0/32766/32767, so `^N:` can never match one), then add exactly one.
-    local _pr _g=0
+    # doesn't exist mis-deletes a system rule on Broadcom 2.6.36 — so deletion happens ONLY
+    # after this exact rule is confirmed present (then `del <full spec>` removes exactly
+    # itself; the no-match hazard never fires). "This exact rule" = same priority AND the
+    # same from/fwmark selector.
+    #
+    # 1.3.17 FIX: 1.2.61-1.3.16 drained by PRIORITY ALONE (`ip rule del prio N` while any
+    # `^N:` existed) — but several vpn_all devices SHARE prio 99 (direct exclusions share 97),
+    # so each device's replace wiped the previous device's rule and only the LAST one in
+    # clients.list kept routing. Field: RT-AX88U — journal said "PS5 -> VPN (all)" while
+    # `ip rule` had only the Switch's rule; the PS5 leaked to WAN ("works only when the
+    # DEFAULT policy is vpn_all" — the fwmark path needs no per-device rule).
+    local _pr _sel _g=0
     _pr=$(printf '%s ' "$@" | sed -n 's/.*[[:space:]]prio[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p')
-    if [ -n "$_pr" ]; then
+    # Selector = the leading `from <ip>` / `fwmark <mark>` pair, dots escaped for grep.
+    # (Two plain seds, not one with \| alternation — busybox sed support for \| is shaky.)
+    _sel=$(printf '%s ' "$@" | sed -n 's/^\(from[[:space:]][^ ]*\).*/\1/p')
+    [ -z "$_sel" ] && _sel=$(printf '%s ' "$@" | sed -n 's/^\(fwmark[[:space:]][^ ]*\).*/\1/p')
+    _sel=$(printf '%s' "$_sel" | sed 's/\./\\./g')
+    if [ -n "$_pr" ] && [ -n "$_sel" ]; then
+        while [ $_g -lt 60 ] && ip rule show 2>/dev/null | grep "^$_pr:" | grep -q "[[:space:]]${_sel}[[:space:]]"; do
+            ip rule del "$@" 2>/dev/null || break
+            _g=$((_g + 1))
+        done
+    elif [ -n "$_pr" ]; then
+        # No from/fwmark selector in the spec (not used by current call sites): fall back to
+        # prio-scoped draining — correct while such a priority hosts only one rule.
         while [ $_g -lt 60 ] && ip rule show 2>/dev/null | grep -q "^$_pr:[[:space:]]"; do
             ip rule del prio "$_pr" 2>/dev/null || break
             _g=$((_g + 1))
         done
     fi
-    ip rule add "$@"
+    ip rule add "$@" 2>/dev/null || log_msg "WARNING: ip rule add failed: $*"
 }
 
 cleanup_firewall(){
