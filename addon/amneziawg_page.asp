@@ -69,6 +69,45 @@
 
 .awg-btn { margin: 0 4px; }
 
+/* Config-profile bar (multi-config): one row per slot, rendered by pfRenderBar(). */
+.awg-pf-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 5px 8px;
+    margin: 3px 0;
+    border: 1px solid #3a4548;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.03);
+    cursor: pointer;
+}
+.awg-pf-row.sel {
+    border-color: #2e88c7;
+    background: rgba(46,136,199,0.10);
+}
+.awg-pf-badge {
+    font-size: 10px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    background: #1a6e2e;
+    border: 1px solid #2a8b42;
+    color: #fff;
+    white-space: nowrap;
+}
+.awg-pf-badge.auto { background: #b8860b; border-color: #daa520; }
+.awg-pf-ep {
+    color: #b6bdc7;
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 230px;
+}
+
 /* Field help text. #666 was near-invisible on the dark ROG theme; use a readable light
    gray (still secondary vs the white labels). code = the inline format/example sample. */
 .awg-hint {
@@ -623,6 +662,28 @@ en: {
     HIST_R_REBOOT: "router reboot",
     HIST_R_INTERRUPTED: "interrupted (crash)",
     HIST_R_AUTO: "auto stop",
+    HIST_R_SWITCH: "profile switch",
+    HIST_R_FAILOVER: "auto-switch to a reserve profile",
+    TH_PROFILE: "Profile",
+    PF_UNNAMED: "Profile {0}",
+    LBL_PF_ACTIVE: "Active",
+    LBL_PF_AUTO: "auto (failover)",
+    LBL_PF_EMPTY: "empty — import a .conf or fill the form below",
+    LBL_PF_FO: "failover",
+    BTN_PF_SWITCH: "Switch to",
+    BTN_PF_ADD: "+ Add profile",
+    TITLE_PF_EDIT: "Click the row to edit this profile in the form below",
+    TITLE_PF_FO: "Participates in automatic failover",
+    TITLE_PF_DELETE: "Delete profile",
+    LBL_PF_FAILOVER: "Auto-switch profiles on failure",
+    HINT_PF_BAR: "The form below edits the highlighted profile; «Apply» saves it. «Switch to» saves everything AND restarts the tunnel on that profile.",
+    HINT_PF_FAILOVER: "Auto-switch: if the started tunnel fails the ~60s connectivity check, the next profile is tried in a circle (see the journal). A reboot or a manual switch returns to your chosen profile.",
+    MSG_PF_SWITCH_CONFIRM: "Apply settings and switch to profile \"{0}\"? The tunnel will be restarted.",
+    MSG_PF_DELETE_CONFIRM: "Delete profile \"{0}\"? Its saved fields are removed after you press «Apply».",
+    MSG_PF_DEL_ACTIVE: "Can't delete the active profile — switch to another one first.",
+    MSG_PF_UNSAVED: "Profile \"{0}\" has unsaved edits in the form — discard them?",
+    MSG_PF_FULL: "All {0} profile slots are in use.",
+    MSG_SETTINGS_TOO_BIG: "Settings are too large to save ({0} KB — the firmware caps one save at ~50 KB): shorten I1-I5 junk data or delete an unused profile.",
     SEC_CONFIG: "Configuration",
     BTN_IMPORT_CONF_FILE: "Import a .conf file from the Amnezia VPN client",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— obfuscation parameters (usually filled in by importing a config) ▾</span>",
@@ -1016,6 +1077,28 @@ ru: {
     HIST_R_REBOOT: "перезагрузка роутера",
     HIST_R_INTERRUPTED: "прервано (сбой)",
     HIST_R_AUTO: "автоостановка",
+    HIST_R_SWITCH: "переключение профиля",
+    HIST_R_FAILOVER: "автопереключение на резервный профиль",
+    TH_PROFILE: "Профиль",
+    PF_UNNAMED: "Профиль {0}",
+    LBL_PF_ACTIVE: "Активен",
+    LBL_PF_AUTO: "авто (failover)",
+    LBL_PF_EMPTY: "пусто — импортируйте .conf или заполните форму ниже",
+    LBL_PF_FO: "failover",
+    BTN_PF_SWITCH: "Переключиться",
+    BTN_PF_ADD: "+ Добавить профиль",
+    TITLE_PF_EDIT: "Клик по строке — редактировать этот профиль в форме ниже",
+    TITLE_PF_FO: "Участвует в автопереключении",
+    TITLE_PF_DELETE: "Удалить профиль",
+    LBL_PF_FAILOVER: "Автопереключение профилей при отказе",
+    HINT_PF_BAR: "Форма ниже редактирует подсвеченный профиль; «Применить» сохраняет его. «Переключиться» сохраняет всё И перезапускает туннель на выбранном профиле.",
+    HINT_PF_FAILOVER: "Автопереключение: если запущенный туннель не проходит ~60-сек проверку связности, по кругу пробуется следующий профиль (см. журнал). Перезагрузка или ручное переключение возвращают выбранный вами профиль.",
+    MSG_PF_SWITCH_CONFIRM: "Применить настройки и переключиться на профиль «{0}»? Туннель будет перезапущен.",
+    MSG_PF_DELETE_CONFIRM: "Удалить профиль «{0}»? Его сохранённые поля будут удалены после «Применить».",
+    MSG_PF_DEL_ACTIVE: "Нельзя удалить активный профиль — сначала переключитесь на другой.",
+    MSG_PF_UNSAVED: "У профиля «{0}» есть несохранённые правки в форме — отбросить их?",
+    MSG_PF_FULL: "Все {0} слотов профилей заняты.",
+    MSG_SETTINGS_TOO_BIG: "Настройки слишком велики для сохранения ({0} КБ — прошивка ограничивает одно сохранение ~50 КБ): сократите I1-I5 или удалите неиспользуемый профиль.",
     SEC_CONFIG: "Конфигурация",
     BTN_IMPORT_CONF_FILE: "Импорт .conf-файла из клиента Amnezia VPN",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— параметры обфускации (обычно заполняются импортом конфига) ▾</span>",
@@ -1846,6 +1929,298 @@ var AWG_LEGACY_FIELDS = {
     awg_peer_p2:  'awg_peer_psk'
 };
 
+// ==================== Config profiles (multi-config) ====================
+// A profile is a numbered slot of the client config fields. Slot 1 = the legacy unsuffixed
+// keys (awg_iface_p1, …) so existing installs upgrade with zero migration; slots 2..MAX use
+// awg_pf<N>_<field>. META (name / failover participation) is always slot-prefixed. Mirrors
+// pf_key() in amneziawg.sh — keep the two in sync.
+var AWG_PF_MAX = 5;
+// DOM id = 'awg_' + suffix for every data field of the config form (I1-I5 ride separately
+// as the chunked base64 'initdata', see pfStoreForm/pfLoadForm).
+var AWG_PF_FIELDS = ['iface_p1','address','listenport','mtu','dns',
+                     'peer_p1','peer_p2','peer_endpoint','peer_allowedips','peer_keepalive',
+                     'jc','jmin','jmax','s1','s2','s3','s4','h1','h2','h3','h4'];
+var awgPfSel = 1;         // slot the form currently edits
+var awgPfSnapshot = '';   // form state at load — detects unsaved edits on slot change
+var awgPfStatus = null;   // last status.profile from the backend (active/user/auto)
+var awgPfSwitchTo = 0;    // pending target of a «Switch to» submit (select it once posted)
+var awgPfRenderKey = '';  // active|auto of the last bar render (skip needless re-renders)
+
+function pfKey(slot, field){
+    if(field === 'name' || field === 'fo') return 'awg_pf' + slot + '_' + field;
+    return (slot == 1) ? ('awg_' + field) : ('awg_pf' + slot + '_' + field);
+}
+function pfUser(){
+    var p = parseInt(custom_settings.awg_profile_active, 10);
+    return (p >= 1 && p <= AWG_PF_MAX) ? p : 1;
+}
+// The slot the tunnel actually runs (failover override included) — from the last status
+// poll; falls back to the persisted user choice before the first poll lands.
+function pfActiveNow(){
+    return (awgPfStatus && awgPfStatus.active >= 1) ? awgPfStatus.active : pfUser();
+}
+function pfConfigured(slot){
+    return !!(custom_settings[pfKey(slot, 'iface_p1')]) && !!(custom_settings[pfKey(slot, 'peer_endpoint')]);
+}
+function pfName(slot){
+    var nm = custom_settings[pfKey(slot, 'name')];
+    return nm ? String(nm) : T('PF_UNNAMED', slot);
+}
+function pfInitB64(slot){
+    var b64 = custom_settings[pfKey(slot, 'initdata')] || '';
+    for(var ic = 1; ic <= 30 && custom_settings[pfKey(slot, 'initdata') + ic] != undefined; ic++)
+        b64 += custom_settings[pfKey(slot, 'initdata') + ic];
+    return b64;
+}
+function pfFormSerialize(){
+    var s = '';
+    for(var i = 0; i < AWG_PF_FIELDS.length; i++){
+        var el = document.getElementById('awg_' + AWG_PF_FIELDS[i]);
+        s += (el ? el.value : '') + '\u0001';
+    }
+    for(var iz = 1; iz <= 5; iz++){
+        var e2 = document.getElementById('awg_i' + iz);
+        s += (e2 ? e2.value : '') + '\u0001';
+    }
+    return s;
+}
+
+// Fill the config form from a slot's stored values (absent keys clear the field).
+function pfLoadForm(slot){
+    for(var i = 0; i < AWG_PF_FIELDS.length; i++){
+        var k = pfKey(slot, AWG_PF_FIELDS[i]);
+        setVal('awg_' + AWG_PF_FIELDS[i], custom_settings[k] != undefined ? custom_settings[k] : '');
+    }
+    for(var iz = 1; iz <= 5; iz++) setVal('awg_i' + iz, '');
+    var b64 = pfInitB64(slot);
+    if(b64){
+        try {
+            var initLines = atob(b64).split('\n');
+            for(var il = 0; il < initLines.length; il++){
+                var ip = initLines[il].split('=');
+                if(ip.length >= 2){
+                    var ik = ip[0].trim().toLowerCase();
+                    if(ik === 'i1' || ik === 'i2' || ik === 'i3' || ik === 'i4' || ik === 'i5')
+                        setVal('awg_' + ik, ip.slice(1).join('=').trim());
+                }
+            }
+        } catch(e){}
+    }
+    awgPfSnapshot = pfFormSerialize();
+    pfRenderBar();
+    updateFirstRun();
+}
+
+// Remove every stored key of a slot from the local model (persisted by the next Apply —
+// the settings POST replaces the whole store, so deleted keys vanish on the router too).
+function pfWipeSlot(slot){
+    for(var i = 0; i < AWG_PF_FIELDS.length; i++) delete custom_settings[pfKey(slot, AWG_PF_FIELDS[i])];
+    delete custom_settings[pfKey(slot, 'initdata')];
+    for(var ck = 1; ck <= 30; ck++) delete custom_settings[pfKey(slot, 'initdata') + ck];
+    delete custom_settings[pfKey(slot, 'name')];
+    delete custom_settings[pfKey(slot, 'fo')];
+}
+
+// Serialize the config form into the slot's keys. Returns false when validation blocks the
+// save (field flagged). A fully-empty form is allowed for a NON-active slot — it wipes the
+// slot (that's how a delete gets persisted) — but the active slot must stay complete.
+function pfStoreForm(slot){
+    var vals = {};
+    for(var i = 0; i < AWG_PF_FIELDS.length; i++){
+        var el = document.getElementById('awg_' + AWG_PF_FIELDS[i]);
+        if(!el) continue;
+        var v = el.value;
+        // Remove spaces from comma-separated values (Merlin truncates at spaces)
+        if(AWG_PF_FIELDS[i] === 'peer_allowedips' || AWG_PF_FIELDS[i] === 'address' || AWG_PF_FIELDS[i] === 'dns')
+            v = v.replace(/\s+/g, '');
+        vals[AWG_PF_FIELDS[i]] = v;
+    }
+    var pk = vals.iface_p1 || '', pubk = vals.peer_p1 || '', ep = vals.peer_endpoint || '';
+    if(!pk && !pubk && !ep){
+        if(slot == pfActiveNow()){
+            awgFlagField('awg_iface_p1', T('MSG_REQUIRED_FIELDS'));
+            return false;
+        }
+        pfWipeSlot(slot);
+        awgPfSnapshot = pfFormSerialize();
+        return true;
+    }
+    if(!pk || !pubk || !ep){
+        awgFlagField(!pk ? 'awg_iface_p1' : (!pubk ? 'awg_peer_p1' : 'awg_peer_endpoint'), T('MSG_REQUIRED_FIELDS'));
+        return false;
+    }
+    if(pk.length !== 44 || pubk.length !== 44){
+        awgFlagField(pk.length !== 44 ? 'awg_iface_p1' : 'awg_peer_p1', T('MSG_BAD_KEY_FORMAT'));
+        return false;
+    }
+    if(!/:\d{1,5}$/.test(ep)){
+        awgFlagField('awg_peer_endpoint', T('MSG_ENDPOINT_NEEDS_PORT'));
+        return false;
+    }
+    // Sanity-check I1-I5 before saving: an AmneziaWG obfuscation tag is `<…>`, so a value with
+    // a '<' must balance its brackets and end with '>'. The classic failure is a TRUNCATED
+    // value that lost its closing '>' (incomplete paste / an old storage cap), which
+    // amneziawg-go then rejects with "failed to parse I1: missing enclosing >".
+    for(var iz = 1; iz <= 5; iz++){
+        var izv = document.getElementById('awg_i' + iz);
+        var izs = izv ? String(izv.value || '').trim() : '';
+        if(izs && izs.indexOf('<') !== -1){
+            var izo = (izs.match(/</g) || []).length, izc = (izs.match(/>/g) || []).length;
+            if(izo !== izc || izs.charAt(0) !== '<' || izs.charAt(izs.length - 1) !== '>'){
+                alert(T('MSG_IPARAM_MALFORMED', 'I' + iz));
+                if(izv) izv.focus();
+                return false;
+            }
+        }
+    }
+    // I1-I5 as base64 (contain HTML-unsafe chars)
+    var initData = '';
+    for(var ix = 1; ix <= 5; ix++){
+        var iv = document.getElementById('awg_i' + ix);
+        if(iv && iv.value) initData += 'I' + ix + ' = ' + iv.value + '\n';
+    }
+    var initB64;
+    try {
+        initB64 = initData ? btoa(initData) : '';
+    } catch(e){
+        alert(T('MSG_INIT_NON_ASCII'));
+        return false;
+    }
+    for(var i2 = 0; i2 < AWG_PF_FIELDS.length; i2++)
+        custom_settings[pfKey(slot, AWG_PF_FIELDS[i2])] = vals[AWG_PF_FIELDS[i2]];
+    // The firmware caps ONE custom_settings value at ~3000 chars; a long I-param's base64
+    // overflows that and is silently truncated (the closing '>' is lost → setconf rejects
+    // "missing enclosing >"). Split the base64 across <initdata> + <initdata>1 + … (<=2900
+    // each, PER SLOT) and clear any stale chunks from a previous, longer value.
+    for(var ck = 1; ck <= 30; ck++) delete custom_settings[pfKey(slot, 'initdata') + ck];
+    var ICHUNK = 2900;
+    if(initB64.length <= ICHUNK){
+        custom_settings[pfKey(slot, 'initdata')] = initB64;
+    } else {
+        custom_settings[pfKey(slot, 'initdata')] = initB64.substr(0, ICHUNK);
+        for(var cj = 1; cj * ICHUNK < initB64.length; cj++)
+            custom_settings[pfKey(slot, 'initdata') + cj] = initB64.substr(cj * ICHUNK, ICHUNK);
+    }
+    awgPfSnapshot = pfFormSerialize();
+    return true;
+}
+
+// Pull the bar's editable state (names, per-slot failover flags, the global toggle) into the
+// local model. Runs before every bar re-render and on Apply, so typed-but-unsaved values
+// survive a re-render and always ride the next POST.
+function pfHarvestBar(){
+    for(var n = 1; n <= AWG_PF_MAX; n++){
+        var ne = document.getElementById('awg_pf_name_' + n);
+        if(ne){
+            var v = ne.value.replace(/[|;]/g, ' ').trim().slice(0, 32);
+            if(v) custom_settings[pfKey(n, 'name')] = v; else delete custom_settings[pfKey(n, 'name')];
+        }
+        var fe = document.getElementById('awg_pf_fo_' + n);
+        if(fe){
+            // Only configured slots carry a persisted flag — else an empty-form "delete"
+            // followed by this harvest would resurrect an orphan awg_pfN_fo key.
+            if(pfConfigured(n)) custom_settings[pfKey(n, 'fo')] = fe.checked ? '1' : '0';
+            else delete custom_settings[pfKey(n, 'fo')];
+        }
+    }
+    var fw = document.getElementById('awg_failover');
+    if(fw) custom_settings.awg_failover = fw.checked ? '1' : '0';
+}
+
+function pfRenderBar(){
+    var bar = document.getElementById('awg_pf_bar');
+    if(!bar) return;
+    pfHarvestBar();
+    var active = pfActiveNow();
+    var auto = !!(awgPfStatus && awgPfStatus.auto);
+    awgPfRenderKey = active + '|' + (auto ? 1 : 0);
+    var trash = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg>';
+    var html = '';
+    var used = 0;
+    for(var n = 1; n <= AWG_PF_MAX; n++){
+        var cfg = pfConfigured(n);
+        if(cfg) used++;
+        if(!cfg && n !== awgPfSel) continue;   // show configured slots + the one being edited
+        // The edited slot shows the LIVE form endpoint (a just-imported .conf is visible
+        // before Apply); other slots show their stored value.
+        var ep = (n === awgPfSel)
+            ? (((document.getElementById('awg_peer_endpoint') || {}).value) || '')
+            : (custom_settings[pfKey(n, 'peer_endpoint')] || '');
+        var foChecked = (custom_settings[pfKey(n, 'fo')] != '0') ? ' checked' : '';
+        html += '<div class="awg-pf-row' + (n === awgPfSel ? ' sel' : '') + '" onclick="pfSelect(' + n + ');" title="' + escHtml(T('TITLE_PF_EDIT')) + '">' +
+            '<b style="min-width:14px; text-align:center;">' + n + '</b>' +
+            '<input type="text" class="input_25_table" style="width:150px;" id="awg_pf_name_' + n + '" maxlength="32" value="' + escHtml(custom_settings[pfKey(n, 'name')] || '') + '" placeholder="' + escHtml(T('PF_UNNAMED', n)) + '" onclick="event.stopPropagation();">' +
+            '<span class="awg-pf-ep">' + (ep ? escHtml(ep) : '<i>' + escHtml(T('LBL_PF_EMPTY')) + '</i>') + '</span>' +
+            '<span style="margin-left:auto; display:flex; align-items:center; gap:10px;" onclick="event.stopPropagation();">' +
+                '<label style="font-size:11px; color:#b6bdc7; white-space:nowrap; cursor:pointer;" title="' + escHtml(T('TITLE_PF_FO')) + '"><input type="checkbox" id="awg_pf_fo_' + n + '"' + foChecked + '> ' + escHtml(T('LBL_PF_FO')) + '</label>' +
+                (n === active
+                    ? '<span class="awg-pf-badge' + (auto ? ' auto' : '') + '">' + escHtml(T('LBL_PF_ACTIVE')) + (auto ? ' · ' + escHtml(T('LBL_PF_AUTO')) : '') + '</span>'
+                    : (cfg ? '<input type="button" class="button_gen" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;" value="' + escHtml(T('BTN_PF_SWITCH')) + '" onclick="pfSwitch(' + n + ');">' : '')) +
+                '<button type="button" class="awg-remove-btn" aria-label="' + escHtml(T('TITLE_PF_DELETE')) + '" title="' + escHtml(T('TITLE_PF_DELETE')) + '" onclick="pfDelete(' + n + ');">' + trash + '</button>' +
+            '</span>' +
+        '</div>';
+    }
+    var fwChecked = (custom_settings.awg_failover == '1') ? ' checked' : '';
+    html += '<div style="display:flex; align-items:center; flex-wrap:wrap; gap:14px; margin-top:5px;">' +
+        '<input type="button" class="button_gen" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;" value="' + escHtml(T('BTN_PF_ADD')) + '" onclick="pfAdd();"' + (used >= AWG_PF_MAX ? ' disabled' : '') + '>' +
+        '<label style="font-size:12px; cursor:pointer;"><input type="checkbox" id="awg_failover"' + fwChecked + '> <span style="color:#FFCC00;">' + escHtml(T('LBL_PF_FAILOVER')) + '</span></label>' +
+        '</div>' +
+        '<div class="awg-hint">' + escHtml(T('HINT_PF_BAR')) + ' ' + escHtml(T('HINT_PF_FAILOVER')) + '</div>';
+    bar.innerHTML = html;
+}
+
+// Re-render only when the backend-reported active/auto pair changed — a blind re-render on
+// every 5s status poll would eat the user's in-progress typing in the name inputs.
+function pfRenderBarIfChanged(){
+    var active = pfActiveNow();
+    var auto = !!(awgPfStatus && awgPfStatus.auto);
+    if((active + '|' + (auto ? 1 : 0)) !== awgPfRenderKey) pfRenderBar();
+}
+
+function pfSelect(n){
+    if(n === awgPfSel) return;
+    if(pfFormSerialize() !== awgPfSnapshot && !confirm(T('MSG_PF_UNSAVED', pfName(awgPfSel)))) return;
+    awgPfSel = n;
+    pfLoadForm(n);
+}
+
+function pfAdd(){
+    var free = 0;
+    for(var n = 1; n <= AWG_PF_MAX; n++){ if(!pfConfigured(n)){ free = n; break; } }
+    if(!free){ alert(T('MSG_PF_FULL', AWG_PF_MAX)); return; }
+    pfSelect(free);
+    if(awgPfSel === free) importConfig();   // selection may have been cancelled (unsaved edits)
+}
+
+function pfDelete(n){
+    if(n === pfActiveNow()){ alert(T('MSG_PF_DEL_ACTIVE')); return; }
+    if(!confirm(T('MSG_PF_DELETE_CONFIRM', pfName(n)))) return;
+    pfHarvestBar();
+    pfWipeSlot(n);
+    if(n === awgPfSel){
+        awgPfSel = pfActiveNow();
+        pfLoadForm(awgPfSel);
+    } else {
+        pfRenderBar();
+    }
+}
+
+// «Switch to» = one submit that persists everything (incl. the form's pending edits) with
+// the new awg_profile_active and fires start_awgswitch → the backend restarts the tunnel on
+// the target slot. The restart-style transition is driven from applyConfig.
+function pfSwitch(n){
+    if(!pfConfigured(n)) return;
+    if(!confirm(T('MSG_PF_SWITCH_CONFIRM', pfName(n)))) return;
+    // Flip the local pointer only for the duration of the submit attempt: a validation
+    // failure inside applyConfig must NOT leave it flipped, or the next plain «Apply»
+    // would silently re-point the backend's config at the other slot without a restart.
+    var prev = custom_settings.awg_profile_active;
+    custom_settings.awg_profile_active = String(n);
+    awgPfSwitchTo = n;
+    if(!applyConfig('start_awgswitch')) custom_settings.awg_profile_active = prev;
+    awgPfSwitchTo = 0;
+}
+
 function loadSettings(){
     // Carry forward any value still stored under a pre-1.1.89 (credential-flavored) key,
     // so an in-place upgrade keeps the config even before the backend migrates the file.
@@ -1857,42 +2232,10 @@ function loadSettings(){
             custom_settings[lk] = custom_settings[ok];
         delete custom_settings[ok];
     }
-    var fields = [
-        'awg_iface_p1', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
-        'awg_peer_p1', 'awg_peer_p2', 'awg_peer_endpoint',
-        'awg_peer_allowedips', 'awg_peer_keepalive',
-        'awg_jc', 'awg_jmin', 'awg_jmax',
-        'awg_s1', 'awg_s2', 'awg_s3', 'awg_s4',
-        'awg_h1', 'awg_h2', 'awg_h3', 'awg_h4'
-    ];
-    for(var i = 0; i < fields.length; i++){
-        var el = document.getElementById(fields[i]);
-        if(el && custom_settings[fields[i]] != undefined){
-            el.value = custom_settings[fields[i]];
-        }
-    }
-    // Load I1-I5 from base64 — reassemble the chunked value (awg_initdata + awg_initdata1 + …;
-    // a long I-param's base64 is split across keys because the firmware caps one value at ~3000).
-    var initB64all = custom_settings.awg_initdata || '';
-    for(var ic = 1; ic <= 30 && custom_settings['awg_initdata' + ic] != undefined; ic++)
-        initB64all += custom_settings['awg_initdata' + ic];
-    if(initB64all){
-        try {
-            var initLines = atob(initB64all).split('\n');
-            for(var il = 0; il < initLines.length; il++){
-                var ip = initLines[il].split('=');
-                if(ip.length >= 2){
-                    var ik = ip[0].trim().toLowerCase();
-                    var ival = ip.slice(1).join('=').trim();
-                    if(ik === 'i1') setVal('awg_i1', ival);
-                    else if(ik === 'i2') setVal('awg_i2', ival);
-                    else if(ik === 'i3') setVal('awg_i3', ival);
-                    else if(ik === 'i4') setVal('awg_i4', ival);
-                    else if(ik === 'i5') setVal('awg_i5', ival);
-                }
-            }
-        } catch(e){}
-    }
+    // Config form = the user's chosen profile slot (I1-I5 reassembly from the slot's chunked
+    // initdata happens inside pfLoadForm; the profile bar renders there too).
+    awgPfSel = pfUser();
+    pfLoadForm(awgPfSel);
     // Load geo settings FIRST: builds geoPolicies + rebuilds every policy dropdown so the
     // default-policy value and per-device rows below have their vpn_geo_<id> options present.
     loadGeoSettings();
@@ -1958,82 +2301,30 @@ function updateFirstRun(){
     var empty = !pk && !pubk;
     var fr = document.getElementById('awg_firstrun');
     if(fr) fr.style.display = empty ? '' : 'none';
+    // The Start button follows the ACTIVE profile (what do_start will actually run) — while
+    // editing an empty "new profile" slot the active one may be perfectly startable, and
+    // vice versa a filled form doesn't make an unconfigured active slot runnable until Apply.
+    var activeOk = pfConfigured(pfActiveNow()) || (awgPfSel === pfActiveNow() && !empty);
     var sb = document.getElementById('btn_start');
-    if(sb){ sb.disabled = empty; sb.title = empty ? T('TITLE_IMPORT_FIRST') : ''; }
+    if(sb){ sb.disabled = !activeOk; sb.title = !activeOk ? T('TITLE_IMPORT_FIRST') : ''; }
 }
 
 function applyConfig(actionScript){
-    var fields = [
-        'awg_iface_p1', 'awg_address', 'awg_listenport', 'awg_mtu', 'awg_dns',
-        'awg_peer_p1', 'awg_peer_p2', 'awg_peer_endpoint',
-        'awg_peer_allowedips', 'awg_peer_keepalive',
-        'awg_jc', 'awg_jmin', 'awg_jmax',
-        'awg_s1', 'awg_s2', 'awg_s3', 'awg_s4',
-        'awg_h1', 'awg_h2', 'awg_h3', 'awg_h4'
-    ];
-    for(var i = 0; i < fields.length; i++){
-        var el = document.getElementById(fields[i]);
-        if(el){
-            var v = el.value;
-            // Remove spaces from comma-separated values (Merlin truncates at spaces)
-            if(fields[i] === 'awg_peer_allowedips' || fields[i] === 'awg_address' || fields[i] === 'awg_dns'){
-                v = v.replace(/\s+/g, '');
-            }
-            custom_settings[fields[i]] = v;
-        }
-    }
+    // Serialize the config form into the profile slot it edits (field validation + the
+    // per-slot chunked I1-I5 initdata live inside; a blocked save also blocks the submit).
+    if(!pfStoreForm(awgPfSel)) return false;
+    // Profile bar state (names, per-slot failover flags, the global toggle) rides along.
+    pfHarvestBar();
+
     // Save default policy and clients
     custom_settings.awg_default_policy = document.getElementById('default_policy').value;
     custom_settings.awg_clients = serializeClients();
-
-    // Sanity-check I1-I5 before saving: an AmneziaWG obfuscation tag is `<…>`, so a value with a
-    // '<' must balance its brackets and end with '>'. The classic failure is a TRUNCATED value
-    // that lost its closing '>' (incomplete paste / an old storage cap), which amneziawg-go then
-    // rejects with "failed to parse I1: missing enclosing >". Catch it here with a clear message.
-    for(var iz = 1; iz <= 5; iz++){
-        var izv = document.getElementById('awg_i' + iz);
-        var izs = izv ? String(izv.value || '').trim() : '';
-        if(izs && izs.indexOf('<') !== -1){
-            var izo = (izs.match(/</g) || []).length, izc = (izs.match(/>/g) || []).length;
-            if(izo !== izc || izs.charAt(0) !== '<' || izs.charAt(izs.length - 1) !== '>'){
-                alert(T('MSG_IPARAM_MALFORMED', 'I' + iz));
-                if(izv) izv.focus();
-                return;
-            }
-        }
-    }
-    // Save I1-I5 as base64 (contain HTML-unsafe chars)
-    var initData = '';
-    for(var ix = 1; ix <= 5; ix++){
-        var iv = document.getElementById('awg_i' + ix);
-        if(iv && iv.value) initData += 'I' + ix + ' = ' + iv.value + '\n';
-    }
-    var initB64;
-    try {
-        initB64 = initData ? btoa(initData) : '';
-    } catch(e){
-        alert(T('MSG_INIT_NON_ASCII'));
-        return;
-    }
-    // The firmware caps ONE custom_settings value at ~3000 chars; a long I-param's base64
-    // overflows that and is silently truncated (the closing '>' is lost → setconf rejects
-    // "missing enclosing >"). Split the base64 across awg_initdata + awg_initdata1 + … (<=2900
-    // each) and clear any stale chunks from a previous, longer value.
-    for(var ck = 1; ck <= 30; ck++) delete custom_settings['awg_initdata' + ck];
-    var ICHUNK = 2900;
-    if(initB64.length <= ICHUNK){
-        custom_settings.awg_initdata = initB64;
-    } else {
-        custom_settings.awg_initdata = initB64.substr(0, ICHUNK);
-        for(var cj = 1; cj * ICHUNK < initB64.length; cj++)
-            custom_settings['awg_initdata' + cj] = initB64.substr(cj * ICHUNK, ICHUNK);
-    }
 
     // Save geo settings PER POLICY (GeoIP/GeoSite/GeoCustom/Antifilter for each tab) into the
     // legacy unsuffixed keys (id 1) / id-suffixed keys (id>=2), plus the awg_geo_policies
     // registry. geoSerializePolicies captures the visible tab first and validates the files
     // budget; bail (no submit) if it's exceeded.
-    if(!geoSerializePolicies()) return;
+    if(!geoSerializePolicies()) return false;
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
     custom_settings.awg_no_dns_intercept = document.getElementById('awg_no_dns_intercept').checked ? '1' : '0';
@@ -2060,24 +2351,16 @@ function applyConfig(actionScript){
     custom_settings.awg_geo_via_awg = document.getElementById('awg_geo_via_awg').checked ? '1' : '0';
     custom_settings.awg_update_via_awg = document.getElementById('awg_update_via_awg').checked ? '1' : '0';
     // (Antifilter lists are saved per-policy by geoSerializePolicies above.)
+    // (Per-field validation of the config form ran inside pfStoreForm above.)
 
-    // Basic validation
-    var pk = document.getElementById('awg_iface_p1').value;
-    var pubk = document.getElementById('awg_peer_p1').value;
-    var ep = document.getElementById('awg_peer_endpoint').value;
-    if(!pk || !pubk || !ep){
-        awgFlagField(!pk ? 'awg_iface_p1' : (!pubk ? 'awg_peer_p1' : 'awg_peer_endpoint'),
-                     T('MSG_REQUIRED_FIELDS'));
-        return;
-    }
-    if(pk.length !== 44 || pubk.length !== 44){
-        awgFlagField(pk.length !== 44 ? 'awg_iface_p1' : 'awg_peer_p1',
-                     T('MSG_BAD_KEY_FORMAT'));
-        return;
-    }
-    if(!/:\d{1,5}$/.test(ep)){
-        awgFlagField('awg_peer_endpoint', T('MSG_ENDPOINT_NEEDS_PORT'));
-        return;
+    // Whole-store size guard: the page POSTs the ENTIRE custom_settings object and the
+    // firmware caps one request body at ~64 KB (we budget 52000 URL-encoded, like the .ipk
+    // uploader) — 5 profiles with huge I1-I5 junk blobs can genuinely reach it. Refuse with
+    // a named cause instead of letting the firmware truncate the store silently.
+    var postLen = encodeURIComponent(JSON.stringify(custom_settings)).length;
+    if(postLen > 50000){
+        alert(T('MSG_SETTINGS_TOO_BIG', Math.round(postLen / 1024)));
+        return false;
     }
 
     // Submit via the shared helper so we get a completion callback for the ack, and disable
@@ -2086,15 +2369,23 @@ function applyConfig(actionScript){
     awgWdHint('');   // the "press Apply to save" note is fulfilled by this very submit
     awgSetApplyBusy(true);
     // Sync the header icon. «Применить» (awgsaveconf) only rebuilds the firewall — no tunnel
-    // cycle — so a light fast-probe suffices. «Сохранить и перезапустить» (awgforceapply) really
-    // does do_stop; do_start, so give it the same full guarded amber transition as «Перезапустить».
-    awgSignalWidget(actionScript === 'start_awgforceapply' ? 'restart' : 'refresh');
+    // cycle — so a light fast-probe suffices. «Сохранить и перезапустить» (awgforceapply) and a
+    // profile switch really do do_stop; do_start, so give them the same guarded amber transition.
+    var restartish = (actionScript === 'start_awgforceapply' || actionScript === 'start_awgswitch');
+    awgSignalWidget(restartish ? 'restart' : 'refresh');
     awgPostSettings(actionScript, null, null, function(ok){
         awgSetApplyBusy(false);
         awgShowAck(ok ? T('ACK_SAVED') : T('ACK_SEND_FAILED'), ok);
     });
+    if(actionScript === 'start_awgswitch'){
+        // Show the target profile in the form (its stored values just rode the POST) and
+        // drive the page into the guarded restart transition — same UX as «Перезапустить».
+        if(awgPfSwitchTo){ awgPfSel = awgPfSwitchTo; pfLoadForm(awgPfSel); }
+        awgEnterTransition('restart');
+    }
     // No full-page reload: status + log refresh live via polling. Reloading after a
     // form POST makes the browser prompt to resubmit the form ("resubmit form").
+    return true;
 }
 
 // === Routing: per-device with individual policies ===
@@ -2743,6 +3034,13 @@ function awgActionRecover(pollId){
 }
 
 function awgAction(action){
+    // Plain actions (start/stop/restart) carry NO settings: clear the hidden amng_custom, or
+    // the submit would re-post the snapshot left there by the LAST settings flow — with
+    // profiles that stale snapshot could silently revert an awg_profile_active switched
+    // elsewhere (CLI/another tab) since that Apply. Empty = firmware writes nothing (the
+    // page-load default; pre-first-Apply starts always posted it empty).
+    var ac = document.getElementById('amng_custom');
+    if(ac) ac.value = '';
     document.form.action_script.value = action;
     awgSubmitForm();
     var kind = action.indexOf('stop') !== -1 ? 'stop' : (action.indexOf('restart') !== -1 ? 'restart' : 'start');
@@ -3701,6 +3999,34 @@ function updateStatusUI(s){
     awgConnUptime = parseInt(s.conn_uptime, 10) || 0;
     awgTickUptime();
 
+    // Config profiles: sync the local pointer, render the status row + refresh the bar.
+    if(s.profile && s.profile.active >= 1){
+        awgPfStatus = s.profile;
+        // Keep the local copy of the user's persisted choice fresh, so a tab opened before a
+        // switch made elsewhere (CLI, another tab) can't silently revert the pointer with its
+        // next full-object Apply POST. Skipped mid-transition: the backend may not have
+        // processed the in-flight switch settings yet.
+        if(!s.starting && !s.stopping && s.profile.user >= 1)
+            custom_settings.awg_profile_active = String(s.profile.user);
+        var pfRow = document.getElementById('awg_profile_row');
+        var pfCell = document.getElementById('awg_profile_cell');
+        if(pfRow && pfCell){
+            var pfCfgCount = 0;
+            if(s.profile.list){
+                for(var pfi = 0; pfi < s.profile.list.length; pfi++){ if(s.profile.list[pfi].cfg) pfCfgCount++; }
+            }
+            if(pfCfgCount > 1 || s.profile.auto){
+                var ptxt = escHtml(s.profile.name || ('#' + s.profile.active)) + ' <span style="color:#b6bdc7;">(' + s.profile.active + '/' + pfCfgCount + ')</span>';
+                if(s.profile.auto) ptxt += ' <span style="color:#f0ad4e;">&middot; ' + escHtml(T('LBL_PF_AUTO')) + '</span>';
+                pfCell.innerHTML = ptxt;
+                pfRow.style.display = '';
+            } else {
+                pfRow.style.display = 'none';
+            }
+        }
+        pfRenderBarIfChanged();
+    }
+
     info.innerHTML = '';
     if(s.interface_addr) info.innerHTML += escHtml(T('INFO_ADDRESS')) + escHtml(s.interface_addr) + '<br>';
     if(s.public_key) info.innerHTML += escHtml(T('INFO_PUBLIC_KEY')) + escHtml(s.public_key.substring(0,12)) + '...<br>';
@@ -4098,6 +4424,7 @@ function parseConfig(text){
     var gotPub = !!((document.getElementById('awg_peer_p1') || {}).value);
     var gotEp = !!((document.getElementById('awg_peer_endpoint') || {}).value);
     updateFirstRun();
+    pfRenderBar();   // the edited slot's row shows the freshly imported endpoint
     if(!gotPk && !gotPub && !gotEp){
         alert(T('MSG_IMPORT_UNRECOGNIZED'));
         return;
@@ -4455,6 +4782,11 @@ function initAutocompleteIp(){
                     <th width="20%" data-i18n="TH_INTERFACE">Interface</th>
                     <td><span id="awg_info">-</span></td>
                 </tr>
+                <!-- Active config profile (hidden while only one profile exists and no failover override) -->
+                <tr id="awg_profile_row" style="display:none;">
+                    <th width="20%" data-i18n="TH_PROFILE">Profile</th>
+                    <td><span id="awg_profile_cell">-</span></td>
+                </tr>
                 </table>
 
                 <!-- First-run empty state: shown by loadSettings() when no key/peer is set yet -->
@@ -4511,6 +4843,9 @@ function initAutocompleteIp(){
                     <span data-i18n="SEC_CONFIG">Configuration</span>
                     <input type="button" class="button_gen" value="Import a .conf file from the Amnezia VPN client" data-i18n-val="BTN_IMPORT_CONF_FILE" onclick="importConfig();" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
+
+                <!-- Config profiles (multi-config): slot rows + failover toggle, rendered by pfRenderBar() -->
+                <div id="awg_pf_bar" style="margin:2px 0 10px 0;"></div>
 
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable">
                 <thead><tr><td colspan="2">Interface</td></tr></thead>

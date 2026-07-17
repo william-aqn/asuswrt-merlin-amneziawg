@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.3.17"
+AWG_VERSION="1.4.0"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -253,6 +253,182 @@ migrate_watchdog_hosts(){
     tmp="$SETTINGS.awgtmp.$$"
     { grep -v "^awg_watchdog_hosts " "$SETTINGS"; echo "awg_watchdog_hosts $val"; } > "$tmp" 2>/dev/null && mv "$tmp" "$SETTINGS"
     rm -f "$tmp" 2>/dev/null
+}
+
+# Write (add or replace) one custom-settings line — the backend counterpart of the page's
+# Apply for the FEW keys the router itself owns (today: awg_profile_active from the CLI
+# profile switch). Same temp+rename shape as clear_setting; on the rare race with an httpd
+# settings POST the last writer wins — acceptable for a manual, one-shot key.
+set_setting(){
+    local key="$1" val="$2" tmp
+    tmp="$SETTINGS.awgtmp.$$"
+    { grep -v "^$key " "$SETTINGS" 2>/dev/null; echo "$key $val"; } > "$tmp" && mv "$tmp" "$SETTINGS"
+    rm -f "$tmp" 2>/dev/null
+}
+
+# =============================================================
+# Config profiles (multi-config client)
+# A "profile" is a numbered slot holding ONE complete client config (keys, endpoint, DNS,
+# obfuscation incl. the chunked initdata). Slot 1 stores its DATA under the legacy
+# unsuffixed keys (awg_iface_p1, …) so existing installs need ZERO migration; slots
+# 2..AWG_PF_MAX use the awg_pf<N>_ prefix — still matched by every ^awg_ pattern, so the
+# save/uninstall machinery is untouched. Per-slot META (name, failover participation) always
+# lives under awg_pf<N>_, slot 1 included: pf_key() is the ONLY place that knows the split.
+# ACTIVE slot resolution: awg_profile_active is the USER's persisted choice (written by the
+# page's switch POST / the CLI); /tmp/.awg_profile_override is the FAILOVER engine's runtime
+# pointer — deliberately kept OFF the settings file, so an auto-switch never fights the
+# page's full-object settings POST (a stale open tab would silently revert a persisted
+# pointer) and a reboot naturally falls back to the user's primary profile.
+AWG_PF_MAX=5
+PF_OVERRIDE="/tmp/.awg_profile_override"
+FAILOVER_STATE="/tmp/.awg_failover_state"   # "<circle_start_slot> <hops>" while a failover incident is walking the circle
+
+pf_key(){
+    # $1 = slot, $2 = field. META fields are always slot-prefixed; DATA fields of slot 1 keep
+    # their legacy unsuffixed names (initdata chunk fields like initdata7 included).
+    case "$2" in
+        name|fo) echo "awg_pf$1_$2" ;;
+        *) if [ "$1" = "1" ]; then echo "awg_$2"; else echo "awg_pf$1_$2"; fi ;;
+    esac
+}
+
+pf_slot_get(){ get_setting "$(pf_key "$1" "$2")"; }
+
+# A slot is "configured" when it has the two fields no tunnel can exist without.
+profile_configured(){
+    [ -n "$(pf_slot_get "$1" iface_p1)" ] && [ -n "$(pf_slot_get "$1" peer_endpoint)" ]
+}
+
+profile_name(){
+    local n
+    n=$(pf_slot_get "$1" name)
+    [ -n "$n" ] && echo "$n" || echo "Profile $1"
+}
+
+profile_user(){
+    local p
+    p=$(get_setting awg_profile_active)
+    case "$p" in ''|*[!0-9]*) p=1 ;; esac
+    { [ "$p" -ge 1 ] && [ "$p" -le "$AWG_PF_MAX" ]; } || p=1
+    echo "$p"
+}
+
+# The slot the tunnel actually materializes: a valid failover override wins, else the user's
+# choice. An override pointing at an unconfigured/deleted slot is ignored.
+profile_effective(){
+    local p
+    p=$(cat "$PF_OVERRIDE" 2>/dev/null | tr -cd '0-9')
+    if [ -n "$p" ] && [ "$p" -ge 1 ] && [ "$p" -le "$AWG_PF_MAX" ] && profile_configured "$p"; then
+        echo "$p"
+        return
+    fi
+    profile_user
+}
+
+# One field of the EFFECTIVE profile — for single-shot callers. Multi-field consumers
+# (generate_config) resolve the slot once and use pf_slot_get to keep the fork count down.
+pf_get(){ pf_slot_get "$(profile_effective)" "$1"; }
+
+# --- Profile failover (auto-switch on health-check failure) ---
+# Called ONLY from the post-start health check's failure branch — the single point where
+# "this profile's tunnel demonstrably passes no traffic" is known (DNS-only failures fail
+# open upstream and never reach it; the update window and the CTF gate live in do_start,
+# which every hop goes through anyway). Picks the next configured, failover-enabled slot
+# after the EFFECTIVE one (circular by slot number), records the hop in FAILOVER_STATE and
+# writes PF_OVERRIDE — the caller then restarts, and the NEW profile's own health check
+# decides whether to hop again. Returns 1 (caller falls back to the classic rollback) when
+# the feature is off, there are <2 candidates, or the circle is complete — every candidate
+# tried once this incident. On give-up both state files are cleared, so the watchdog's
+# backoff retries start from the user's primary profile and may walk a fresh circle.
+# $1 = the health-check failure reason (for the incident log).
+failover_next_profile(){
+    [ "$(get_setting awg_failover)" = "1" ] || return 1
+    local cur next n i cand start hops
+    cur=$(profile_effective)
+    cand=0
+    n=1
+    while [ "$n" -le "$AWG_PF_MAX" ]; do
+        if profile_configured "$n" && [ "$(pf_slot_get "$n" fo)" != "0" ]; then
+            cand=$((cand + 1))
+        fi
+        n=$((n + 1))
+    done
+    [ "$cand" -ge 2 ] || return 1
+    next=""
+    i=1
+    while [ "$i" -lt "$AWG_PF_MAX" ]; do
+        n=$(( (cur - 1 + i) % AWG_PF_MAX + 1 ))
+        if profile_configured "$n" && [ "$(pf_slot_get "$n" fo)" != "0" ]; then
+            next=$n
+            break
+        fi
+        i=$((i + 1))
+    done
+    [ -n "$next" ] || return 1
+    # NB: `< file 2>/dev/null` would NOT silence a missing file (redirections apply left to
+    # right) — guard on existence instead.
+    if [ -f "$FAILOVER_STATE" ]; then read start hops < "$FAILOVER_STATE" 2>/dev/null; fi
+    case "$start" in ''|*[!0-9]*) start=$cur; hops=0 ;; esac
+    case "$hops" in ''|*[!0-9]*) hops=0 ;; esac
+    # Circle complete: wrapped back to the slot the incident started on, or (when that slot
+    # itself isn't a candidate — e.g. the user was on an fo=0 profile) every candidate tried.
+    if [ "$next" = "$start" ] || [ "$hops" -ge "$cand" ]; then
+        log_msg "FAILOVER: profile circle complete ($hops switches, none passed the health check) — giving up; the watchdog keeps retrying the primary profile with backoff"
+        awg_incident "failover gave up: all candidate profiles failed the health check ($1)"
+        rm -f "$FAILOVER_STATE" "$PF_OVERRIDE"
+        return 1
+    fi
+    echo "$next" > "$PF_OVERRIDE"
+    printf '%s %s\n' "$start" "$((hops + 1))" > "$FAILOVER_STATE"
+    log_msg "FAILOVER: switching to config profile $next ($(profile_name "$next")) — hop $((hops + 1))"
+    awg_incident "health-check failover: profile $cur -> $next ($1)"
+    return 0
+}
+
+# --- Profile CLI (`amneziawg.sh profile …`) — SSH-side switching ---
+profile_cli_list(){
+    local n eff usr ep nm mark fo
+    eff=$(profile_effective)
+    usr=$(profile_user)
+    if [ -f "$PF_OVERRIDE" ] && [ "$eff" != "$usr" ]; then
+        echo "Config profiles (active: $eff — failover override; user's primary: $usr):"
+    else
+        echo "Config profiles (active: $eff):"
+    fi
+    n=1
+    while [ "$n" -le "$AWG_PF_MAX" ]; do
+        if profile_configured "$n"; then
+            ep=$(pf_slot_get "$n" peer_endpoint)
+            nm=$(profile_name "$n")
+            mark=" "; [ "$n" = "$eff" ] && mark="*"
+            fo=""; [ "$(pf_slot_get "$n" fo)" = "0" ] && fo=" [failover: off]"
+            printf '%s %s. %s — %s%s\n' "$mark" "$n" "$nm" "$ep" "$fo"
+        fi
+        n=$((n + 1))
+    done
+    [ "$(get_setting awg_failover)" = "1" ] && echo "Auto-failover: on" || echo "Auto-failover: off"
+}
+
+profile_cli_switch(){
+    local tgt="$1" cur i n
+    cur=$(profile_effective)
+    if [ "$tgt" = "next" ]; then
+        tgt=""
+        i=1
+        while [ "$i" -lt "$AWG_PF_MAX" ]; do
+            n=$(( (cur - 1 + i) % AWG_PF_MAX + 1 ))
+            profile_configured "$n" && { tgt=$n; break; }
+            i=$((i + 1))
+        done
+        [ -n "$tgt" ] || { echo "No other configured profile to switch to."; return 1; }
+    fi
+    case "$tgt" in ''|*[!0-9]*) echo "Bad profile number: $1"; return 1 ;; esac
+    { [ "$tgt" -ge 1 ] && [ "$tgt" -le "$AWG_PF_MAX" ]; } || { echo "Profile must be 1-$AWG_PF_MAX"; return 1; }
+    profile_configured "$tgt" || { echo "Profile $tgt is not configured (need at least a private key + endpoint)."; return 1; }
+    set_setting awg_profile_active "$tgt"
+    rm -f "$PF_OVERRIDE" "$FAILOVER_STATE"
+    log_msg "Switching to config profile $tgt ($(profile_name "$tgt")) [CLI]"
+    do_restart switch
 }
 
 # =============================================================
@@ -1596,7 +1772,7 @@ setup_dns_interception(){
 # need literal v4 here (a hostname upstream would need resolving, a chicken-and-egg).
 tunnel_dns_ips(){
     local raw ip out="" n=0
-    raw=$(get_setting awg_dns | tr ',' ' ')
+    raw=$(pf_get dns | tr ',' ' ')
     for ip in $raw; do
         ip=$(echo "$ip" | tr -d ' \r')
         validate_ip "$ip" || continue
@@ -2982,30 +3158,37 @@ generate_config(){
     umask 077   # private key + config must not be world-readable
     mkdir -p "$AWG_DIR"
 
+    # The ACTIVE config profile — resolved ONCE here; every field below reads this slot.
+    # Slot 1 maps to the legacy unsuffixed keys (see pf_key), so pre-profile installs
+    # materialize exactly what they always did.
+    local pf
+    pf=$(profile_effective)
+    log_msg "Config profile: $pf ($(profile_name "$pf"))"
+
     # Neutral field names (see migrate_field_names): iface_p1 = interface private key,
     # peer_p1 = peer public key, peer_p2 = peer preshared key.
-    local iface_p1=$(get_setting awg_iface_p1)
-    local listenport=$(get_setting awg_listenport)
-    local jc=$(get_setting awg_jc)
-    local jmin=$(get_setting awg_jmin)
-    local jmax=$(get_setting awg_jmax)
-    local s1=$(get_setting awg_s1)
-    local s2=$(get_setting awg_s2)
-    local s3=$(get_setting awg_s3)
-    local s4=$(get_setting awg_s4)
-    local h1=$(get_setting awg_h1)
-    local h2=$(get_setting awg_h2)
-    local h3=$(get_setting awg_h3)
-    local h4=$(get_setting awg_h4)
+    local iface_p1=$(pf_slot_get "$pf" iface_p1)
+    local listenport=$(pf_slot_get "$pf" listenport)
+    local jc=$(pf_slot_get "$pf" jc)
+    local jmin=$(pf_slot_get "$pf" jmin)
+    local jmax=$(pf_slot_get "$pf" jmax)
+    local s1=$(pf_slot_get "$pf" s1)
+    local s2=$(pf_slot_get "$pf" s2)
+    local s3=$(pf_slot_get "$pf" s3)
+    local s4=$(pf_slot_get "$pf" s4)
+    local h1=$(pf_slot_get "$pf" h1)
+    local h2=$(pf_slot_get "$pf" h2)
+    local h3=$(pf_slot_get "$pf" h3)
+    local h4=$(pf_slot_get "$pf" h4)
 
     # I1-I5 from base64-encoded setting. A long I-param's base64 exceeds the firmware's
-    # ~3000-char-per-value custom_settings cap, so the UI splits it across awg_initdata +
-    # awg_initdata1 + awg_initdata2 … — reassemble the chunks in order before decoding.
+    # ~3000-char-per-value custom_settings cap, so the UI splits it across <initdata> +
+    # <initdata>1 + <initdata>2 … (per slot) — reassemble the chunks in order before decoding.
     local i1="" i2="" i3="" i4="" i5=""
-    local initdata=$(get_setting awg_initdata)
+    local initdata=$(pf_slot_get "$pf" initdata)
     local _ic=1 _ichunk
     while [ "$_ic" -le 30 ]; do
-        _ichunk=$(get_setting "awg_initdata${_ic}")
+        _ichunk=$(pf_slot_get "$pf" "initdata${_ic}")
         [ -z "$_ichunk" ] && break
         initdata="${initdata}${_ichunk}"
         _ic=$((_ic + 1))
@@ -3020,11 +3203,11 @@ generate_config(){
         i5=$(echo "$decoded" | awk '/^I5 /{sub(/^[^=]+=[ ]?/,"");print;exit}')
     fi
 
-    local peer_p1=$(get_setting awg_peer_p1)
-    local peer_p2=$(get_setting awg_peer_p2)
-    local peer_endpoint=$(get_setting awg_peer_endpoint)
-    local peer_allowedips=$(get_setting awg_peer_allowedips | sed 's/,[[:space:]]*$//;s/,/, /g')
-    local peer_keepalive=$(get_setting awg_peer_keepalive)
+    local peer_p1=$(pf_slot_get "$pf" peer_p1)
+    local peer_p2=$(pf_slot_get "$pf" peer_p2)
+    local peer_endpoint=$(pf_slot_get "$pf" peer_endpoint)
+    local peer_allowedips=$(pf_slot_get "$pf" peer_allowedips | sed 's/,[[:space:]]*$//;s/,/, /g')
+    local peer_keepalive=$(pf_slot_get "$pf" peer_keepalive)
 
     if [ -z "$iface_p1" ] || [ -z "$peer_p1" ] || [ -z "$peer_endpoint" ]; then
         log_msg "ERROR: Missing required config"
@@ -3085,10 +3268,12 @@ generate_config(){
 
     chmod 600 "$CONF"
 
-    local address=$(get_setting awg_address)
-    [ -n "$address" ] && echo "$address" > "$AWG_DIR/awg0.addr"
-    local dns=$(get_setting awg_dns)
-    [ -n "$dns" ] && echo "$dns" > "$AWG_DIR/awg0.dns"
+    # Address/DNS side-files: always rewrite (or remove) — a profile switch must not leave the
+    # previous slot's address/DNS behind for do_start to apply to the new tunnel.
+    local address=$(pf_slot_get "$pf" address)
+    if [ -n "$address" ]; then echo "$address" > "$AWG_DIR/awg0.addr"; else rm -f "$AWG_DIR/awg0.addr"; fi
+    local dns=$(pf_slot_get "$pf" dns)
+    if [ -n "$dns" ]; then echo "$dns" > "$AWG_DIR/awg0.dns"; else rm -f "$AWG_DIR/awg0.dns"; fi
 
     log_msg "Config saved"
     return 0
@@ -3211,6 +3396,10 @@ do_diag(){
     echo "--- connection history (last 5: start_epoch|end_epoch|dur_s|reason) ---"
     if [ -s "$CONN_HISTORY" ]; then sed 's/^/  /' "$CONN_HISTORY"; else echo "  (none recorded yet)"; fi
     [ -f "$CONN_CURRENT" ] && echo "  open session (start_epoch start_uptime_s): $(cat "$CONN_CURRENT" 2>/dev/null)"
+    echo "--- config profiles (endpoint shown, keys never) ---"
+    profile_cli_list 2>/dev/null | sed 's/^/  /'
+    [ -f "$PF_OVERRIDE" ] && echo "  failover override    : slot $(cat "$PF_OVERRIDE" 2>/dev/null) ($PF_OVERRIDE)"
+    [ -f "$FAILOVER_STATE" ] && echo "  failover circle      : start+hops = $(tr '\n' ' ' < "$FAILOVER_STATE" 2>/dev/null)(incident in progress)"
     echo "--- self-heal / background state ---"
     echo "awg crons (cru l):"
     _crons=$(cru l 2>/dev/null | grep -i awg)
@@ -3916,8 +4105,8 @@ do_start(){
         done
         [ "$_v4_ok" = 1 ] || log_msg "WARN: no IPv4 address on $IFACE — NAT and policy routing need one; check the Address field"
     fi
-    # MTU: configurable via awg_mtu (default 1280); fall back if unset/out of range
-    local mtu=$(get_setting awg_mtu)
+    # MTU: configurable via awg_mtu / the active profile's mtu field (default 1280)
+    local mtu=$(pf_get mtu)
     { [ -n "$mtu" ] && validate_uint "$mtu" && [ "$mtu" -ge 576 ] && [ "$mtu" -le 1500 ]; } || mtu=1280
     ip link set "$IFACE" mtu "$mtu"
     ip link set "$IFACE" up
@@ -4033,9 +4222,16 @@ do_start(){
             else
                 log_msg "Tunnel verified: traffic passing"
             fi
+            # A verified tunnel ends any failover incident: clear the circle so a LATER
+            # failure starts a fresh circle from this (now proven) profile. The override
+            # stays — the auto-switched profile keeps running until a reboot/manual switch.
+            if [ -f "$FAILOVER_STATE" ]; then
+                rm -f "$FAILOVER_STATE"
+                [ -f "$PF_OVERRIDE" ] && log_msg "FAILOVER: profile $(profile_effective) ($(profile_name "$(profile_effective)")) verified working — auto-switch complete (a reboot or manual switch returns to the primary profile)"
+            fi
             update_status
         else
-            log_msg "ERROR: Tunnel $hc_reason after 60s, rolling back to prevent lockout"
+            log_msg "ERROR: Tunnel $hc_reason after 60s"
             # Snapshot the live UAPI state BEFORE the rollback kills the daemon — the single most
             # useful signal for "up but no traffic". A present "latest handshake" + non-zero
             # received bytes means the tunnel IS established and the fault is downstream (routing /
@@ -4043,11 +4239,20 @@ do_start(){
             # got a reply (endpoint unreachable, obfuscation mismatch, or egress hijacked). The diag
             # runs after rollback so `awg show` there is empty — capture it here while it's alive.
             log_msg "  awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer|endpoint' | tr '\n' '|' | sed 's/|$//')"
-            awg_incident "health-check rollback: $hc_reason (awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer' | tr '\n' '|' | sed 's/|$//'))"
             xray_redirect_active && log_msg "  HINT: XRAYUI transparent-proxy (TPROXY 'redirect all') is active — it captures the router's egress incl. our handshake; turn off XRAYUI's redirect-all mode or run one VPN at a time"
-            do_stop "" rollback 2>/dev/null
-            log_msg "VPN stopped automatically. Check server config and endpoint reachability."
-            update_status
+            # Profile failover (opt-in): try the next configured profile instead of rolling
+            # back — do_restart re-runs the FULL start (config, routes, firewall) on the new
+            # slot and spawns a fresh health check that decides whether to hop again. When
+            # failover is off / out of candidates, the classic rollback below keeps the exact
+            # pre-1.4.0 behavior (stop, watchdog keeps retrying with backoff).
+            if failover_next_profile "$hc_reason"; then
+                do_restart failover 2>/dev/null
+            else
+                awg_incident "health-check rollback: $hc_reason (awg show: $("$AWG_BIN" show "$IFACE" 2>&1 | grep -iE 'latest handshake|transfer' | tr '\n' '|' | sed 's/|$//'))"
+                do_stop "" rollback 2>/dev/null
+                log_msg "VPN stopped automatically. Check server config and endpoint reachability."
+                update_status
+            fi
         fi
     ) </dev/null >/dev/null 2>&1 &
 }
@@ -4090,6 +4295,9 @@ do_stop(){
     # down. Auto-rollbacks (health-check, deadman) call do_stop withOUT "user", so the
     # watchdog survives and can still recover the tunnel on its own.
     [ "$user_stop" = "user" ] && cru d awg_watchdog 2>/dev/null
+    # A deliberate stop also resets the profile-failover state: the next manual start should
+    # come up on the user's chosen primary, not a leftover auto-switched slot.
+    [ "$user_stop" = "user" ] && rm -f "$PF_OVERRIDE" "$FAILOVER_STATE" 2>/dev/null
     # Drop the background status-refresh cron in lockstep with the watchdog (same 'user' guard),
     # so a deliberate stop/uninstall leaves no orphaned cron; auto-rollbacks keep both.
     [ "$user_stop" = "user" ] && cru d awg_status 2>/dev/null
@@ -4130,7 +4338,8 @@ do_stop(){
 # steady poll, header widget, watchdog) see "stopped" and surface a clickable «Запустить» that
 # raced the restart's own start. do_start re-touches the flag; its EXIT trap clears it at the end.
 do_restart(){
-    do_stop "" restart
+    # $1: optional connection-history stop token (switch/failover); default "restart".
+    do_stop "" "${1:-restart}"
     touch "$STARTING_FLAG"
     update_status
     wait_for_pid_exit amneziawg-go 10
@@ -4364,6 +4573,28 @@ EOF
     local ctf_block=false
     ctf_active && ctf_block=true
 
+    # Config profiles for the UI: the slot the tunnel materializes (active), the user's
+    # persisted choice (user; differs from active only under a failover override) and a
+    # compact per-slot list for the profile bar. Names are user text — strip control chars,
+    # truncate, escape for JSON (same treatment as geo_matchall_warn above).
+    local pf_active pf_user pf_auto pf_name pf_list="" pf_failover=false
+    local _pfn _pfsep="" _pfnm _pfcfg _pffo
+    pf_active=$(profile_effective)
+    pf_user=$(profile_user)
+    pf_auto=false
+    [ "$pf_active" != "$pf_user" ] && pf_auto=true
+    pf_name=$(profile_name "$pf_active" | tr -d '\000-\037' | cut -c1-48 | sed 's/\\/\\\\/g; s/"/\\"/g')
+    _pfn=1
+    while [ "$_pfn" -le "$AWG_PF_MAX" ]; do
+        _pfnm=$(pf_slot_get "$_pfn" name | tr -d '\000-\037' | cut -c1-48 | sed 's/\\/\\\\/g; s/"/\\"/g')
+        _pfcfg=false; profile_configured "$_pfn" && _pfcfg=true
+        _pffo=true; [ "$(pf_slot_get "$_pfn" fo)" = "0" ] && _pffo=false
+        pf_list="${pf_list}${_pfsep}{\"n\":${_pfn},\"name\":\"${_pfnm}\",\"cfg\":${_pfcfg},\"fo\":${_pffo}}"
+        _pfsep=","
+        _pfn=$((_pfn + 1))
+    done
+    [ "$(get_setting awg_failover)" = "1" ] && pf_failover=true
+
     # Firmware UI language (preferred_lang nvram) so the page/widget can localize without a
     # round-trip. The frontend maps RU -> Russian, everything else -> English. Empty -> EN.
     local pref_lang=$(nvram get preferred_lang 2>/dev/null)
@@ -4377,7 +4608,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","geo_matchall_warn":"${geo_matchall_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"profile":{"active":${pf_active},"user":${pf_user},"auto":${pf_auto},"name":"${pf_name}","failover":${pf_failover},"list":[${pf_list}]},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","geo_matchall_warn":"${geo_matchall_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
@@ -5680,7 +5911,7 @@ do_service_event(){
             ;;
     esac
     case "$event" in
-        awgstart|awgstop|awgrestart|awgforceapply|awgsaveconf|awgupdategeo|awgdoupdate) ui_log_reset ;;
+        awgstart|awgstop|awgrestart|awgswitch|awgforceapply|awgsaveconf|awgupdategeo|awgdoupdate) ui_log_reset ;;
     esac
     case "$event" in
         # Manual upload: append one base64 chunk. Kept out of the ui_log_reset list above
@@ -5725,15 +5956,28 @@ do_service_event(){
         awgstart)       do_start ;;
         awgstop)        do_stop user ;;
         awgrestart)     do_restart ;;
+        awgswitch)
+            # Manual profile switch: the page POSTed the full settings (incl. the new
+            # awg_profile_active and any pending edits) in the SAME submit that fired this
+            # event. User intent beats any failover state — drop the override + circle so a
+            # later failure starts a fresh circle from the user's new primary. Settle-wait on
+            # the EFFECTIVE slot's key: the switch target is always a configured slot (the
+            # page only offers those), so an empty read means the POST hasn't landed yet.
+            rm -f "$PF_OVERRIDE" "$FAILOVER_STATE"
+            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(pf_get iface_p1)" ]; do sleep 1; _wt=$((_wt+1)); done
+            log_msg "Switching to config profile $(profile_effective) ($(profile_name "$(profile_effective)"))"
+            do_restart switch
+            ensure_geo   # download configured-but-missing geo lists (bg), then re-apply
+            ;;
         awgforceapply)
             # Force Apply: persist settings, then full restart (re-runs setconf +
             # complete route/firewall/geo rebuild via do_start)
-            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_iface_p1)" ]; do sleep 1; _wt=$((_wt+1)); done
+            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(pf_get iface_p1)" ]; do sleep 1; _wt=$((_wt+1)); done
             do_restart
             ensure_geo   # download configured-but-missing geo lists (bg), then re-apply
             ;;
         awgsaveconf)
-            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(get_setting awg_iface_p1)" ]; do sleep 1; _wt=$((_wt+1)); done
+            local _wt=0; while [ $_wt -lt 5 ] && [ -z "$(pf_get iface_p1)" ]; do sleep 1; _wt=$((_wt+1)); done
             generate_config
             # Apply WITHOUT a VPN restart, but under the operation lock so this rebuild can't
             # race the firewall-start hook's do_firewall_restart, and with the LAN deadman
@@ -5834,5 +6078,12 @@ case "$1" in
     analyze_stop)   do_analyze_stop ;;
     ctf_status)     ctf_active && echo "CTF active (ctf_disable=$(nvram get ctf_disable 2>/dev/null))" || echo "CTF not active" ;;
     ctf_disable)    do_ctf_disable ;;
-    *)              echo "Usage: $0 {start|stop|restart|status|diag|update_geo|download_geo|install_page|uninstall}" ;;
+    profile)
+        case "$2" in
+            ''|list)     profile_cli_list ;;
+            next|[0-9]*) profile_cli_switch "$2" ;;
+            *)           echo "Usage: $0 profile [list|<1-$AWG_PF_MAX>|next]" ;;
+        esac
+        ;;
+    *)              echo "Usage: $0 {start|stop|restart|status|diag|profile [list|N|next]|update_geo|download_geo|install_page|uninstall}" ;;
 esac
