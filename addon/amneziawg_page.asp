@@ -1966,6 +1966,15 @@ function pfName(slot){
     var nm = custom_settings[pfKey(slot, 'name')];
     return nm ? String(nm) : T('PF_UNNAMED', slot);
 }
+// Derive a default profile name from an imported .conf filename — providers usually name the
+// file after the country/location (Netherlands.conf, nl-amsterdam.conf). Strips any path and
+// the trailing extension, then applies the same sanitation as the name inputs (the store's
+// | and ; delimiters out, whitespace collapsed, capped at 32). Unicode names (Германия.conf)
+// pass through. Empty result (e.g. a dotfile) → caller keeps the "Profile N" fallback.
+function pfCleanFileName(fname){
+    var base = String(fname || '').replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '');
+    return base.replace(/[|;]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 32);
+}
 function pfInitB64(slot){
     var b64 = custom_settings[pfKey(slot, 'initdata')] || '';
     for(var ic = 1; ic <= 30 && custom_settings[pfKey(slot, 'initdata') + ic] != undefined; ic++)
@@ -4344,14 +4353,15 @@ function importConfig(){
     fileInput.value = '';
     fileInput.onchange = function(){
         if(!fileInput.files || !fileInput.files[0]) return;
+        var fname = fileInput.files[0].name;   // capture now — used to default the profile name
         var reader = new FileReader();
-        reader.onload = function(e){ parseConfig(e.target.result); };
+        reader.onload = function(e){ parseConfig(e.target.result, fname); };
         reader.readAsText(fileInput.files[0]);
     };
     fileInput.click();
 }
 
-function parseConfig(text){
+function parseConfig(text, fileName){
     if(!text) return;
 
     // Warn before overwriting an existing config (import clears every field first).
@@ -4423,9 +4433,22 @@ function parseConfig(text){
     var gotPk = !!((document.getElementById('awg_iface_p1') || {}).value);
     var gotPub = !!((document.getElementById('awg_peer_p1') || {}).value);
     var gotEp = !!((document.getElementById('awg_peer_endpoint') || {}).value);
+    var recognized = gotPk || gotPub || gotEp;
+    // Default the edited slot's name from the filename (providers name files by country), but
+    // ONLY when it has no name yet — never clobber one the user typed. Set the row's name input
+    // (if the row is rendered) AND the stored key, so it survives the pfRenderBar() harvest.
+    if(recognized && fileName){
+        var nm = pfCleanFileName(fileName);
+        var nameKey = pfKey(awgPfSel, 'name');
+        if(nm && !custom_settings[nameKey]){
+            custom_settings[nameKey] = nm;
+            var ne = document.getElementById('awg_pf_name_' + awgPfSel);
+            if(ne) ne.value = nm;
+        }
+    }
     updateFirstRun();
-    pfRenderBar();   // the edited slot's row shows the freshly imported endpoint
-    if(!gotPk && !gotPub && !gotEp){
+    pfRenderBar();   // the edited slot's row shows the freshly imported endpoint + defaulted name
+    if(!recognized){
         alert(T('MSG_IMPORT_UNRECOGNIZED'));
         return;
     }
