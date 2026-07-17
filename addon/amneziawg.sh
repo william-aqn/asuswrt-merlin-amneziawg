@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.3.15"
+AWG_VERSION="1.3.16"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1706,13 +1706,21 @@ drain_ip_rules(){
     # so the tunnel handshake can't even leave and RX stays 0 (root cause of the RT-AC68U
     # "full start bricks the box", found 2026-07-13). Fix: NEVER blind-loop a bare `ip rule del`.
     # Enumerate `ip rule show` (RTM_GETRULE is fine on this kernel — it lists rules correctly),
-    # pick only OUR rules — priority band 97-100 AND referencing our table/fwmark — and delete
-    # each by its exact, confirmed-present priority. System rules (prio 0/32766/32767) can never
-    # be selected, so they can never be drained.
+    # pick only OUR rules — priority band 97-100 AND referencing our table/fwmark, PLUS the
+    # prio-97 `... lookup main` direct-exclusion rules (97 is ours by the documented band
+    # contract; nothing else creates lookup-main rules there) — and delete each by its exact,
+    # confirmed-present priority. System rules (prio 0/32766/32767) can never be selected, so
+    # they can never be drained.
+    #
+    # The prio-97/main clause was ADDED in 1.3.16: without it a device's stale Direct rule
+    # survived every cleanup/rebuild (it references neither our table nor our fwmark), so
+    # switching a device/peer direct -> vpn_all left the old prio-97 rule OUTRANKING the new
+    # prio-99 one — the policy change looked applied but the device kept egressing via WAN
+    # until a reboot (field: RT-BE88U server peer, 2026-07-17).
     local _pr _guard=0
     while [ $_guard -lt 60 ]; do
         _guard=$((_guard + 1))
-        _pr=$(ip rule show 2>/dev/null | awk -F: '{p=$1+0} p>=97 && p<=100 && (/lookup '"$RT_TABLE"'([^0-9]|$)/ || /fwmark '"$FWMARK"'([^0-9]|$)/){print p; exit}')
+        _pr=$(ip rule show 2>/dev/null | awk -F: '{p=$1+0} p>=97 && p<=100 && (/lookup '"$RT_TABLE"'([^0-9]|$)/ || /fwmark '"$FWMARK"'([^0-9]|$)/ || (p==97 && / lookup main$/)){print p; exit}')
         case "$_pr" in ''|*[!0-9]*) break ;; esac
         ip rule del prio "$_pr" 2>/dev/null || break
     done
