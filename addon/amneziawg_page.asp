@@ -597,6 +597,7 @@ en: {
     NOHS_KS: " — and with the <b>kill-switch ON</b>, all VPN-routed traffic is blocked, so those devices have no internet until the handshake succeeds",
     DNSGEO_USER: "⚠ Domain-based geo lists are active ({0} domains in dnsmasq), but <b>DNS interception is off</b> (compatibility mode). Domains feed the routing only for clients that use the router's DNS — devices with DoH/private DNS bypass the VPN, so in practice mostly the IP lists (GeoIP/Antifilter) route. Not running zapret/Xray/b4? Turn compatibility mode off to re-enable interception.",
     DNSGEO_AUTO: "⚠ Domain-based geo lists are active ({1} domains), but DNS interception is <b>disabled automatically because of {0}</b>. Domains populate only for clients that use the router's DNS; IP lists keep working.",
+    CONF_PENDING: "⚠ The saved connection config differs from the one the tunnel is <b>currently running</b>. «Apply» updates routing/geo on the fly but never restarts the tunnel — press <b>«Restart»</b> to switch to the new config (keys, endpoint, obfuscation, DNS, MTU).",
     GEO_MATCHALL: "⛔ A rule in your <b>custom dnsmasq config</b> is routing <b>every</b> domain into a geo set, so Geo mode sends <b>all</b> traffic through the VPN (every site shows the VPN IP and geo-restricted services stop working). The offending line:<div style=\"margin:6px 0;\"><code>{0}</code></div>The <code>https://</code> (or a stray <code>//</code>) leaves an empty segment, which dnsmasq treats as “match everything”. Fix it in your custom dnsmasq config (<code>/jffs/configs/dnsmasq.conf.add</code>): keep only the bare domain — e.g. <code>ipset=/example.com/awg_dst</code> — then restart dnsmasq or reboot. AmneziaWG's own generated rules are fine; this is a hand-added line.",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">After the changes, click <b>«Apply»</b>. GeoIP routing by IP keeps working in the meantime.</span>",
     XRAY_CAP_HEADER: "ℹ <b>XRAYUI / Xray</b> is running in <b>transparent-proxy mode (TPROXY, «redirect all traffic»)</b>, capturing the router's LAN traffic. AmneziaWG now automatically gives the devices you assigned to it (<b>«VPN: all traffic»</b> / <b>«VPN: Geo only»</b>) <b>priority into the tunnel, ahead of Xray</b> — those devices go through AmneziaWG, while the rest of the LAN keeps using Xray. Both run side by side; no action is needed for this.",
@@ -796,7 +797,7 @@ en: {
     TITLE_APPLY: "Save and apply without restarting the VPN",
     BTN_SAVE_RESTART: "Save and fully restart the VPN",
     TITLE_SAVE_RESTART: "Save + restart the VPN (stop → start) + full rebuild of routes and firewall",
-    APPLY_DESC1_HTML: "<b>Apply</b> — save the settings and apply them «on the fly»: updates devices, routing policies, the firewall and the GeoIP/GeoSite lists <b>without dropping the VPN connection</b>. If the VPN is stopped — the settings are just saved and applied at the next start.",
+    APPLY_DESC1_HTML: "<b>Apply</b> — save the settings and apply them «on the fly»: devices, routing policies, the firewall and the GeoIP/GeoSite lists update <b>without dropping the VPN connection</b>. Changes to the connection config itself (keys, endpoint, obfuscation, DNS, MTU) take effect only after <b>«Restart»</b> — a yellow notice will point that out. If the VPN is stopped — the settings are just saved and applied at the next start.",
     APPLY_DESC2_HTML: "<b>Save and fully restart the VPN</b> (stop → start) — the config is re-applied (awg setconf), the interface, routes and firewall are rebuilt, the connection drops for a couple of seconds. Needed when changing keys, the server (Endpoint), MTU or obfuscation parameters (Jc, S1, H1…H4), or if the connection is «stuck».",
     SEC_LOG: "Log",
     BTN_GET_DIAG: "Get diagnostic data",
@@ -1012,6 +1013,7 @@ ru: {
     NOHS_KS: " — а с <b>включённым килл-свичом</b> весь VPN-трафик блокируется, поэтому на этих устройствах интернета не будет, пока рукопожатие не пройдёт",
     DNSGEO_USER: "⚠ Выбраны доменные гео-списки ({0} доменов в dnsmasq), но <b>перехват DNS выключен</b> (режим совместимости). Домены наполняют маршрутизацию только у устройств, использующих DNS роутера, — устройства с DoH/приватным DNS пройдут мимо VPN, т.е. фактически работают в основном IP-списки (GeoIP/Antifilter). Если zapret/Xray/b4 не используются — выключите режим совместимости, и перехват включится.",
     DNSGEO_AUTO: "⚠ Выбраны доменные гео-списки ({1} доменов), но перехват DNS <b>отключён автоматически из-за {0}</b>. Домены будут наполняться только у устройств, использующих DNS роутера; IP-списки работают как обычно.",
+    CONF_PENDING: "⚠ Сохранённая конфигурация подключения отличается от той, на которой туннель <b>работает сейчас</b>. «Применить» обновляет маршрутизацию/гео на лету, но туннель не перезапускает — нажмите <b>«Перезапустить»</b>, чтобы перейти на новую конфигурацию (ключи, endpoint, обфускация, DNS, MTU).",
     GEO_MATCHALL: "⛔ Правило в вашем <b>пользовательском конфиге dnsmasq</b> отправляет в гео-набор <b>все</b> домены, поэтому в режиме Гео через VPN уходит <b>весь</b> трафик (на всех сайтах виден IP VPN, гео-сервисы перестают работать). Проблемная строка:<div style=\"margin:6px 0;\"><code>{0}</code></div>Из-за <code>https://</code> (или лишнего <code>//</code>) появляется пустой сегмент, а его dnsmasq трактует как «совпадает со всем». Исправьте в своём конфиге dnsmasq (<code>/jffs/configs/dnsmasq.conf.add</code>): оставьте только домен — например <code>ipset=/example.com/awg_dst</code> — и перезапустите dnsmasq или перезагрузите роутер. Правила, которые генерирует сам AmneziaWG, тут ни при чём — строка добавлена вручную.",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>",
     XRAY_CAP_HEADER: "ℹ <b>XRAYUI / Xray</b> работает в режиме <b>прозрачного проксирования (TPROXY, «перенаправить весь трафик»)</b> и забирает LAN-трафик роутера. Теперь AmneziaWG автоматически даёт устройствам, назначенным на него (<b>«VPN: весь трафик»</b> / <b>«VPN: только Geo»</b>), <b>приоритет в туннель, впереди Xray</b> — такие устройства идут через AmneziaWG, а остальная сеть продолжает работать через Xray. Оба работают вместе, никаких действий не требуется.",
@@ -1211,7 +1213,7 @@ ru: {
     TITLE_APPLY: "Сохранить и применить без перезапуска VPN",
     BTN_SAVE_RESTART: "Сохранить и полностью перезапустить VPN",
     TITLE_SAVE_RESTART: "Сохранить + перезапуск VPN (stop → start) + полная пересборка маршрутов и firewall",
-    APPLY_DESC1_HTML: "<b>Применить</b> — сохранить настройки и применить их «на лету»: обновляет устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite <b>без разрыва VPN-соединения</b>. Если VPN остановлен — настройки просто сохранятся и применятся при следующем запуске.",
+    APPLY_DESC1_HTML: "<b>Применить</b> — сохранить настройки и применить их «на лету»: устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite обновляются <b>без разрыва VPN-соединения</b>. Изменения самой конфигурации подключения (ключи, endpoint, обфускация, DNS, MTU) вступают в силу только после <b>«Перезапустить»</b> — страница подскажет жёлтой плашкой. Если VPN остановлен — настройки просто сохранятся и применятся при следующем запуске.",
     APPLY_DESC2_HTML: "<b>Сохранить и полностью перезапустить VPN</b> (stop → start) — заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall, соединение на пару секунд прерывается. Нужно при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».",
     SEC_LOG: "Журнал",
     BTN_GET_DIAG: "Получить диагностические данные",
@@ -4143,6 +4145,7 @@ function updateStatusUI(s){
     renderDnsGeoWarning(s);
     renderGeoMatchallWarning(s);
     renderNoHandshakeWarning(s);
+    renderConfPendingWarning(s);
 }
 
 // Warn when a co-resident proxy/DPI tool (Xray/XRAYUI, zapret, ...) is running AND the
@@ -4292,6 +4295,23 @@ function renderGeoMatchallWarning(s){
     var ln = (s && s.geo_matchall_warn) || '';
     if(!ln){ el.style.display = 'none'; el.innerHTML = ''; return; }
     el.innerHTML = T('GEO_MATCHALL', escHtml(ln));
+    el.style.display = '';
+}
+
+// Saved config differs from the RUNNING tunnel (yellow). Apply deliberately never restarts
+// the daemon, so edits to the connection config itself (keys/endpoint/obfuscation/DNS/MTU)
+// sit in the saved conf until a Restart — without this badge users assumed Apply had switched
+// them (field case: a user swapped the whole provider config, applied, and kept riding the old
+// tunnel). Backend: status.conf_pending (launch-time conf md5 vs current conf; live peer-key
+// fallback right after an upgrade). Gated on !starting && !stopping like the other banners.
+function renderConfPendingWarning(s){
+    var el = document.getElementById('awg_confpend_warn');
+    if(!el) return;
+    if(!s || !s.conf_pending || !s.running || s.starting || s.stopping){
+        el.style.display = 'none'; el.innerHTML = '';
+        return;
+    }
+    el.innerHTML = T('CONF_PENDING');
     el.style.display = '';
 }
 
@@ -4828,6 +4848,7 @@ function initAutocompleteIp(){
                 <div id="awg_fwvpn_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; border:1px solid; border-radius:5px; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_dnsgeo_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_nohs_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
+                <div id="awg_confpend_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
 
                 <!-- Peers Table -->
                 <div class="awg-section" data-i18n="SEC_CONNECTED_PEERS">Connected peers</div>
@@ -5310,7 +5331,7 @@ function initAutocompleteIp(){
                     <span id="awg_ack_bottom" class="awg-ack"></span>
                 </div>
                 <div style="font-size:11px; opacity:0.7; margin:8px auto 0; max-width:640px; line-height:1.55; text-align:left;">
-                    <div data-i18n-html="APPLY_DESC1_HTML"><b>Apply</b> — save the settings and apply them «on the fly»: updates devices, routing policies, the firewall and the GeoIP/GeoSite lists <b>without dropping the VPN connection</b>. If the VPN is stopped — the settings are just saved and applied at the next start.</div>
+                    <div data-i18n-html="APPLY_DESC1_HTML"><b>Apply</b> — save the settings and apply them «on the fly»: devices, routing policies, the firewall and the GeoIP/GeoSite lists update <b>without dropping the VPN connection</b>. Changes to the connection config itself (keys, endpoint, obfuscation, DNS, MTU) take effect only after <b>«Restart»</b> — a yellow notice will point that out. If the VPN is stopped — the settings are just saved and applied at the next start.</div>
                     <div style="margin-top:4px;" data-i18n-html="APPLY_DESC2_HTML"><b>Save and fully restart the VPN</b> (stop → start) — the config is re-applied (awg setconf), the interface, routes and firewall are rebuilt, the connection drops for a couple of seconds. Needed when changing keys, the server (Endpoint), MTU or obfuscation parameters (Jc, S1, H1…H4), or if the connection is «stuck».</div>
                 </div>
 

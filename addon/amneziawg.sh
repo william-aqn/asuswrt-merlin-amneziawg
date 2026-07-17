@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.4.4"
+AWG_VERSION="1.4.5"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1973,6 +1973,11 @@ ip_rule_replace(){
     [ -z "$_sel" ] && _sel=$(printf '%s ' "$@" | sed -n 's/^\(fwmark[[:space:]][^ ]*\).*/\1/p')
     _sel=$(printf '%s' "$_sel" | sed 's/\./\\./g')
     if [ -n "$_pr" ] && [ -n "$_sel" ]; then
+        # Hot-apply short-circuit (1.4.5): exactly ONE copy of this rule already present ->
+        # nothing to do. Prio+selector uniquely identify our rules (97 -> main, 98/99/100 ->
+        # our table), so present-once means present-correct — and an unchanged Apply no longer
+        # even blips the rule with a drain/re-add.
+        [ "$(ip rule show 2>/dev/null | grep "^$_pr:" | grep -c "[[:space:]]${_sel}[[:space:]]")" = "1" ] && return 0
         while [ $_g -lt 60 ] && ip rule show 2>/dev/null | grep "^$_pr:" | grep -q "[[:space:]]${_sel}[[:space:]]"; do
             ip rule del "$@" 2>/dev/null || break
             _g=$((_g + 1))
@@ -1986,6 +1991,171 @@ ip_rule_replace(){
         done
     fi
     ip rule add "$@" 2>/dev/null || log_msg "WARNING: ip rule add failed: $*"
+}
+
+# =============================================================
+# Hot-apply machinery (1.4.5). setup_firewall no longer tears everything down first: the old
+# cleanup-then-rebuild left the LAN with NO marking rules and EMPTY sets for the whole rebuild
+# (~17-21 s on a loaded armv7 with ~16K static entries — field TUF-AX3000_V2: every Apply
+# visibly "reconnected" the VPN devices and leaked them to the WAN past the kill-switch, whose
+# blackhole only catches MARKED traffic). Now: new set content is STAGED into temp sets while
+# the old ones keep routing, then atomically ipset-swapped into place (kernel swaps the index
+# slots, so live iptables references flip to the new content in one syscall); the mangle chain
+# is rebuilt only when its DESIRED content actually changed (fingerprint below); ip rules are
+# reconciled in place (heal missing, drop stale) instead of drained wholesale. cleanup_firewall
+# keeps the full teardown for stop/rollback/uninstall.
+# =============================================================
+CHAIN_SIG_FILE="/tmp/.awg_chain_sig"   # fingerprint of the AWG chain's desired content (tmpfs)
+RUNNING_CONF_SIG="/tmp/.awg_running_conf_sig"   # md5 of the conf the RUNNING daemon was launched with
+
+# Remove one exact name from the owned-set registry (counterpart of register_owned_set).
+unregister_owned_set(){
+    [ -f "$OWNED_SETS" ] || return 0
+    grep -vxF "$1" "$OWNED_SETS" > "${OWNED_SETS}.tmp" 2>/dev/null
+    mv "${OWNED_SETS}.tmp" "$OWNED_SETS"
+}
+
+# Replay the DYNAMIC (timeout>0: dnsmasq/pre-resolve-fed) entries of live set $1 into staging
+# set $2, keeping each entry's REMAINING timeout — so a rebuild no longer wipes the warm
+# domain->IP state and excluded/geo domains keep routing through the swap with zero gap.
+# Permanent (timeout 0) entries are skipped: statics are re-loaded from their source files
+# right after this, and ipset_load_file's `restore -!` (exist flag) then upgrades any replayed
+# duplicate back to permanent. Replay goes FIRST into the empty staging set for that reason.
+ipset_replay_dynamic(){
+    ipset save "$1" 2>/dev/null | awk -v o="$1" -v n="$2" '
+        $1 == "add" && $2 == o {
+            if ($0 ~ / timeout 0( |$)/) next
+            $2 = n; print
+        }' | ipset restore -! 2>/dev/null
+    return 0
+}
+
+# Atomically put staging set $2 into service under final name $1. Existing final (ours) ->
+# `ipset swap` (the kernel exchanges the two sets' index slots, so rules bound to the final
+# set's index see the new content the same instant) and the old content is destroyed under the
+# temp name. No final yet (first build) -> `ipset rename`. Registry follows the outcome.
+ipset_commit_staged(){
+    local final="$1" tmp="$2"
+    if ipset list "$final" -t >/dev/null 2>&1; then
+        if ipset swap "$tmp" "$final" 2>/dev/null; then
+            ipset destroy "$tmp" 2>/dev/null
+            unregister_owned_set "$tmp"
+            register_owned_set "$final"
+            return 0
+        fi
+        return 1
+    fi
+    if ipset rename "$tmp" "$final" 2>/dev/null; then
+        unregister_owned_set "$tmp"
+        register_owned_set "$final"
+        return 0
+    fi
+    return 1
+}
+
+# Destroy every registry-owned set NOT named in $* — deleted policies, an awg_ipset_name
+# rename's old family, and crashed staging leftovers. Runs AFTER the chain reconcile, so a
+# still-referenced set can only be one the kernel refuses to destroy (silently retried on the
+# next apply; stays registered). The while-read keeps the ORIGINAL fd while unregister rewrites
+# the file, so the walk is stable.
+reconcile_owned_sets(){
+    [ -f "$OWNED_SETS" ] || return 0
+    local _keep=" $* " _s
+    while read -r _s; do
+        [ -z "$_s" ] && continue
+        case "$_keep" in *" $_s "*) continue ;; esac
+        ipset flush "$_s" 2>/dev/null
+        if ipset destroy "$_s" 2>/dev/null; then
+            unregister_owned_set "$_s"
+            log_msg "Removed obsolete geo ipset: $_s"
+        fi
+    done < "$OWNED_SETS"
+    return 0
+}
+
+# Fingerprint of everything that determines the AWG chain's rule content: header exclusions
+# (lan/srv/endpoint), the device list + policies, the default policy, and each geo policy's
+# mode + set availability (emit_geo_rules skips a missing/foreign set, which changes the chain
+# — so availability is part of the identity). Same inputs -> same chain, so a matching
+# fingerprint lets setup_firewall keep the LIVE chain untouched (the sets under it were already
+# swapped to the new content). $1=default_policy $2=lan_net $3=srv_net $4=endpoint.
+chain_state_sig(){
+    {
+        echo "v1|$1|$2|$3|$4|$FWMARK|$RT_TABLE|$AWG_CHAIN"
+        cat "$CLIENTS_FILE" 2>/dev/null
+        local _gid _set _exc
+        for _gid in $(geo_ids); do
+            _set=$(geo_ipset "$_gid"); _exc=$(geo_exc_ipset "$_gid")
+            printf 'geo|%s|%s|%s|' "$_gid" "$(geo_mode "$_gid")" "$_set"
+            if ipset list "$_set" -t >/dev/null 2>&1 && geo_set_ours "$_gid" "$_set"; then printf 'ok|'; else printf 'no|'; fi
+            if ipset list "$_exc" -t >/dev/null 2>&1 && geo_set_ours "$_gid" "$_exc"; then echo "exc"; else echo "noexc"; fi
+        done
+    } | md5sum | awk '{print $1}'
+}
+
+# Is ANY geo policy actually routed (a client or the default references vpn_geo* whose set is
+# live and ours)? Mirrors the emit_geo_rules gating — used by the hot-apply skip path to set
+# has_geo without walking the chain-build loops (geo_in_use is broader: it also counts mere
+# configured content, which must not force DNS interception on).
+any_geo_routed(){
+    local _dp _ip _n _pol _mac _id _s
+    _dp=$(get_setting awg_default_policy)
+    case "$_dp" in
+        vpn_geo|vpn_geo_*)
+            _id=$(geo_policy_of_ref "$_dp"); _s=$(geo_ipset "$_id")
+            ipset list "$_s" -t >/dev/null 2>&1 && geo_set_ours "$_id" "$_s" && return 0 ;;
+    esac
+    [ -f "$CLIENTS_FILE" ] || return 1
+    while IFS=',' read -r _ip _n _pol _mac || [ -n "$_ip" ]; do
+        _pol=$(echo "$_pol" | tr -d ' ')
+        case "$_pol" in
+            vpn_geo|vpn_geo_*)
+                _id=$(geo_policy_of_ref "$_pol"); _s=$(geo_ipset "$_id")
+                ipset list "$_s" -t >/dev/null 2>&1 && geo_set_ours "$_id" "$_s" && return 0 ;;
+        esac
+    done < "$CLIENTS_FILE"
+    return 1
+}
+
+# Reconcile our policy ip rules against the desired list in file $1 (one exact `ip rule add`
+# spec per line): ensure each desired rule exists (ip_rule_replace short-circuits when it
+# already does), then delete OUR band rules that are no longer desired — a removed device /
+# flipped policy used to rely on cleanup_firewall's wholesale drain, which is exactly the gap
+# this replaces. Selection mirrors drain_ip_rules (prio 97-100 + our table/fwmark + the prio-97
+# lookup-main direct rules), so system rules can never be touched; deletes are exact-spec on a
+# rule we JUST enumerated — the old-kernel no-match mis-delete can't fire.
+reconcile_ip_rules(){
+    local _f="$1" _line _spec
+    while read -r _line; do
+        [ -n "$_line" ] && ip_rule_replace $_line
+    done < "$_f"
+    ip rule show 2>/dev/null | awk -v t="$RT_TABLE" -v m="$FWMARK" '
+        {
+            p = $1 + 0
+            if (p < 97 || p > 100) next
+            line = $0; sub(/^[0-9]+:[ \t]+/, "", line)
+            ours = 0
+            if (line ~ ("lookup " t "([^0-9]|$)")) ours = 1
+            if (line ~ ("fwmark " m "([^0-9a-fA-F]|$)")) ours = 1
+            if (p == 97 && line ~ / lookup main$/) ours = 1
+            if (!ours) next
+            sel = ""
+            if (match(line, /^from [^ ]+/)) sel = substr(line, RSTART, RLENGTH)
+            if (sel == "from all") sel = ""
+            fw = ""
+            if (match(line, /fwmark [^ ]+/)) fw = substr(line, RSTART, RLENGTH)
+            tbl = ""
+            if (match(line, /lookup [^ ]+/)) tbl = substr(line, RSTART, RLENGTH)
+            spec = ""
+            if (sel != "") spec = sel " "
+            if (fw != "") spec = spec fw " "
+            print spec tbl " prio " p
+        }' | while read -r _spec; do
+            [ -z "$_spec" ] && continue
+            grep -qxF "$_spec" "$_f" && continue
+            ip rule del $_spec 2>/dev/null && log_msg "Removed stale policy rule: $_spec"
+        done
+    return 0
 }
 
 cleanup_firewall(){
@@ -2034,6 +2204,9 @@ cleanup_firewall(){
     cru d awg_geo_update 2>/dev/null
 
     cleanup_ipv6_block
+
+    # The chain fingerprint describes a chain that no longer exists.
+    rm -f "$CHAIN_SIG_FILE"
 
     log_msg "Firewall rules cleaned"
 }
@@ -2489,7 +2662,15 @@ cleanup_xray_priority(){
 }
 
 setup_firewall(){
-    cleanup_firewall
+    # HOT-APPLY (1.4.5): no cleanup_firewall here anymore. The old teardown-then-rebuild left
+    # the LAN unmarked + the sets empty for the whole rebuild (~17-21 s on a loaded armv7 —
+    # every Apply looked like a VPN reconnect AND leaked geo devices to the WAN past the
+    # kill-switch, whose blackhole only catches marked traffic). Everything below is now
+    # idempotent-or-staged: sets are built aside and atomically swapped in, the chain is
+    # rebuilt only when its desired content changed, ip rules are reconciled in place, and
+    # obsolete sets are reaped via the registry. Full teardown lives on in cleanup_firewall
+    # for stop/rollback/uninstall. NB transient ipset RAM peaks at old+new during the stage —
+    # bounded by the same divided maxelem budget, and the swap frees the old copy right after.
 
     local default_policy=$(get_setting awg_default_policy)
     [ -z "$default_policy" ] && default_policy="direct"
@@ -2520,10 +2701,9 @@ setup_firewall(){
     fi
     local maxelem; maxelem=$(geo_maxelem "$total_max")
 
-    # NOTE: cleanup_firewall (called at the top of setup_firewall) already destroyed every set we
-    # owned via the registry — including the OLD names after an awg_ipset_name rename — so there's
-    # no orphaned "<oldbase>*" family to chase here. We just (re)create + re-register below.
-    # GC per-policy content files for policies deleted in the UI before (re)building active ones.
+    # Obsolete sets (deleted policies, an awg_ipset_name rename's old family, crashed staging
+    # temps) are reaped by reconcile_owned_sets AFTER the chain reconcile below — here we only
+    # GC per-policy content files for policies deleted in the UI.
     prune_orphan_policies
 
     # Sync the SHARED pool to the union of all policies' selections (drop de-selected files) and
@@ -2534,56 +2714,81 @@ setup_firewall(){
     prune_custom_urls
     build_geosite_domains
 
-    local gid gset
+    # Staged build: load each policy's NEW content into a "_t" staging set while the live set
+    # keeps routing, then ipset_commit_staged swaps it into place atomically. Dynamic (dnsmasq/
+    # pre-resolve-fed) entries are replayed first with their remaining timeouts, so domain
+    # routing survives the rebuild with no gap at all. Shared-base semantics preserved: a
+    # pre-existing set we don't own is loaded IN PLACE for id 1 (documented shared behavior —
+    # we must never destroy/swap another tool's set) and skipped for id>=2 (foreign collision).
+    local gid gset tset _ldt _staged _desired_sets=""
     for gid in $(geo_ids); do
         gset=$(geo_ipset "$gid")
         local _cerr _crc
-        _cerr=$(ipset create "$gset" hash:net family inet hashsize 4096 maxelem "$maxelem" timeout 86400 2>&1)
-        _crc=$?
-        # Register the set as ours ONLY if WE created it (rc 0). cleanup destroyed + cleared the
-        # registry first, so each build re-registers exactly the sets it creates.
-        [ "$_crc" -eq 0 ] && register_owned_set "$gset"
-        if ! ipset list "$gset" >/dev/null 2>&1; then
-            log_msg "ERROR: ipset $gset creation failed, geo policy $gid disabled${_cerr:+: $_cerr}"
-            continue
-        fi
-        # id>=2 names are derived from our base; if one already existed (create rc!=0, so it's
-        # not in our registry) it belongs to another tool — skip the policy rather than load OUR
-        # entries into a foreign set. id 1 keeps the documented shared-base behavior.
-        if ! geo_set_ours "$gid" "$gset"; then
-            log_msg "WARNING: ipset $gset pre-exists and isn't ours — skipping geo policy $gid (foreign-name collision)"
-            continue
+        _staged=1; _ldt=""
+        if ipset list "$gset" -t >/dev/null 2>&1 && ! geo_set_ours 2 "$gset"; then
+            # Set exists but is not in our registry (geo_set_ours with a non-1 id = pure
+            # registry test). id 1 -> shared-base in-place load; id>=2 -> foreign, skip.
+            if [ "$gid" = 1 ]; then
+                _staged=0; _ldt="$gset"
+            else
+                log_msg "WARNING: ipset $gset pre-exists and isn't ours — skipping geo policy $gid (foreign-name collision)"
+                continue
+            fi
+        else
+            tset="${gset}_t"
+            ipset destroy "$tset" 2>/dev/null
+            _cerr=$(ipset create "$tset" hash:net family inet hashsize 4096 maxelem "$maxelem" timeout 86400 2>&1)
+            _crc=$?
+            if [ "$_crc" -ne 0 ] || ! ipset list "$tset" -t >/dev/null 2>&1; then
+                log_msg "ERROR: ipset $tset creation failed, geo policy $gid disabled${_cerr:+: $_cerr}"
+                continue
+            fi
+            register_owned_set "$tset"
+            # Warm state first (empty set -> no -exist conflicts), statics after: their
+            # `timeout 0` restore -! lines upgrade any replayed duplicate back to permanent.
+            ipset_replay_dynamic "$gset" "$tset"
+            _ldt="$tset"
         fi
 
-        # Load THIS policy's selected subset from the shared pool into its own set.
-        local _svc _f _ak _uk _cip
+        # Load THIS policy's selected subset from the shared pool into the target set.
+        local _svc _f _ak _uk
         for _svc in $(selected_geoip "$gid"); do
             _f="$GEO_DIR/geoip/v2fly_${_svc}.cidr"; [ -f "$_f" ] || continue
-            ipset_load_file "$_f" "$gset"
+            ipset_load_file "$_f" "$_ldt"
         done
         for _ak in $(selected_antifilter "$gid"); do
             antifilter_is_domain "$_ak" && continue
             _f="$GEO_DIR/antifilter/af_${_ak}.cidr"; [ -f "$_f" ] || continue
-            ipset_load_file "$_f" "$gset"
+            ipset_load_file "$_f" "$_ldt"
         done
         # Custom URL CIDRs this policy references (shared files keyed by URL hash).
         for _uk in $(policy_url_keys "$gid"); do
             _f="$GEO_DIR/geoip/userurl_${_uk}.cidr"; [ -f "$_f" ] || continue
-            ipset_load_file "$_f" "$gset"
+            ipset_load_file "$_f" "$_ldt"
         done
-        # Custom IPs (field) -> permanent entries.
-        for _cip in $(get_setting "$(geo_key "$gid" custom_ips)" | tr ',' ' '); do
-            _cip=$(echo "$_cip" | tr -d ' \r')
-            [ -n "$_cip" ] && ipset add "$gset" "$_cip" timeout 0 2>/dev/null
-        done
+        # Custom IPs (field) -> permanent entries, batched through ONE `ipset restore` (the old
+        # per-IP `ipset add` loop forked a process per entry — 100+ execs on big fields).
+        get_setting "$(geo_key "$gid" custom_ips)" | tr ',' '\n' | awk -v s="$_ldt" '
+            { gsub(/[ \r]/, ""); if ($0 != "") print "add " s " " $0 " timeout 0" }' \
+            | ipset restore -! 2>/dev/null
         # GeoCustom pasted files (per-policy content): regenerate, then load this policy's CIDRs.
         apply_custom_geo "$gid"
         for _f in "$GEO_DIR"/geoip/usercustom_p${gid}_*.cidr; do
             [ -f "$_f" ] || continue
-            ipset_load_file "$_f" "$gset"
+            ipset_load_file "$_f" "$_ldt"
         done
         # This policy's own custom-domains file (consumed by the dnsmasq builder below).
         build_custom_domains "$gid"
+
+        if [ "$_staged" = 1 ]; then
+            if ! ipset_commit_staged "$gset" "$tset"; then
+                log_msg "ERROR: could not activate rebuilt ipset $gset (swap/rename failed) — geo policy $gid keeps its previous entries this round"
+                ipset destroy "$tset" 2>/dev/null
+                unregister_owned_set "$tset"
+                # A previous live set (if any) keeps routing; fall through so exc/domains still build.
+            fi
+        fi
+        _desired_sets="$_desired_sets $gset"
 
         # --- Exclusions channel (pointwise exceptions) ---
         # Always (re)generate this policy's exclusion content files (self-clean when empty), so a
@@ -2592,24 +2797,39 @@ setup_firewall(){
         apply_custom_geo "$gid" exc
         build_custom_domains "$gid" exc
         if policy_has_exc "$gid"; then
-            local _exset _ecrc
+            local _exset _etmp _exldt _exstaged
             _exset=$(geo_exc_ipset "$gid")
-            ipset create "$_exset" hash:net family inet hashsize 1024 maxelem 8192 timeout 86400 2>/dev/null
-            _ecrc=$?
-            [ "$_ecrc" -eq 0 ] && register_owned_set "$_exset"
-            # Ownership guard mirrors the main set: never load OUR entries into a foreign set that
-            # happens to use the derived "<base><id>_x" name (id 1's shared base proceeds).
-            if ipset list "$_exset" >/dev/null 2>&1 && geo_set_ours "$gid" "$_exset"; then
-                for _cip in $(get_setting "$(geo_key "$gid" exc_ips)" | tr ',' ' '); do
-                    _cip=$(echo "$_cip" | tr -d ' \r')
-                    [ -n "$_cip" ] && ipset add "$_exset" "$_cip" timeout 0 2>/dev/null
-                done
+            _exstaged=1; _exldt=""
+            if ipset list "$_exset" -t >/dev/null 2>&1 && ! geo_set_ours 2 "$_exset"; then
+                # Ownership guard mirrors the main set (id 1's shared base proceeds in place).
+                if [ "$gid" = 1 ]; then _exstaged=0; _exldt="$_exset"; else _exldt=""; fi
+            else
+                _etmp="${_exset}_t"
+                ipset destroy "$_etmp" 2>/dev/null
+                if ipset create "$_etmp" hash:net family inet hashsize 1024 maxelem 8192 timeout 86400 2>/dev/null; then
+                    register_owned_set "$_etmp"
+                    ipset_replay_dynamic "$_exset" "$_etmp"
+                    _exldt="$_etmp"
+                fi
+            fi
+            if [ -n "$_exldt" ]; then
+                get_setting "$(geo_key "$gid" exc_ips)" | tr ',' '\n' | awk -v s="$_exldt" '
+                    { gsub(/[ \r]/, ""); if ($0 != "") print "add " s " " $0 " timeout 0" }' \
+                    | ipset restore -! 2>/dev/null
                 for _f in "$GEO_DIR"/geoip/excustom_p${gid}_*.cidr; do
-                    [ -f "$_f" ] && ipset_load_file "$_f" "$_exset"
+                    [ -f "$_f" ] && ipset_load_file "$_f" "$_exldt"
                 done
                 for _uk in $(policy_url_keys "$gid" exc); do
-                    _f="$GEO_DIR/geoip/userurl_${_uk}.cidr"; [ -f "$_f" ] && ipset_load_file "$_f" "$_exset"
+                    _f="$GEO_DIR/geoip/userurl_${_uk}.cidr"; [ -f "$_f" ] && ipset_load_file "$_f" "$_exldt"
                 done
+                if [ "$_exstaged" = 1 ]; then
+                    if ! ipset_commit_staged "$_exset" "$_etmp"; then
+                        log_msg "ERROR: could not activate rebuilt exclusion ipset $_exset — policy $gid keeps its previous exclusions this round"
+                        ipset destroy "$_etmp" 2>/dev/null
+                        unregister_owned_set "$_etmp"
+                    fi
+                fi
+                _desired_sets="$_desired_sets $_exset"
             fi
         fi
 
@@ -2789,32 +3009,51 @@ setup_firewall(){
     if geo_in_use; then _fmatch=$(geo_foreign_matchall); fi
     [ -n "$_fmatch" ] && log_msg "WARNING: a dnsmasq directive in your custom config routes ALL domains into a geo set — Geo mode will send EVERY site through the VPN. Offending line: $_fmatch (remove the 'https://' / empty segment, keep only the bare domain)"
 
+    # --- Device list first: clients.list is a chain-fingerprint input ---
+    save_clients
+
+    # --- Chain-rule inputs (fingerprint inputs too) ---
+    local lan_net endpoint srv_net
+    lan_net=$(get_lan_net)
+    endpoint=$(get_endpoint)
+    srv_net=$(get_setting awgs_subnet)
+    case "$srv_net" in */*) ;; *) srv_net="" ;; esac
+
+    # --- HOT APPLY: rebuild the chain ONLY when its desired content changed. The sets under
+    #     the live chain were already swapped to fresh content above, so a matching fingerprint
+    #     means the existing rules are byte-for-byte what we would emit — leave them completely
+    #     alone: no flush, no marking gap, no conntrack flush. The two probes catch external
+    #     damage (chain gone / unhooked by a firmware firewall restart): either failing forces
+    #     a rebuild — the safe direction (a lock-blip rc>=2 on -C just means one extra rebuild).
+    #     NB the rebuild body below keeps its original one-level indentation to keep the diff
+    #     reviewable — it is the `if [ "$_chain_dirty" = 1 ]` block until the matching `fi`. ---
+    local _chain_sig _chain_dirty=1
+    _chain_sig=$(chain_state_sig "$default_policy" "$lan_net" "$srv_net" "$endpoint")
+    if [ "$(cat "$CHAIN_SIG_FILE" 2>/dev/null)" = "$_chain_sig" ] \
+        && iptables -t mangle -S "$AWG_CHAIN" >/dev/null 2>&1 \
+        && iptables -t mangle -C PREROUTING -j "$AWG_CHAIN" 2>/dev/null; then
+        _chain_dirty=0
+        any_geo_routed && has_geo=true
+        log_msg "Policies unchanged — marking rules left untouched (hot apply)"
+    fi
+    if [ "$_chain_dirty" = 1 ]; then
+    rm -f "$CHAIN_SIG_FILE"   # stale the moment we start touching the chain
+
     # --- Create custom chain in mangle table ---
     iptables -t mangle -N "$AWG_CHAIN" 2>/dev/null || iptables -t mangle -F "$AWG_CHAIN"
 
     # --- Exclusion rules (evaluated first) ---
-    local lan_net
-    lan_net=$(get_lan_net)
-    local endpoint
-    endpoint=$(get_endpoint)
-
     iptables -t mangle -A "$AWG_CHAIN" -m addrtype --dst-type LOCAL -j RETURN
     [ -n "$lan_net" ] && iptables -t mangle -A "$AWG_CHAIN" -d "$lan_net" -j RETURN
     # AWG-server peer subnet: LAN->peer and peer->peer traffic must never be pulled into the
     # client tunnel by a device/default policy — RETURN it like the LAN net. Emitted whenever
     # a subnet is configured (cheap, and the rule is correct even while the server is down).
-    local srv_net
-    srv_net=$(get_setting awgs_subnet)
-    case "$srv_net" in
-        */*) iptables -t mangle -A "$AWG_CHAIN" -d "$srv_net" -j RETURN 2>/dev/null ;;
-        *)   srv_net="" ;;
-    esac
+    [ -n "$srv_net" ] && iptables -t mangle -A "$AWG_CHAIN" -d "$srv_net" -j RETURN 2>/dev/null
     iptables -t mangle -A "$AWG_CHAIN" -p udp -m multiport --dports 67,68,123 -j RETURN
     iptables -t mangle -A "$AWG_CHAIN" -d 224.0.0.0/4 -j RETURN
     [ -n "$endpoint" ] && iptables -t mangle -A "$AWG_CHAIN" -d "$endpoint" -j RETURN
 
     # --- Per-device rules (two passes for correct ordering) ---
-    save_clients
     if [ -f "$CLIENTS_FILE" ] && [ -s "$CLIENTS_FILE" ]; then
 
         # Pass 1: "direct" exclusions (RETURN rules must come before MARK rules)
@@ -2895,6 +3134,11 @@ setup_firewall(){
             log_msg "Default: direct"
             ;;
     esac
+
+    # Chain now matches the fingerprint computed above — record it so the next unchanged
+    # Apply skips this whole block (and its marking gap) entirely.
+    printf '%s' "$_chain_sig" > "$CHAIN_SIG_FILE"
+    fi   # end of the _chain_dirty rebuild block (hot apply)
 
     # --- Hook chain into PREROUTING (ipt_add_once: a lock-blip on the -C guard must not
     #     stack a duplicate jump — packets would traverse AWG twice and cleanup's single
@@ -2989,15 +3233,49 @@ setup_firewall(){
     # --- Flush conntrack of already-marked flows so they re-establish through the tunnel.
     #     NOTE: this re-routes only flows that ALREADY carry our fwmark; a device just
     #     switched direct->VPN keeps its in-flight (unmarked) flows on their old path until
-    #     they close. New connections route correctly immediately. ---
-    flush_conntrack
+    #     they close. New connections route correctly immediately.
+    #     HOT APPLY: skipped when the chain (policies) did not change — marking never paused,
+    #     so live flows need no re-path; set-content changes take effect per-packet anyway
+    #     (no CONNMARK). This also stops an unchanged Apply from resetting every VPN device's
+    #     established sessions, which was its own source of "connection reloads on Apply". ---
+    [ "$_chain_dirty" = 1 ] && flush_conntrack
 
-    # --- Policy route for router-originated traffic. Re-added here (not only in
-    #     do_start) so it survives firewall-restart and Apply, which call
-    #     setup_firewall directly after cleanup_firewall removed it ---
+    # --- Policy route for router-originated traffic. Re-asserted here (not only in do_start)
+    #     so it survives a firmware firewall-restart; ip_rule_replace makes it a no-op while
+    #     the rule is already in place (hot apply). ---
     local awg_self
     awg_self=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
     [ -n "$awg_self" ] && ip_rule_replace from "$awg_self" lookup $RT_TABLE prio 100
+
+    # --- Reconcile policy ip rules: heal missing ones (cheap — ip_rule_replace short-circuits
+    #     on present) and DROP stale ones (removed device / policy flip) — the wholesale drain
+    #     that used to do this lived in cleanup_firewall, which the hot apply no longer calls.
+    #     Desired specs mirror the ip_rule_replace call sites exactly: 98 fwmark, 100 self,
+    #     97 direct exclusions (only under a non-direct default), 99 vpn_all — IP-keyed clients
+    #     only (MAC clients live in the chain, not in ip rules). ---
+    local _iprf="/tmp/.awg_want_iprules.$$"
+    {
+        echo "fwmark $FWMARK lookup $RT_TABLE prio 98"
+        [ -n "$awg_self" ] && echo "from $awg_self lookup $RT_TABLE prio 100"
+        if [ -f "$CLIENTS_FILE" ]; then
+            while IFS=',' read -r dev_id name policy mac || [ -n "$dev_id" ]; do
+                dev_id=$(echo "$dev_id" | tr -d ' '); policy=$(echo "$policy" | tr -d ' '); mac=$(echo "$mac" | tr -d ' ')
+                [ -z "$dev_id" ] && continue
+                [ -n "$mac" ] && continue
+                case "$dev_id" in *[!0-9.]*) continue ;; esac
+                case "$policy" in
+                    direct)  [ "$default_policy" != "direct" ] && echo "from $dev_id lookup main prio 97" ;;
+                    vpn_all) echo "from $dev_id lookup $RT_TABLE prio 99" ;;
+                esac
+            done < "$CLIENTS_FILE"
+        fi
+    } > "$_iprf"
+    reconcile_ip_rules "$_iprf"
+    rm -f "$_iprf"
+
+    # --- Reap obsolete registry-owned sets (deleted policies, renamed base, crashed temps) —
+    #     safe only now: the chain reconcile above dropped any rule that referenced them. ---
+    reconcile_owned_sets $_desired_sets
 
     # --- Cron: optional geo auto-update + route self-heal watchdog. The watchdog is
     #     (re)added here so it survives firewall-restart/Apply — cleanup_firewall drops
@@ -4241,6 +4519,14 @@ do_start(){
     arm_lan_deadman "$(pidof amneziawg-go 2>/dev/null | awk '{print $1}')"
     setup_firewall
 
+    # Fingerprint of the config the DAEMON is actually running (this launch's $CONF). The
+    # status builder compares it against the current generated conf: a later Apply that edits
+    # tunnel params (keys/endpoint/obfuscation) regenerates the file but deliberately does NOT
+    # restart the daemon — the mismatch drives the page's "изменения применятся после
+    # Перезапустить" badge instead of leaving the user to guess (field case: a user swapped
+    # the whole provider config, pressed Apply and kept riding the OLD tunnel unaware).
+    md5sum "$CONF" 2>/dev/null | awk '{print $1}' > "$RUNNING_CONF_SIG"
+
     conn_record_start
     log_msg "Started, verifying tunnel connectivity (probing: $(watchdog_hosts))..."
     update_status
@@ -4406,6 +4692,7 @@ do_stop(){
     ip link set "$IFACE" down 2>/dev/null
     ip link del "$IFACE" 2>/dev/null
     rm -f /var/run/amneziawg/"$IFACE".sock
+    rm -f "$RUNNING_CONF_SIG"   # no daemon -> no "running config" to compare against
 
     reload_dnsmasq
 
@@ -4498,6 +4785,26 @@ EOF
     # post-start window before the first handshake legitimately reads true).
     local no_handshake=false
     [ "$running" = "true" ] && [ "$peer_hs_max" -eq 0 ] && no_handshake=true
+
+    # Saved config differs from what the RUNNING daemon carries (Apply saves + regenerates the
+    # conf but deliberately never restarts the tunnel) — drives the page's yellow "изменения
+    # применятся после «Перезапустить»" badge. Primary signal: the launch-time md5 recorded by
+    # do_start vs the current conf. Fallback (upgrade over a running tunnel, no sig recorded
+    # yet): compare the live first-peer public key from `awg show dump` against the conf's —
+    # solid for the real field case (a swapped provider config always swaps the peer key);
+    # param-only edits are caught once the sig exists, i.e. from the first restart on.
+    local conf_pending=false _rc_sig _cf_sig _pk_live _pk_conf
+    if [ "$running" = "true" ] && [ -f "$CONF" ]; then
+        _cf_sig=$(md5sum "$CONF" 2>/dev/null | awk '{print $1}')
+        _rc_sig=$(cat "$RUNNING_CONF_SIG" 2>/dev/null)
+        if [ -n "$_rc_sig" ]; then
+            [ "$_rc_sig" != "$_cf_sig" ] && conf_pending=true
+        elif [ -n "$dump" ]; then
+            _pk_live=$(printf '%s\n' "$dump" | awk -F'	' 'NR==1{print $1}')
+            _pk_conf=$(awk -F' *= *' '/^PublicKey/{print $2; exit}' "$CONF" 2>/dev/null)
+            [ -n "$_pk_live" ] && [ -n "$_pk_conf" ] && [ "$_pk_live" != "$_pk_conf" ] && conf_pending=true
+        fi
+    fi
 
     # Current-session uptime + start epoch for the UI (0 = none: stopped, or the marker predates
     # this version — it appears on the next start). Uptime is the /proc/uptime delta (monotonic);
@@ -4691,7 +4998,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"profile":{"active":${pf_active},"user":${pf_user},"auto":${pf_auto},"name":"${pf_name}","failover":${pf_failover},"list":[${pf_list}]},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","geo_matchall_warn":"${geo_matchall_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conf_pending":${conf_pending},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"profile":{"active":${pf_active},"user":${pf_user},"auto":${pf_auto},"name":"${pf_name}","failover":${pf_failover},"list":[${pf_list}]},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","geo_matchall_warn":"${geo_matchall_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
