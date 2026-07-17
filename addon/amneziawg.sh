@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.4.3"
+AWG_VERSION="1.4.4"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1275,11 +1275,33 @@ mount_menu_tree(){
     sed -i '/tabName: "AmneziaWG/d' /tmp/menuTree.js
     # Remove our previous widget block (marker range; independent of the word "AmneziaWG")
     sed -i '/\/\* AWG_WIDGET_START \*\//,/\/\* AWG_WIDGET_END \*\//d' /tmp/menuTree.js
-    # Insert the tabs after the OpenVPN entry. Both `a` commands anchor on the same OpenVPN
-    # line, so the SERVER entry goes in first and the client entry lands above it — final
-    # menu order: AmneziaWG, then AmneziaWG Server.
-    [ -n "$srv_page" ] && sed -i "/url: \"Advanced_VPN_OpenVPN.asp\"/a {url: \"$srv_page\", tabName: \"AmneziaWG Server\"}," /tmp/menuTree.js
-    sed -i "/url: \"Advanced_VPN_OpenVPN.asp\"/a {url: \"$page\", tabName: \"AmneziaWG\"}," /tmp/menuTree.js
+    # Insert the tabs. TWO menuTree layouts ship in the field:
+    #  - Merlin-proper builds (386.x…3006.x) carry Merlin's own VPN pages — anchor on the
+    #    OpenVPN entry so our tabs sit next to the other VPN clients. Both `a` commands
+    #    anchor on the same line: SERVER goes in first, the client entry lands above it —
+    #    final menu order: AmneziaWG, then AmneziaWG Server.
+    #  - gnuton builds (TUF/DSL models) ship the STOCK ASUS VPN menu (VPN Fusion:
+    #    Advanced_VPNServer/VPNClient_Content) — no Advanced_VPN_OpenVPN.asp at all, so the
+    #    anchored sed silently no-oped and the tab never appeared (page itself still worked
+    #    via the header widget, shown under the firmware's "Others" fallback tab; field case
+    #    TUF-AX3000_V2 @ 3004.388.10_2-gnuton1). Fall back to a structural insert: before the
+    #    menu_VPN section terminator {url: "NULL", tabName: "__INHERIT__"}, which exists in
+    #    EVERY firmware variant (same approach as XRAYUI — why X-RAY showed while we didn't).
+    if grep -q 'url: "Advanced_VPN_OpenVPN.asp"' /tmp/menuTree.js; then
+        [ -n "$srv_page" ] && sed -i "/url: \"Advanced_VPN_OpenVPN.asp\"/a {url: \"$srv_page\", tabName: \"AmneziaWG Server\"}," /tmp/menuTree.js
+        sed -i "/url: \"Advanced_VPN_OpenVPN.asp\"/a {url: \"$page\", tabName: \"AmneziaWG\"}," /tmp/menuTree.js
+    else
+        log_msg "menuTree: stock-style VPN menu (gnuton/TUF) — inserting tab before section terminator"
+        awk -v pg="$page" -v srv="$srv_page" '
+            /index:[[:space:]]*"menu_VPN"/ { invpn=1 }
+            invpn && /"NULL"/ && /__INHERIT__/ {
+                print "{url: \"" pg "\", tabName: \"AmneziaWG\"},"
+                if (srv != "") print "{url: \"" srv "\", tabName: \"AmneziaWG Server\"},"
+                invpn=0
+            }
+            { print }
+        ' /tmp/menuTree.js > /tmp/menuTree.js.awg && mv /tmp/menuTree.js.awg /tmp/menuTree.js
+    fi
     # Append the tiny widget loader (runs on every page; version-stamped for cache-busting)
     cat >> /tmp/menuTree.js <<AWGEOF
 /* AWG_WIDGET_START */
