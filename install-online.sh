@@ -166,10 +166,42 @@ fi
 
 echo "Downloaded: $DEST"
 
+# Preserve the geo lists across the upgrade.
+# The package prerm runs `rm -rf /opt/amneziawg`, which takes the downloaded GeoIP/GeoSite data
+# with it. The in-app updater (finalize_ipk_install) already moves geo aside to a sibling dir and
+# puts it back — but THIS script calls opkg directly and used to skip that entirely, so upgrading
+# from the shell silently wiped the lists and left the page saying "Списки ещё не загружены",
+# with geo routing dead until a manual or nightly re-download. Field-hit three times in a row.
+# Honour the same user setting the in-app updater honours: awg_geo_wipe_update=1 means the user
+# WANTS a clean re-download, so leave it alone in that case.
+GEO_DIR="/opt/amneziawg/geo"
+GEO_BAK="/opt/amneziawg_geobak"
+GEO_SAVED=0
+SETTINGS="/jffs/addons/custom_settings.txt"
+WIPE=$(awk '$1=="awg_geo_wipe_update"{print $2; exit}' "$SETTINGS" 2>/dev/null)
+if [ "$WIPE" != "1" ] && [ -d "$GEO_DIR" ]; then
+    rm -rf "$GEO_BAK" 2>/dev/null
+    if mv "$GEO_DIR" "$GEO_BAK" 2>/dev/null; then
+        GEO_SAVED=1
+        echo "Preserving geo lists..."
+    fi
+fi
+
 # Install
 echo "Installing..."
 opkg install "$TMP_DIR/$IPK_FILE" || opkg install --force-architecture "$TMP_DIR/$IPK_FILE"
 RC=$?
+
+# Restore geo regardless of the opkg result — a failed upgrade must not lose the lists either.
+if [ "$GEO_SAVED" = "1" ] && [ -d "$GEO_BAK" ]; then
+    mkdir -p /opt/amneziawg
+    rm -rf "$GEO_DIR" 2>/dev/null
+    if mv "$GEO_BAK" "$GEO_DIR" 2>/dev/null; then
+        echo "Geo lists restored"
+    else
+        echo "WARNING: could not restore geo lists from $GEO_BAK — re-download them from the web UI"
+    fi
+fi
 
 # Cleanup
 rm -rf "$TMP_DIR"

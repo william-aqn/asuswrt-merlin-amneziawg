@@ -110,6 +110,13 @@
 
 /* Field help text. #666 was near-invisible on the dark ROG theme; use a readable light
    gray (still secondary vs the white labels). code = the inline format/example sample. */
+/* Protocol-version badge next to an obfuscation parameter. Which AmneziaWG version first
+   shipped a param decides whether the PEER understands it at all, so it belongs on the
+   label rather than buried in a hint. */
+.awg-ver { display:inline-block; margin-left:6px; padding:0 5px; border-radius:8px;
+           font-size:9px; font-weight:normal; line-height:15px; vertical-align:middle;
+           background:#3a4548; border:1px solid #5a6b70; color:#b6bdc7; }
+.awg-ver.v3 { background:#4a4230; border-color:#7a6a3a; color:#e8dfc8; }
 .awg-hint {
     color: #b6bdc7;
     font-size: 11px;
@@ -688,7 +695,7 @@ en: {
     SEC_CONFIG: "Configuration",
     BTN_IMPORT_CONF_FILE: "Import a .conf file from the Amnezia VPN client",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— obfuscation parameters (usually filled in by importing a config) ▾</span>",
-    TBL_AWG3: "AmneziaWG 3.0 (leave empty unless the provider's config has them)",
+    TBL_AWG3: "AmneziaWG 3.0 — needs a 3.0-capable peer on the OTHER side too. Leave empty unless the provider's config has them.",
     AWG3_UNSUPPORTED: "AmneziaWG 3.0 parameters are not supported by the installed binaries — the fields below are disabled. Update the addon to a build with AWG 3.0 support.",
     HINT_AWG3_HPK: "Shared key — must be IDENTICAL on the server and every client. Requires S1–S4 ≥ 12 (all four, S3 included).",
     HINT_AWG3_RANGE: "A single number or a \"lo-hi\" range.",
@@ -1115,7 +1122,7 @@ ru: {
     SEC_CONFIG: "Конфигурация",
     BTN_IMPORT_CONF_FILE: "Импорт .conf-файла из клиента Amnezia VPN",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— параметры обфускации (обычно заполняются импортом конфига) ▾</span>",
-    TBL_AWG3: "AmneziaWG 3.0 (оставьте пустым, если их нет в конфиге провайдера)",
+    TBL_AWG3: "AmneziaWG 3.0 — нужна поддержка 3.0 и на ДРУГОЙ стороне. Оставьте пустым, если их нет в конфиге провайдера.",
     AWG3_UNSUPPORTED: "Параметры AmneziaWG 3.0 не поддерживаются установленными бинарниками — поля ниже отключены. Обновите аддон до сборки с поддержкой AWG 3.0.",
     HINT_AWG3_HPK: "Общий ключ — должен быть ОДИНАКОВЫМ на сервере и на всех клиентах. Требует S1–S4 ≥ 12 (все четыре, включая S3).",
     HINT_AWG3_RANGE: "Одно число или диапазон «lo-hi».",
@@ -5025,67 +5032,67 @@ function initAutocompleteIp(){
                 <summary style="padding:8px 10px; font-weight:bold; text-transform:uppercase; font-size:11px; letter-spacing:0.5px; background:#3a4548; border:1px solid #5a6b70; border-radius:3px; color:#e8edf2;" data-i18n-html="OBF_SUMMARY_HTML">AmneziaWG Obfuscation <span style="font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;">— obfuscation parameters (usually filled in by importing a config) ▾</span></summary>
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:6px;">
                 <tr>
-                    <th width="35%">Jc (junk packet count)</th>
+                    <th width="35%">Jc (junk packet count)<span class="awg-ver">AWG 1.0</span></th>
                     <td><input type="text" class="input_6_table" id="awg_jc" maxlength="3" placeholder="4" aria-label="Jc (junk packet count)"> (0-128)</td>
                 </tr>
                 <tr>
-                    <th>Jmin (min junk size)</th>
+                    <th>Jmin (min junk size)<span class="awg-ver">AWG 1.0</span></th>
                     <td><input type="text" class="input_6_table" id="awg_jmin" maxlength="5" placeholder="40" aria-label="Jmin (min junk size)"> bytes</td>
                 </tr>
                 <tr>
-                    <th>Jmax (max junk size)</th>
+                    <th>Jmax (max junk size)<span class="awg-ver">AWG 1.0</span></th>
                     <td><input type="text" class="input_6_table" id="awg_jmax" maxlength="5" placeholder="70" aria-label="Jmax (max junk size)"> bytes</td>
                 </tr>
                 <tr>
-                    <th>S1 (init padding)</th>
+                    <th>S1 (init padding)<span class="awg-ver">AWG 1.0</span></th>
                     <td><input type="text" class="input_6_table" id="awg_s1" maxlength="3" placeholder="20" aria-label="S1 (init padding)"> bytes</td>
                 </tr>
                 <tr>
-                    <th>S2 (response padding)</th>
+                    <th>S2 (response padding)<span class="awg-ver">AWG 1.0</span></th>
                     <td><input type="text" class="input_6_table" id="awg_s2" maxlength="3" placeholder="30" aria-label="S2 (response padding)"> bytes</td>
                 </tr>
                 <tr>
-                    <th>S3</th>
+                    <th>S3<span class="awg-ver">AWG 1.5</span></th>
                     <td><input type="text" class="input_6_table" id="awg_s3" maxlength="3" placeholder="0" aria-label="S3"> bytes</td>
                 </tr>
                 <tr>
-                    <th>S4</th>
+                    <th>S4<span class="awg-ver">AWG 1.5</span></th>
                     <td><input type="text" class="input_6_table" id="awg_s4" maxlength="3" placeholder="0" aria-label="S4"> bytes</td>
                 </tr>
                 <tr>
-                    <th>H1 (init header)</th>
+                    <th>H1 (init header)<span class="awg-ver">AWG 1.0</span></th>
                     <td><input type="text" class="input_25_table" id="awg_h1" maxlength="32" placeholder="1234567891" aria-label="H1 (init header)"></td>
                 </tr>
                 <tr>
-                    <th>H2 (response header)</th>
+                    <th>H2 (response header)<span class="awg-ver">AWG 1.0</span></th>
                     <td><input type="text" class="input_25_table" id="awg_h2" maxlength="32" placeholder="1987654321" aria-label="H2 (response header)"></td>
                 </tr>
                 <tr>
-                    <th>H3 (cookie header)</th>
+                    <th>H3 (cookie header)<span class="awg-ver">AWG 1.0</span></th>
                     <td><input type="text" class="input_25_table" id="awg_h3" maxlength="32" placeholder="1112223334" aria-label="H3 (cookie header)"></td>
                 </tr>
                 <tr>
-                    <th>H4 (data header)</th>
+                    <th>H4 (data header)<span class="awg-ver">AWG 1.0</span></th>
                     <td><input type="text" class="input_25_table" id="awg_h4" maxlength="32" placeholder="4445556667" aria-label="H4 (data header)"></td>
                 </tr>
                 <tr>
-                    <th>I1 (init junk)</th>
+                    <th>I1 (init junk)<span class="awg-ver">AWG 1.5</span></th>
                     <td><input type="text" class="input_32_table awg-input-wide" id="awg_i1" style="font-size:11px;" maxlength="5000" placeholder="Auto-filled by Import Config" aria-label="I1 (init junk)"></td>
                 </tr>
                 <tr>
-                    <th>I2</th>
+                    <th>I2<span class="awg-ver">AWG 1.5</span></th>
                     <td><input type="text" class="input_32_table awg-input-wide" id="awg_i2" style="font-size:11px;" maxlength="5000" placeholder="(optional)" aria-label="I2"></td>
                 </tr>
                 <tr>
-                    <th>I3</th>
+                    <th>I3<span class="awg-ver">AWG 1.5</span></th>
                     <td><input type="text" class="input_32_table awg-input-wide" id="awg_i3" style="font-size:11px;" maxlength="5000" placeholder="(optional)" aria-label="I3"></td>
                 </tr>
                 <tr>
-                    <th>I4</th>
+                    <th>I4<span class="awg-ver">AWG 1.5</span></th>
                     <td><input type="text" class="input_32_table awg-input-wide" id="awg_i4" style="font-size:11px;" maxlength="5000" placeholder="(optional)" aria-label="I4"></td>
                 </tr>
                 <tr>
-                    <th>I5</th>
+                    <th>I5<span class="awg-ver">AWG 1.5</span></th>
                     <td><input type="text" class="input_32_table awg-input-wide" id="awg_i5" style="font-size:11px;" maxlength="5000" placeholder="(optional)" aria-label="I5"></td>
                 </tr>
                 </table>
@@ -5094,7 +5101,7 @@ function initAutocompleteIp(){
                 <div id="awg3_unsupported" style="display:none; margin-top:8px; padding:6px 10px; border:1px solid #7a6a3a; background:#4a4230; border-radius:3px; font-size:11px; color:#e8dfc8;"
                      data-i18n="AWG3_UNSUPPORTED">AmneziaWG 3.0 parameters are not supported by the installed binaries — the fields below are disabled. Update the addon to a build with AWG 3.0 support.</div>
                 <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;" id="awg3_table">
-                <thead><tr><td colspan="2" data-i18n="TBL_AWG3">AmneziaWG 3.0 (leave empty unless the provider's config has them)</td></tr></thead>
+                <thead><tr><td colspan="2" data-i18n="TBL_AWG3">AmneziaWG 3.0 — needs a 3.0-capable peer on the OTHER side too. Leave empty unless the provider's config has them.</td></tr></thead>
                 <tr>
                     <th width="35%">HeaderProtectionKey</th>
                     <td><input type="text" class="input_32_table awg-input-wide" id="awg_hpk" style="font-size:11px;" maxlength="44" placeholder="(optional, base64 — awg genkey)" aria-label="HeaderProtectionKey">

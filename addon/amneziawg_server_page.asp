@@ -26,6 +26,13 @@
 .awg-section { margin: 14px 0 6px 0; padding-left: 5px; font-size: 14px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; }
 .awg-log { font-family: "Courier New", "Lucida Console", monospace; font-size: 12px; padding: 10px; height: 240px; min-height: 100px; resize: vertical; overflow-y: auto; border: 1px solid #444; border-radius: 3px; white-space: pre-wrap; word-wrap: break-word; }
 .awg-btn { margin: 0 4px; }
+/* Protocol-version badge next to an obfuscation parameter. Which AmneziaWG version first
+   shipped a param decides whether the PEER understands it at all, so it belongs on the
+   label rather than buried in a hint. */
+.awg-ver { display:inline-block; margin-left:6px; padding:0 5px; border-radius:8px;
+           font-size:9px; font-weight:normal; line-height:15px; vertical-align:middle;
+           background:#3a4548; border:1px solid #5a6b70; color:#b6bdc7; }
+.awg-ver.v3 { background:#4a4230; border-color:#7a6a3a; color:#e8dfc8; }
 .awg-hint { color: #b6bdc7; font-size: 11px; line-height: 1.5; margin-top: 4px; }
 .awg-hint code, .awg-hint b { color: #d7dce3; }
 .awg-hint code { font-family: "Courier New", "Lucida Console", monospace; background: rgba(255,255,255,0.07); padding: 1px 5px; border-radius: 3px; }
@@ -107,7 +114,7 @@ en: {
     ACK_SAVED: "Saved ✓",
     SEC_SETTINGS: "Server settings",
     SEC_OBFS: "Obfuscation parameters (shared by all peer configs)",
-    SEC_AWG3: "AmneziaWG 3.0",
+    SEC_AWG3: "AmneziaWG 3.0 — peers need a 3.0-capable client",
     AWG3_UNSUPPORTED: "AmneziaWG 3.0 parameters are not supported by the installed binaries — the fields below are disabled.",
     BTN_GENERATE: "Generate",
     HINT_S_ALL: "S3/S4 are optional for AWG 2.0, but Header protection (AWG 3.0) needs all four ≥ 12.",
@@ -210,7 +217,7 @@ ru: {
     ACK_SAVED: "Сохранено ✓",
     SEC_SETTINGS: "Настройки сервера",
     SEC_OBFS: "Параметры обфускации (общие для всех конфигов пиров)",
-    SEC_AWG3: "AmneziaWG 3.0",
+    SEC_AWG3: "AmneziaWG 3.0 — пирам нужен клиент с поддержкой 3.0",
     AWG3_UNSUPPORTED: "Параметры AmneziaWG 3.0 не поддерживаются установленными бинарниками — поля ниже отключены.",
     BTN_GENERATE: "Сгенерировать",
     HINT_S_ALL: "S3/S4 необязательны для AWG 2.0, но для Header protection (AWG 3.0) нужны все четыре ≥ 12.",
@@ -1134,7 +1141,7 @@ function initial(){
                 <div class="awg-hint" style="margin:0 0 6px 5px;" data-i18n-html="HINT_OBFS"></div>
                 <table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" class="FormTable">
                 <tr>
-                    <th width="30%">Jc / Jmin / Jmax</th>
+                    <th width="30%">Jc / Jmin / Jmax<span class="awg-ver">AWG 1.0</span></th>
                     <td>
                         <input type="text" id="awgs_jc_f" class="input_6_table" maxlength="4" onchange="markDirty();">
                         <input type="text" id="awgs_jmin_f" class="input_6_table" maxlength="5" onchange="markDirty();">
@@ -1143,7 +1150,7 @@ function initial(){
                     </td>
                 </tr>
                 <tr>
-                    <th>S1 / S2 / S3 / S4</th>
+                    <th>S1 / S2<span class="awg-ver">AWG 1.0</span> / S3 / S4<span class="awg-ver">AWG 1.5</span></th>
                     <td>
                         <input type="text" id="awgs_s1_f" class="input_6_table" maxlength="4" placeholder="S1" onchange="markDirty();">
                         <input type="text" id="awgs_s2_f" class="input_6_table" maxlength="4" placeholder="S2" onchange="markDirty();">
@@ -1153,7 +1160,7 @@ function initial(){
                     </td>
                 </tr>
                 <tr>
-                    <th>H1–H4</th>
+                    <th>H1–H4<span class="awg-ver">AWG 1.0</span></th>
                     <td>
                         <input type="text" id="awgs_h1_f" class="input_12_table" style="width:46%; margin:2px 1%; font-family:monospace; box-sizing:border-box;" maxlength="21" placeholder="H1" onchange="markDirty();">
                         <input type="text" id="awgs_h2_f" class="input_12_table" style="width:46%; margin:2px 1%; font-family:monospace; box-sizing:border-box;" maxlength="21" placeholder="H2" onchange="markDirty();">
@@ -1162,7 +1169,7 @@ function initial(){
                     </td>
                 </tr>
                 <tr>
-                    <th data-i18n="LBL_IPARAMS">I1–I5 (advanced)</th>
+                    <th><span data-i18n="LBL_IPARAMS">I1–I5 (advanced)</span><span class="awg-ver">AWG 1.5</span></th>
                     <td>
                         <input type="button" class="button_gen awg-mini" value="Generate" data-i18n-val="BTN_GEN_IPARAMS" onclick="genIparams();" style="margin-bottom:5px;">
                         <div class="awg-hint" data-i18n-html="HINT_IPARAMS"></div>
@@ -1176,7 +1183,7 @@ function initial(){
                 </table>
 
                 <!-- AmneziaWG 3.0 -->
-                <div class="awg-section" data-i18n="SEC_AWG3">AmneziaWG 3.0</div>
+                <div class="awg-section" data-i18n="SEC_AWG3">AmneziaWG 3.0 — peers need a 3.0-capable client</div>
                 <div id="awgs3_unsupported" class="awg-hint" style="display:none; margin:0 0 6px 5px; padding:6px 10px; border:1px solid #7a6a3a; background:#4a4230; border-radius:3px; color:#e8dfc8;"
                      data-i18n="AWG3_UNSUPPORTED">AmneziaWG 3.0 parameters are not supported by the installed binaries — the fields below are disabled.</div>
                 <table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" class="FormTable">
