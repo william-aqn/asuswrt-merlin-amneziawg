@@ -19,8 +19,15 @@ permissions:
   contents: write
 
 env:
-  # amneziawg-tools (awg) release tag — the static-musl awg CLI is built from this tag
-  AWG_TOOLS_TAG: v1.0.20260223
+  # amneziawg-tools (awg) — the static-musl awg CLI is built from this ref.
+  # NOT a release tag: AmneziaWG 3.0 config keys (HeaderProtectionKey, ContentPaddingAddition,
+  # the 5 timing params) exist ONLY on the unmerged `feat/awg3` branch — every released tag's
+  # src/config.c hits `goto error` on them ("Line unrecognized") and setconf then aborts the
+  # WHOLE file before ipc_set_device, i.e. the tunnel would not come up at all. Pinned by SHA
+  # (not branch name) so the build stays reproducible if upstream moves the branch.
+  # NB `git clone --branch <sha>` does NOT work — the clone steps below fetch the SHA instead.
+  # Move back to a release tag the moment upstream ships one that has the v3 keys.
+  AWG_TOOLS_TAG: 05434cab7d91bbbc607d18ec5fade91f4b83774c
   # amneziawg-go (daemon) — built from OUR FORK, not upstream, until upstream merges the
   # patches the router build needs (all carried as real commits on the fork branch below):
   #   1. bounded buffer pool (PreallocatedBuffersPerPool, router default 1024) — the fix for
@@ -37,9 +44,17 @@ env:
   # obfuscation params (I1-I5, S3/S4) + "handle empty I1-I5" fix — reproducible, not floating
   # master. When upstream merges the PRs, point AWG_GO_REPO back to amnezia-vpn + drop the
   # asserts that are then upstream. (version.go still hardcodes a stale const — see the sed below.)
-  AWG_GO_TAG: v0.2.19
+  AWG_GO_TAG: v3.0.1
   AWG_GO_REPO: https://github.com/william-aqn/amneziawg-go.git
-  AWG_GO_REF: router-build
+  AWG_GO_REF: router-build-v3
+  # The armv7-2.6 package (RT-AC68U class, kernel 2.6.3x) deliberately stays on the
+  # field-proven v0.2.19 daemon. v3.0.1 DOES build with the legacy Go 1.23 toolchain (verified),
+  # but nobody has ever run AmneziaWG 3.0 on a 2.6.36 kernel, and that box took a dozen releases
+  # to stabilise. It still ships the newer awg CLI (harmless — it just parses more), and the
+  # addon's runtime capability gate probes the DAEMON as well as the CLI, so the v3 fields
+  # simply stay disabled there instead of producing a config the daemon would reject.
+  AWG_GO_TAG_LEGACY: v0.2.19
+  AWG_GO_REF_LEGACY: router-build
 
 jobs:
   build:
@@ -70,7 +85,13 @@ jobs:
           # a glance whether the running daemon carries them, in particular whether it honors the
           # pool env the addon launcher sets on high-RAM boxes (pre-1.3.13 daemons say -pool1024
           # here and ignore that env).
-          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-poolcfg-smfix ($AWG_GO_COMMIT)\"|" amneziawg-go/version.go
+          # The `-awg3-` marker is LOAD-BEARING, not cosmetic: awg3_supported() in
+          # addon/amneziawg.sh gates the AmneziaWG 3.0 params on this exact substring. Drop it
+          # and every v3 field silently stays disabled on the router. It is a marker rather than
+          # a version-number comparison on purpose — amneziawg-tools' own --version is stale on
+          # BOTH the shipped tag and feat/awg3 (v1.0.20210914 / v1.0.20260618-2), so version
+          # strings are not trustworthy capability signals in this ecosystem.
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-awg3-poolcfg-smfix ($AWG_GO_COMMIT)\"|" amneziawg-go/version.go
           grep '^const Version' amneziawg-go/version.go || true
           # The functional patches now ride in as COMMITS on the fork branch (see the env
           # block) rather than seds — but still HARD-assert each is present, so a bad rebase or a
@@ -97,6 +118,17 @@ jobs:
           #      batchUnsupported flag that falls back to WriteMsgUDP/ReadMsgUDP. Proven on a real
           #      RT-AC68U: handshake completes, traffic flows both ways.
           grep -q 'batchUnsupported' amneziawg-go/conn/bind_std.go
+          #   4. S4 KEEPALIVE CLASSIFICATION — an AWG 3.0 regression against 1.5/2.0 configs.
+          #      v3 moved the S4 transport padding into RoutineEncryption (it seals from
+          #      elem.buffer[:elem.padding+MessageTransportHeaderSize]), so a keepalive measures
+          #      elem.padding+MessageKeepaliveSize; RoutineSequentialSender still compared it to
+          #      the bare constant. With S4 > 0 EVERY keepalive counted as data, armed
+          #      newHandshake (~15 s) and re-handshaked an idle tunnel forever. Measured, idle,
+          #      PersistentKeepalive=5s, 75 s window: v0.2.19 = 1 handshake at any S4; v3.0.1 =
+          #      1 at S4=0 but 5 at S4=30; with the fix, 1 again. Also reproduced with a v3
+          #      client against an unmodified v0.2.19 peer — it breaks EXISTING provider configs
+          #      on upgrade, since S4 is a plain AWG 2.0 param the addon has always passed through.
+          grep -q 'int(elem.padding)+MessageKeepaliveSize' amneziawg-go/device/send.go
           mkdir -p "$GITHUB_WORKSPACE/output"
           cd amneziawg-go
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64       go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go"
@@ -118,10 +150,16 @@ jobs:
           # go 1.24 via outline-sdk) is NOT linked into the daemon, so it doesn't constrain
           # this build. Verified on a real 2.6.32 kernel (qemu-system-arm versatilepb, Debian
           # Squeeze armel): TUN creation + obfuscated setconf + UAPI all pass.
-          cp -r amneziawg-go amneziawg-go-legacy
+          #
+          # This package is pinned to its OWN daemon ref (AWG_GO_REF_LEGACY = the v0.2.19-based
+          # router-build), NOT the v3 branch the other arches use — see the env block. Hence a
+          # separate clone instead of the previous `cp -r` of the v3 tree.
+          git clone --depth 1 --branch "$AWG_GO_REF_LEGACY" "$AWG_GO_REPO" amneziawg-go-legacy
           cd amneziawg-go-legacy
           AWG_GO_COMMIT=$(git rev-parse --short HEAD)
-          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-legacy26-poolcfg-smfix ($AWG_GO_COMMIT)\"|" version.go
+          # No -awg3- marker here on purpose: this daemon cannot do AmneziaWG 3.0, and the
+          # addon's capability gate keys off that marker to disable the v3 fields.
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG_LEGACY-legacy26-poolcfg-smfix ($AWG_GO_COMMIT)\"|" version.go
           grep '^const Version' version.go
           # The fork patches rode in via the cp -r above — assert them, hard-fail otherwise.
           # The 2.6.x fleet (RT-AC68U, 256MB!) needs the pool cap even more than 512MB boxes
@@ -142,14 +180,17 @@ jobs:
         run: |
           set -eux
           mkdir -p "$GITHUB_WORKSPACE/output"
-          docker run --rm --platform linux/arm64 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git clone --depth 1 --branch $AWG_TOOLS_TAG https://github.com/amnezia-vpn/amneziawg-tools.git /t && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg 2>/dev/null || cp wg /out/awg; } && chmod +x /out/awg"
+          # AWG_TOOLS_TAG is a SHA (see the env block), and `clone --branch` only takes refs —
+          # so init+fetch the exact commit instead. GitHub serves reachable SHAs to a shallow
+          # fetch, verified against this repo.
+          docker run --rm --platform linux/arm64 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git init /t && git -C /t remote add origin https://github.com/amnezia-vpn/amneziawg-tools.git && git -C /t fetch --depth 1 origin $AWG_TOOLS_TAG && git -C /t checkout FETCH_HEAD && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg 2>/dev/null || cp wg /out/awg; } && chmod +x /out/awg"
           file "$GITHUB_WORKSPACE/output/awg"
 
       - name: Build awg-arm (ARM32, static musl in emulated Alpine)
         run: |
           set -eux
           mkdir -p "$GITHUB_WORKSPACE/output"
-          docker run --rm --platform linux/arm/v7 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git clone --depth 1 --branch $AWG_TOOLS_TAG https://github.com/amnezia-vpn/amneziawg-tools.git /t && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg-arm 2>/dev/null || cp wg /out/awg-arm; } && chmod +x /out/awg-arm"
+          docker run --rm --platform linux/arm/v7 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git init /t && git -C /t remote add origin https://github.com/amnezia-vpn/amneziawg-tools.git && git -C /t fetch --depth 1 origin $AWG_TOOLS_TAG && git -C /t checkout FETCH_HEAD && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg-arm 2>/dev/null || cp wg /out/awg-arm; } && chmod +x /out/awg-arm"
           file "$GITHUB_WORKSPACE/output/awg-arm"
 
       - name: Build awg-arm5 (old ARM, static musl, SOFT-FLOAT for VFP-less Cortex-A9)
@@ -169,7 +210,10 @@ jobs:
             : "${CC:?no soft-float musl cross gcc found in image}"
             "$CC" --version | head -1
             command -v git >/dev/null 2>&1 || { apt-get update && apt-get install -y --no-install-recommends git ca-certificates; }
-            git clone --depth 1 --branch "$AWG_TOOLS_TAG" https://github.com/amnezia-vpn/amneziawg-tools.git /tmp/awgtools
+            git init /tmp/awgtools
+            git -C /tmp/awgtools remote add origin https://github.com/amnezia-vpn/amneziawg-tools.git
+            git -C /tmp/awgtools fetch --depth 1 origin "$AWG_TOOLS_TAG"
+            git -C /tmp/awgtools checkout FETCH_HEAD
             make -C /tmp/awgtools/src CC="$CC" LDFLAGS=-static PLATFORM_CFLAGS=
             cp /tmp/awgtools/src/awg /out/awg-arm5 2>/dev/null || cp /tmp/awgtools/src/wg /out/awg-arm5
             chmod +x /out/awg-arm5

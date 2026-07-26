@@ -688,6 +688,17 @@ en: {
     SEC_CONFIG: "Configuration",
     BTN_IMPORT_CONF_FILE: "Import a .conf file from the Amnezia VPN client",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— obfuscation parameters (usually filled in by importing a config) ▾</span>",
+    TBL_AWG3: "AmneziaWG 3.0 (leave empty unless the provider's config has them)",
+    AWG3_UNSUPPORTED: "AmneziaWG 3.0 parameters are not supported by the installed binaries — the fields below are disabled. Update the addon to a build with AWG 3.0 support.",
+    HINT_AWG3_HPK: "Shared key — must be IDENTICAL on the server and every client. Requires S1–S4 ≥ 12 (all four, S3 included).",
+    HINT_AWG3_RANGE: "A single number or a \"lo-hi\" range.",
+    HINT_AWG3_RAT: "How long a session lives before a rekey. Default 120. Must stay below RejectAfterTime.",
+    HINT_AWG3_RTO: "Retry interval for an unanswered handshake. Default 5. Very small values cause a handshake storm.",
+    HINT_AWG3_RJT: "A session is dropped after this. Default 180. Below RekeyAfterTime the tunnel dies before it can rekey.",
+    HINT_AWG3_KAT: "Passive keepalive delay. Default 10 — this is NOT Persistent Keepalive (25).",
+    HINT_AWG3_MHA: "Handshake retries before giving up. Default 18.",
+    UNIT_BYTES: "bytes",
+    UNIT_SEC: "sec",
     TBL_ROUTING_POLICY: "Routing policy",
     TH_DEFAULT_POLICY: "Default policy",
     ARIA_DEFAULT_POLICY: "Default policy",
@@ -1104,6 +1115,17 @@ ru: {
     SEC_CONFIG: "Конфигурация",
     BTN_IMPORT_CONF_FILE: "Импорт .conf-файла из клиента Amnezia VPN",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— параметры обфускации (обычно заполняются импортом конфига) ▾</span>",
+    TBL_AWG3: "AmneziaWG 3.0 (оставьте пустым, если их нет в конфиге провайдера)",
+    AWG3_UNSUPPORTED: "Параметры AmneziaWG 3.0 не поддерживаются установленными бинарниками — поля ниже отключены. Обновите аддон до сборки с поддержкой AWG 3.0.",
+    HINT_AWG3_HPK: "Общий ключ — должен быть ОДИНАКОВЫМ на сервере и на всех клиентах. Требует S1–S4 ≥ 12 (все четыре, включая S3).",
+    HINT_AWG3_RANGE: "Одно число или диапазон «lo-hi».",
+    HINT_AWG3_RAT: "Через сколько сессия перезаключается. По умолчанию 120. Должно быть меньше RejectAfterTime.",
+    HINT_AWG3_RTO: "Интервал повтора неотвеченного хендшейка. По умолчанию 5. Слишком малые значения дают шторм хендшейков.",
+    HINT_AWG3_RJT: "После этого времени сессия отбрасывается. По умолчанию 180. Меньше RekeyAfterTime — туннель умрёт, не успев перезаключиться.",
+    HINT_AWG3_KAT: "Задержка пассивного keepalive. По умолчанию 10 — это НЕ Persistent Keepalive (25).",
+    HINT_AWG3_MHA: "Сколько раз повторять хендшейк перед сдачей. По умолчанию 18.",
+    UNIT_BYTES: "байт",
+    UNIT_SEC: "сек",
     TBL_ROUTING_POLICY: "Политика маршрутизации",
     TH_DEFAULT_POLICY: "Политика по умолчанию",
     ARIA_DEFAULT_POLICY: "Политика по умолчанию",
@@ -1941,7 +1963,29 @@ var AWG_PF_MAX = 5;
 // as the chunked base64 'initdata', see pfStoreForm/pfLoadForm).
 var AWG_PF_FIELDS = ['iface_p1','address','listenport','mtu','dns',
                      'peer_p1','peer_p2','peer_endpoint','peer_allowedips','peer_keepalive',
-                     'jc','jmin','jmax','s1','s2','s3','s4','h1','h2','h3','h4'];
+                     'jc','jmin','jmax','s1','s2','s3','s4','h1','h2','h3','h4',
+                     // AmneziaWG 3.0 device params. Short suffixes keep the per-slot
+                     // custom_settings key names (awg_pf5_rjt) well inside the length the
+                     // firmware's settings store is happy with.
+                     'hpk','cpa','rat','rto','rjt','kat','mha'];
+// AWG 3.0 fields, in the order the daemon documents them — DOM id is 'awg_' + suffix.
+var AWG3_FIELDS = ['hpk','cpa','rat','rto','rjt','kat','mha'];
+
+// amneziawg-tools compares config keys with strncasecmp(), so a hand-written or
+// provider-generated .conf may spell them any way (`privatekey`, `ENDPOINT`, …) and awg
+// still accepts it. parseConfig() used to compare exactly, silently dropping such lines.
+// Canonicalise via this map first — lowercase spelling -> the spelling the switch expects.
+var AWG_CONF_KEY_CANON = (function(){
+    var keys = ['PrivateKey','Address','ListenPort','MTU','DNS',
+                'Jc','Jmin','Jmax','S1','S2','S3','S4','H1','H2','H3','H4',
+                'I1','I2','I3','I4','I5',
+                'HeaderProtectionKey','ContentPaddingAddition','RekeyAfterTime',
+                'RekeyTimeout','RejectAfterTime','KeepaliveTimeout','MaxHandshakeAttempts',
+                'PublicKey','PresharedKey','Endpoint','AllowedIPs','PersistentKeepalive'];
+    var m = {};
+    for(var i = 0; i < keys.length; i++) m[keys[i].toLowerCase()] = keys[i];
+    return m;
+})();
 var awgPfSel = 1;         // slot the form currently edits
 var awgPfSnapshot = '';   // form state at load — detects unsaved edits on slot change
 var awgPfStatus = null;   // last status.profile from the backend (active/user/auto)
@@ -3968,6 +4012,7 @@ function updateStatusUI(s){
         awgCurrentVersion = s.version;
         recomputeUpdate();
     }
+    applyAwg3Capability(s.awg3);
     var badge = document.getElementById('awg_badge');
     var info = document.getElementById('awg_info');
     var peers = document.getElementById('awg_peers');
@@ -4380,6 +4425,24 @@ function importConfig(){
     fileInput.click();
 }
 
+// The backend reports whether the INSTALLED daemon + awg CLI understand the AmneziaWG 3.0
+// device params (status.awg3). They are not optional extras: an older awg CLI aborts the whole
+// `setconf` on the first key it does not recognise, so the tunnel would simply never come up.
+// When unsupported, disable the inputs and say why — but NEVER clear what the user (or an
+// imported provider config) already stored, so the values survive until the binaries catch up.
+// Undefined (older backend that predates the field) is treated as "unsupported" — fail closed.
+function applyAwg3Capability(cap){
+    var ok = (cap === true);
+    var note = document.getElementById('awg3_unsupported');
+    if(note) note.style.display = ok ? 'none' : '';
+    for(var i = 0; i < AWG3_FIELDS.length; i++){
+        var el = document.getElementById('awg_' + AWG3_FIELDS[i]);
+        if(!el) continue;
+        el.disabled = !ok;
+        el.style.opacity = ok ? '' : '0.5';
+    }
+}
+
 function parseConfig(text, fileName){
     if(!text) return;
 
@@ -4396,6 +4459,7 @@ function parseConfig(text, fileName){
         'awg_jc', 'awg_jmin', 'awg_jmax', 'awg_s1', 'awg_s2', 'awg_s3', 'awg_s4',
         'awg_h1', 'awg_h2', 'awg_h3', 'awg_h4',
         'awg_i1', 'awg_i2', 'awg_i3', 'awg_i4', 'awg_i5',
+        'awg_hpk', 'awg_cpa', 'awg_rat', 'awg_rto', 'awg_rjt', 'awg_kat', 'awg_mha',
         'awg_peer_p1', 'awg_peer_p2', 'awg_peer_endpoint',
         'awg_peer_allowedips', 'awg_peer_keepalive'
     ];
@@ -4405,14 +4469,17 @@ function parseConfig(text, fileName){
     var section = '';
     for(var i = 0; i < lines.length; i++){
         var line = lines[i].trim();
-        if(line === '[Interface]'){ section = 'iface'; continue; }
-        if(line === '[Peer]'){ section = 'peer'; continue; }
+        // Section headers are case-insensitive in amneziawg-tools too.
+        if(line.toLowerCase() === '[interface]'){ section = 'iface'; continue; }
+        if(line.toLowerCase() === '[peer]'){ section = 'peer'; continue; }
         if(!line || line.charAt(0) === '#') continue;
 
         var parts = line.split('=');
         if(parts.length < 2) continue;
         var key = parts[0].trim();
         var val = parts.slice(1).join('=').trim();
+        var canon = AWG_CONF_KEY_CANON[key.toLowerCase()];
+        if(canon) key = canon;
 
         if(section === 'iface'){
             switch(key){
@@ -4437,6 +4504,15 @@ function parseConfig(text, fileName){
                 case 'I3': setVal('awg_i3', val); break;
                 case 'I4': setVal('awg_i4', val); break;
                 case 'I5': setVal('awg_i5', val); break;
+                // AmneziaWG 3.0. amneziawg-tools matches config keys case-INsensitively,
+                // so a provider file may spell these any way; normalise before comparing.
+                case 'HeaderProtectionKey':    setVal('awg_hpk', val); break;
+                case 'ContentPaddingAddition': setVal('awg_cpa', val); break;
+                case 'RekeyAfterTime':         setVal('awg_rat', val); break;
+                case 'RekeyTimeout':           setVal('awg_rto', val); break;
+                case 'RejectAfterTime':        setVal('awg_rjt', val); break;
+                case 'KeepaliveTimeout':       setVal('awg_kat', val); break;
+                case 'MaxHandshakeAttempts':   setVal('awg_mha', val); break;
             }
         } else if(section === 'peer'){
             switch(key){
@@ -5011,6 +5087,48 @@ function initAutocompleteIp(){
                 <tr>
                     <th>I5</th>
                     <td><input type="text" class="input_32_table awg-input-wide" id="awg_i5" style="font-size:11px;" maxlength="5000" placeholder="(optional)" aria-label="I5"></td>
+                </tr>
+                </table>
+
+                <!-- ==================== AmneziaWG 3.0 ==================== -->
+                <div id="awg3_unsupported" style="display:none; margin-top:8px; padding:6px 10px; border:1px solid #7a6a3a; background:#4a4230; border-radius:3px; font-size:11px; color:#e8dfc8;"
+                     data-i18n="AWG3_UNSUPPORTED">AmneziaWG 3.0 parameters are not supported by the installed binaries — the fields below are disabled. Update the addon to a build with AWG 3.0 support.</div>
+                <table width="100%" border="1" cellpadding="4" cellspacing="0" class="FormTable" style="margin-top:8px;" id="awg3_table">
+                <thead><tr><td colspan="2" data-i18n="TBL_AWG3">AmneziaWG 3.0 (leave empty unless the provider's config has them)</td></tr></thead>
+                <tr>
+                    <th width="35%">HeaderProtectionKey</th>
+                    <td><input type="text" class="input_32_table awg-input-wide" id="awg_hpk" style="font-size:11px;" maxlength="44" placeholder="(optional, base64 — awg genkey)" aria-label="HeaderProtectionKey">
+                        <div class="awg-hint" data-i18n="HINT_AWG3_HPK">Shared key — must be IDENTICAL on the server and every client. Requires S1–S4 ≥ 12 (all four, S3 included).</div></td>
+                </tr>
+                <tr>
+                    <th>ContentPaddingAddition</th>
+                    <td><input type="text" class="input_6_table" id="awg_cpa" maxlength="21" placeholder="10-40" aria-label="ContentPaddingAddition"> <span data-i18n="UNIT_BYTES">bytes</span>
+                        <div class="awg-hint" data-i18n="HINT_AWG3_RANGE">A single number or a "lo-hi" range.</div></td>
+                </tr>
+                <tr>
+                    <th>RekeyAfterTime</th>
+                    <td><input type="text" class="input_6_table" id="awg_rat" maxlength="21" placeholder="120" aria-label="RekeyAfterTime"> <span data-i18n="UNIT_SEC">sec</span>
+                        <div class="awg-hint" data-i18n="HINT_AWG3_RAT">How long a session lives before a rekey. Default 120. Must stay below RejectAfterTime.</div></td>
+                </tr>
+                <tr>
+                    <th>RekeyTimeout</th>
+                    <td><input type="text" class="input_6_table" id="awg_rto" maxlength="21" placeholder="5" aria-label="RekeyTimeout"> <span data-i18n="UNIT_SEC">sec</span>
+                        <div class="awg-hint" data-i18n="HINT_AWG3_RTO">Retry interval for an unanswered handshake. Default 5. Very small values cause a handshake storm.</div></td>
+                </tr>
+                <tr>
+                    <th>RejectAfterTime</th>
+                    <td><input type="text" class="input_6_table" id="awg_rjt" maxlength="21" placeholder="180" aria-label="RejectAfterTime"> <span data-i18n="UNIT_SEC">sec</span>
+                        <div class="awg-hint" data-i18n="HINT_AWG3_RJT">A session is dropped after this. Default 180. Below RekeyAfterTime the tunnel dies before it can rekey.</div></td>
+                </tr>
+                <tr>
+                    <th>KeepaliveTimeout</th>
+                    <td><input type="text" class="input_6_table" id="awg_kat" maxlength="21" placeholder="10" aria-label="KeepaliveTimeout"> <span data-i18n="UNIT_SEC">sec</span>
+                        <div class="awg-hint" data-i18n="HINT_AWG3_KAT">Passive keepalive delay. Default 10 — this is NOT Persistent Keepalive (25).</div></td>
+                </tr>
+                <tr>
+                    <th>MaxHandshakeAttempts</th>
+                    <td><input type="text" class="input_6_table" id="awg_mha" maxlength="21" placeholder="18" aria-label="MaxHandshakeAttempts">
+                        <div class="awg-hint" data-i18n="HINT_AWG3_MHA">Handshake retries before giving up. Default 18.</div></td>
                 </tr>
                 </table>
                 </details>

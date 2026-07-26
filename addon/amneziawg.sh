@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.4.5"
+AWG_VERSION="1.5.0"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3508,6 +3508,103 @@ validate_iparam(){
     case "$t" in '<'*'>') return 0 ;; *) return 1 ;; esac
 }
 
+# An AmneziaWG 3.0 "range" param: "N" or "lo-hi", both uint32, hi >= lo.
+# The daemon's UintRange.FromString splits on '-' and ParseUint's each half, so a NEGATIVE
+# value becomes an empty low bound and dies with the useless `parsing "": invalid syntax`;
+# a reversed range dies with "wrong range specified". Both are caught here with a named
+# error instead. NB "0" IS legal and means "unset" to the daemon (UintRange.IsZero) —
+# it falls back to the stock WireGuard constant, so we pass it through untouched.
+validate_range(){
+    local v="$1" lo hi
+    echo "$v" | grep -qE '^[0-9]+(-[0-9]+)?$' || return 1
+    case "$v" in
+        *-*) lo="${v%%-*}"; hi="${v##*-}" ;;
+        *)   lo="$v"; hi="$v" ;;
+    esac
+    # uint32 ceiling: 10 digits max, and reject anything above 4294967295 before the
+    # shell's own arithmetic has to deal with it.
+    [ "${#lo}" -le 10 ] && [ "${#hi}" -le 10 ] || return 1
+    [ "$lo" -le 4294967295 ] 2>/dev/null || return 1
+    [ "$hi" -le 4294967295 ] 2>/dev/null || return 1
+    [ "$lo" -le "$hi" ] 2>/dev/null || return 1
+    return 0
+}
+
+# --- AmneziaWG 3.0 capability gate -------------------------------------------------------
+# The 7 AWG-3.0 device params need BOTH a v3-aware `awg` CLI (amneziawg-tools gained them only
+# on the feat/awg3 branch — NO released tag parses them) AND a v3 daemon. Emitting them at the
+# wrong pair is NOT a soft degrade, it kills the tunnel outright:
+#   * old awg    -> config.c `goto error` => "Line unrecognized" and setconf_main bails BEFORE
+#                   ipc_set_device, so NOTHING is applied and the interface never comes up;
+#   * old daemon -> "invalid UAPI device key" => EINVAL => the generic
+#                   "Unable to modify interface: Invalid argument" we already have a section
+#                   about in CLAUDE.md.
+# So: FAIL CLOSED. Anything we cannot positively confirm means "no v3 keys".
+# Probe = the tools' OWN parser: `awg setconf <iface-that-does-not-exist> <probe.conf>`.
+# setconf parses the whole file before it touches IPC, so the parse verdict is readable with
+# zero side effects. Both outcomes exit non-zero, so discriminate on the MESSAGE, never on rc.
+# All matching is `case` globs — no grep/sed/awk — so a corrupted Entware coreutils or the
+# httpd-inherited LD_LIBRARY_PATH cannot turn this into a false "supported".
+AWG_CAPS_FILE="/tmp/.awg_caps"
+# 43 base64 chars + '=' — a syntactically valid all-zero key. parse_key only checks the shape,
+# and it never reaches a real interface (the probe iface is asserted absent first).
+AWG_CAP_DUMMY_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+_awg3_probe(){
+    local pconf perr iface="awgcap0"
+    # Never let the probe touch a live netdev — it would push a zero private key into it.
+    [ -e "/sys/class/net/$iface" ] && return 1
+    [ -s "$AWG_BIN" ] && [ -x "$AWG_BIN" ] || return 1
+    [ -s "$AWG_GO" ]  && [ -x "$AWG_GO" ]  || return 1
+
+    # 1) The daemon: our CI stamps an explicit `-awg3-` marker into version.go's const Version
+    #    when it builds from the v3 fork branch. Deliberately an explicit marker and not a
+    #    version-number comparison — upstream hardcodes a stale const and we've been fooled by
+    #    that string before (see CLAUDE.md).
+    case "$("$AWG_GO" --version 2>/dev/null)" in
+        *-awg3-*) ;;
+        *) return 1 ;;
+    esac
+
+    # 2) The tools: does the config parser know the v3 keys?
+    pconf="/tmp/.awg_capprobe.$$"
+    {
+        echo "[Interface]"
+        echo "PrivateKey = $AWG_CAP_DUMMY_KEY"
+        echo "HeaderProtectionKey = $AWG_CAP_DUMMY_KEY"
+        echo "RekeyTimeout = 5"
+        echo "MaxHandshakeAttempts = 3"
+    } > "$pconf" 2>/dev/null || return 1
+    perr=$("$AWG_BIN" setconf "$iface" "$pconf" 2>&1)
+    rm -f "$pconf"
+    case "$perr" in
+        *"Line unrecognized"*|*"Configuration parsing error"*) return 1 ;;  # old tools
+        *"Unable to"*|*"No such"*|*"not exist"*) return 0 ;;                # parsed, IPC failed
+        *) return 1 ;;                                                      # unknown => closed
+    esac
+}
+
+# Cached wrapper. The cache key is `ls -l` of both binaries, so an opkg update (size or mtime
+# change) invalidates it for free, and /tmp means a reboot always re-probes.
+awg3_supported(){
+    local sig cached
+    sig=$(ls -l "$AWG_GO" "$AWG_BIN" 2>/dev/null | tr -d ' \n')
+    [ -n "$sig" ] || return 1
+    if [ -f "$AWG_CAPS_FILE" ]; then
+        cached=$(cat "$AWG_CAPS_FILE" 2>/dev/null)
+        case "$cached" in
+            "awg3=1 $sig") return 0 ;;
+            "awg3=0 $sig") return 1 ;;
+        esac
+    fi
+    if _awg3_probe; then
+        echo "awg3=1 $sig" > "$AWG_CAPS_FILE" 2>/dev/null
+        return 0
+    fi
+    echo "awg3=0 $sig" > "$AWG_CAPS_FILE" 2>/dev/null
+    return 1
+}
+
 validate_ip(){
     echo "$1" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' || return 1
     return 0
@@ -3598,6 +3695,61 @@ generate_config(){
         [ -n "$_iv" ] && { validate_iparam "$_iv" || { log_msg "ERROR: I$_in looks truncated/malformed (unbalanced <> or no closing '>') — re-import the config"; return 1; }; }
     done
 
+    # --- AmneziaWG 3.0 device params ---------------------------------------------------
+    local hpk cpa rat rto rjt kat mha awg3=0
+    hpk=$(pf_slot_get "$pf" hpk)
+    cpa=$(pf_slot_get "$pf" cpa); rat=$(pf_slot_get "$pf" rat)
+    rto=$(pf_slot_get "$pf" rto); rjt=$(pf_slot_get "$pf" rjt)
+    kat=$(pf_slot_get "$pf" kat); mha=$(pf_slot_get "$pf" mha)
+
+    [ -n "$hpk" ] && { validate_wgkey "$hpk" || { log_msg "ERROR: Invalid HeaderProtectionKey"; return 1; }; }
+    [ -n "$cpa" ] && { validate_range "$cpa" || { log_msg "ERROR: Invalid ContentPaddingAddition: $cpa (expected \"N\" or \"lo-hi\")"; return 1; }; }
+    [ -n "$rat" ] && { validate_range "$rat" || { log_msg "ERROR: Invalid RekeyAfterTime: $rat (expected \"N\" or \"lo-hi\")"; return 1; }; }
+    [ -n "$rto" ] && { validate_range "$rto" || { log_msg "ERROR: Invalid RekeyTimeout: $rto (expected \"N\" or \"lo-hi\")"; return 1; }; }
+    [ -n "$rjt" ] && { validate_range "$rjt" || { log_msg "ERROR: Invalid RejectAfterTime: $rjt (expected \"N\" or \"lo-hi\")"; return 1; }; }
+    [ -n "$kat" ] && { validate_range "$kat" || { log_msg "ERROR: Invalid KeepaliveTimeout: $kat (expected \"N\" or \"lo-hi\")"; return 1; }; }
+    [ -n "$mha" ] && { validate_range "$mha" || { log_msg "ERROR: Invalid MaxHandshakeAttempts: $mha (expected \"N\" or \"lo-hi\")"; return 1; }; }
+
+    # HeaderProtection takes its ChaCha20 nonce from the first HeaderCipherNonceSize (=12)
+    # bytes of each message's S-padding, so the daemon refuses the config unless ALL FOUR of
+    # S1-S4 are >= 12 — including S3 (cookie), which almost nobody sets. Upstream's own error
+    # is doubly misleading ("S%d must be more then 8" with a 0-BASED index, so a bad S4 is
+    # reported as "S3", and the stated 8 is not the enforced 12), and worse: mergeWithDevice
+    # commits H1-H4 BEFORE this check bails, so on a LIVE interface a REJECTED setconf still
+    # swaps the magic headers and blackholes the tunnel. Verified against v3.0.1. So refuse
+    # here, before awg is ever invoked.
+    if [ -n "$hpk" ]; then
+        local _sn _sv
+        for _sn in 1 2 3 4; do
+            eval "_sv=\$s$_sn"
+            [ -z "$_sv" ] && _sv=0
+            if [ "$_sv" -lt 12 ] 2>/dev/null; then
+                log_msg "ERROR: HeaderProtectionKey requires S1-S4 >= 12 (S$_sn = $_sv) — the daemon would reject the config AND could leave a running tunnel dead"
+                return 1
+            fi
+        done
+    fi
+
+    # PersistentKeepalive became a range in AWG 3.0 too. It is an OLD key, so an old awg CLI
+    # accepts the line and then chokes on the VALUE — same dead tunnel, different message.
+    # Validate the shape always, and require awg3 before letting a range through.
+    if [ -n "$peer_keepalive" ]; then
+        validate_range "$peer_keepalive" || { log_msg "ERROR: Invalid PersistentKeepalive: $peer_keepalive (expected \"N\" or \"lo-hi\")"; return 1; }
+        case "$peer_keepalive" in
+            *-*) awg3_supported || { log_msg "ERROR: PersistentKeepalive range ($peer_keepalive) needs an AmneziaWG 3.0 build — use a single number on this build"; return 1; } ;;
+        esac
+    fi
+
+    # Gate the emission: an older awg CLI aborts the WHOLE setconf on the first unknown key,
+    # so a v3 line on a v2 box means "tunnel never starts", not "param ignored".
+    if [ -n "$hpk$cpa$rat$rto$rjt$kat$mha" ]; then
+        if awg3_supported; then
+            awg3=1
+        else
+            log_msg "WARNING: AmneziaWG 3.0 parameters are set but this build does not support them (needs the awg3 daemon + awg CLI) — they are NOT applied; the tunnel starts with the 2.0 parameters only"
+        fi
+    fi
+
     {
         echo "[Interface]"
         echo "PrivateKey = $iface_p1"
@@ -3618,6 +3770,15 @@ generate_config(){
         [ -n "$i3" ] && echo "I3 = $i3"
         [ -n "$i4" ] && echo "I4 = $i4"
         [ -n "$i5" ] && echo "I5 = $i5"
+        if [ "$awg3" = "1" ]; then
+            [ -n "$hpk" ] && echo "HeaderProtectionKey = $hpk"
+            [ -n "$cpa" ] && echo "ContentPaddingAddition = $cpa"
+            [ -n "$rat" ] && echo "RekeyAfterTime = $rat"
+            [ -n "$rto" ] && echo "RekeyTimeout = $rto"
+            [ -n "$rjt" ] && echo "RejectAfterTime = $rjt"
+            [ -n "$kat" ] && echo "KeepaliveTimeout = $kat"
+            [ -n "$mha" ] && echo "MaxHandshakeAttempts = $mha"
+        fi
         echo ""
         echo "[Peer]"
         echo "PublicKey = $peer_p1"
@@ -4793,6 +4954,12 @@ EOF
     # yet): compare the live first-peer public key from `awg show dump` against the conf's —
     # solid for the real field case (a swapped provider config always swaps the peer key);
     # param-only edits are caught once the sig exists, i.e. from the first restart on.
+    # Does this build support the AmneziaWG 3.0 device params? Drives the page's v3 fields
+    # (disabled + explained when false) so the user cannot enter values that generate_config
+    # would then refuse to emit. Cached in /tmp, keyed on the binaries — cheap per poll.
+    local awg3_cap=false
+    awg3_supported && awg3_cap=true
+
     local conf_pending=false _rc_sig _cf_sig _pk_live _pk_conf
     if [ "$running" = "true" ] && [ -f "$CONF" ]; then
         _cf_sig=$(md5sum "$CONF" 2>/dev/null | awk '{print $1}')
@@ -4998,7 +5165,7 @@ EOF
     # awg_status.htm or awg_widget.js. The old ".tmp" is removed too in case an upgrade left one.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conf_pending":${conf_pending},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"profile":{"active":${pf_active},"user":${pf_user},"auto":${pf_auto},"name":"${pf_name}","failover":${pf_failover},"list":[${pf_list}]},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","geo_matchall_warn":"${geo_matchall_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conf_pending":${conf_pending},"awg3":${awg3_cap},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"profile":{"active":${pf_active},"user":${pf_user},"auto":${pf_auto},"name":"${pf_name}","failover":${pf_failover},"list":[${pf_list}]},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","geo_matchall_warn":"${geo_matchall_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }

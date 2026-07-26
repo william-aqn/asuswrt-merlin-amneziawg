@@ -107,6 +107,16 @@ en: {
     ACK_SAVED: "Saved ✓",
     SEC_SETTINGS: "Server settings",
     SEC_OBFS: "Obfuscation parameters (shared by all peer configs)",
+    SEC_AWG3: "AmneziaWG 3.0",
+    AWG3_UNSUPPORTED: "AmneziaWG 3.0 parameters are not supported by the installed binaries — the fields below are disabled.",
+    BTN_GENERATE: "Generate",
+    HINT_S_ALL: "S3/S4 are optional for AWG 2.0, but Header protection (AWG 3.0) needs all four ≥ 12.",
+    HINT_AWG3_HPK_SRV: "Written into every peer config and QR code — server and clients must share it. Requires S1–S4 ≥ 12.",
+    HINT_AWG3_RANGE: "A single number or a \"lo-hi\" range.",
+    HINT_AWG3_REKEY: "Seconds. Defaults 120 / 5.",
+    HINT_AWG3_REJECT: "Seconds. Defaults 180 / 10. RejectAfterTime must stay above RekeyAfterTime.",
+    HINT_AWG3_MHA: "Handshake retries before giving up. Default 18.",
+    MSG_HPK_S_BUMPED: "Header protection needs S1–S4 ≥ 12, so %s were raised automatically. Re-export the peer configs / QR codes — clients must use the same values.",
     SEC_PEERS: "Peers (devices that connect to this router)",
     SEC_LOG: "Log",
     LBL_PRIVKEY: "Server private key",
@@ -200,6 +210,16 @@ ru: {
     ACK_SAVED: "Сохранено ✓",
     SEC_SETTINGS: "Настройки сервера",
     SEC_OBFS: "Параметры обфускации (общие для всех конфигов пиров)",
+    SEC_AWG3: "AmneziaWG 3.0",
+    AWG3_UNSUPPORTED: "Параметры AmneziaWG 3.0 не поддерживаются установленными бинарниками — поля ниже отключены.",
+    BTN_GENERATE: "Сгенерировать",
+    HINT_S_ALL: "S3/S4 необязательны для AWG 2.0, но для Header protection (AWG 3.0) нужны все четыре ≥ 12.",
+    HINT_AWG3_HPK_SRV: "Попадает в каждый конфиг пира и QR-код — на сервере и клиентах должен совпадать. Требует S1–S4 ≥ 12.",
+    HINT_AWG3_RANGE: "Одно число или диапазон «lo-hi».",
+    HINT_AWG3_REKEY: "Секунды. По умолчанию 120 / 5.",
+    HINT_AWG3_REJECT: "Секунды. По умолчанию 180 / 10. RejectAfterTime должен быть больше RekeyAfterTime.",
+    HINT_AWG3_MHA: "Сколько раз повторять хендшейк перед сдачей. По умолчанию 18.",
+    MSG_HPK_S_BUMPED: "Для Header protection нужны S1–S4 ≥ 12, поэтому %s подняты автоматически. Переэкспортируйте конфиги пиров / QR — на клиентах должны быть те же значения.",
     SEC_PEERS: "Пиры (устройства, подключающиеся к роутеру)",
     SEC_LOG: "Журнал",
     LBL_PRIVKEY: "Приватный ключ сервера",
@@ -406,8 +426,14 @@ function loadSettings(){
     // obfuscation
     sv('awgs_jc_f', gs('awgs_jc')); sv('awgs_jmin_f', gs('awgs_jmin')); sv('awgs_jmax_f', gs('awgs_jmax'));
     sv('awgs_s1_f', gs('awgs_s1')); sv('awgs_s2_f', gs('awgs_s2'));
+    sv('awgs_s3_f', gs('awgs_s3')); sv('awgs_s4_f', gs('awgs_s4'));
     sv('awgs_h1_f', gs('awgs_h1')); sv('awgs_h2_f', gs('awgs_h2'));
     sv('awgs_h3_f', gs('awgs_h3')); sv('awgs_h4_f', gs('awgs_h4'));
+    // AmneziaWG 3.0
+    sv('awgs_hpk_f', gs('awgs_hpk')); sv('awgs_cpa_f', gs('awgs_cpa'));
+    sv('awgs_rat_f', gs('awgs_rat')); sv('awgs_rto_f', gs('awgs_rto'));
+    sv('awgs_rjt_f', gs('awgs_rjt')); sv('awgs_kat_f', gs('awgs_kat'));
+    sv('awgs_mha_f', gs('awgs_mha'));
     // I1-I5 from chunked base64 (lines "In = value")
     var b64 = getChunked('awgs_initdata', 30);
     if (b64) {
@@ -448,6 +474,32 @@ function genServerKeys(){
         sv('awgs_priv_f', priv);
         sv('awgs_pub_f', AWGKeys.pubFromPriv(priv));
         document.getElementById('awgs_firstrun').style.display = 'none';
+        markDirty();
+    });
+}
+// HeaderProtectionKey is 32 raw random bytes in base64 — the same shape as a PSK (no
+// curve25519 clamping involved), which is why `awg genkey` output is also accepted.
+// Generated in the browser like every other key on this page: it never transits the backend.
+function genHpk(){
+    if (gv('awgs_hpk_f') && !confirm(T('MSG_REGEN_KEYS'))) return;
+    loadQrLib(function(ok){
+        if (!ok) { alert(T('QR_LIB_FAIL')); return; }
+        sv('awgs_hpk_f', AWGKeys.genPsk());
+        // Header protection takes its nonce from the first 12 bytes of each message's
+        // S-padding, so the daemon refuses the config unless ALL FOUR S params are >= 12 —
+        // S3 included, which this page did not even expose before. Raise anything short
+        // instead of letting the user hit a rejection whose own error text is wrong
+        // (upstream reports a 0-based index and says "8" while enforcing 12).
+        var bumped = [];
+        for (var n = 1; n <= 4; n++) {
+            var id = 'awgs_s' + n + '_f';
+            var cur = parseInt(gv(id), 10);
+            if (!(cur >= 12)) {
+                sv(id, String(Math.floor(Math.random() * 21) + 12)); // 12..32
+                bumped.push('S' + n);
+            }
+        }
+        if (bumped.length) alert(T('MSG_HPK_S_BUMPED').replace('%s', bumped.join(', ')));
         markDirty();
     });
 }
@@ -629,8 +681,11 @@ function buildPeerConf(p){
     }
     var mtu = gv('awgs_mtu_f');
     if (mtu && mtu !== '1420') lines.push('MTU = ' + mtu);
+    // S3/S4 are copied too: they used to be server-only, but Header protection (AWG 3.0)
+    // derives its nonce from the S-padding of EVERY message type, so a peer whose S3/S4 differ
+    // from the server's cannot talk to it at all.
     var fields = [['Jc', 'awgs_jc_f'], ['Jmin', 'awgs_jmin_f'], ['Jmax', 'awgs_jmax_f'],
-                  ['S1', 'awgs_s1_f'], ['S2', 'awgs_s2_f'],
+                  ['S1', 'awgs_s1_f'], ['S2', 'awgs_s2_f'], ['S3', 'awgs_s3_f'], ['S4', 'awgs_s4_f'],
                   ['H1', 'awgs_h1_f'], ['H2', 'awgs_h2_f'], ['H3', 'awgs_h3_f'], ['H4', 'awgs_h4_f']];
     for (var i = 0; i < fields.length; i++) {
         var v = gv(fields[i][1]);
@@ -639,6 +694,17 @@ function buildPeerConf(p){
     for (var n = 1; n <= 5; n++) {
         var iv = gv('awgs_i' + n + '_f');
         if (iv) lines.push('I' + n + ' = ' + iv);
+    }
+    // AmneziaWG 3.0. HeaderProtectionKey is the one that MUST match; the rest are mirrored so
+    // the peer behaves like the server the admin configured. All of these need an AWG 3.0
+    // client — the fields are disabled (hence empty) when this build can't do v3 anyway.
+    var awg3f = [['HeaderProtectionKey', 'awgs_hpk_f'], ['ContentPaddingAddition', 'awgs_cpa_f'],
+                 ['RekeyAfterTime', 'awgs_rat_f'], ['RekeyTimeout', 'awgs_rto_f'],
+                 ['RejectAfterTime', 'awgs_rjt_f'], ['KeepaliveTimeout', 'awgs_kat_f'],
+                 ['MaxHandshakeAttempts', 'awgs_mha_f']];
+    for (var a = 0; a < awg3f.length; a++) {
+        var av = gv(awg3f[a][1]);
+        if (av) lines.push(awg3f[a][0] + ' = ' + av);
     }
     lines.push('');
     lines.push('[Peer]');
@@ -723,8 +789,14 @@ function saveSettings(){
     ss('awgs_autostart', gchk('awgs_autostart_f') ? '1' : '0');
     ss('awgs_jc', gv('awgs_jc_f')); ss('awgs_jmin', gv('awgs_jmin_f')); ss('awgs_jmax', gv('awgs_jmax_f'));
     ss('awgs_s1', gv('awgs_s1_f')); ss('awgs_s2', gv('awgs_s2_f'));
+    ss('awgs_s3', gv('awgs_s3_f')); ss('awgs_s4', gv('awgs_s4_f'));
     ss('awgs_h1', gv('awgs_h1_f')); ss('awgs_h2', gv('awgs_h2_f'));
     ss('awgs_h3', gv('awgs_h3_f')); ss('awgs_h4', gv('awgs_h4_f'));
+    // AmneziaWG 3.0
+    ss('awgs_hpk', gv('awgs_hpk_f')); ss('awgs_cpa', gv('awgs_cpa_f'));
+    ss('awgs_rat', gv('awgs_rat_f')); ss('awgs_rto', gv('awgs_rto_f'));
+    ss('awgs_rjt', gv('awgs_rjt_f')); ss('awgs_kat', gv('awgs_kat_f'));
+    ss('awgs_mha', gv('awgs_mha_f'));
     // I1-I5 -> chunked base64 text (ASCII-only, same as the client page)
     var itxt = '';
     for (var n = 1; n <= 5; n++) {
@@ -807,8 +879,25 @@ function refreshStatus(){
         if (st) renderStatus(st);
     });
 }
+// Mirrors applyAwg3Capability() on the client page: the AmneziaWG 3.0 fields are disabled
+// unless the installed daemon + awg CLI actually parse them, because an older awg aborts the
+// whole setconf on the first unknown key. Stored values are never cleared — they survive
+// until the binaries catch up. Undefined => unsupported (fail closed).
+var AWGS3_FIELDS = ['hpk','cpa','rat','rto','rjt','kat','mha'];
+function applyAwg3CapabilitySrv(cap){
+    var ok = (cap === true);
+    var note = document.getElementById('awgs3_unsupported');
+    if (note) note.style.display = ok ? 'none' : '';
+    for (var i = 0; i < AWGS3_FIELDS.length; i++) {
+        var el = document.getElementById('awgs_' + AWGS3_FIELDS[i] + '_f');
+        if (!el) continue;
+        el.disabled = !ok;
+        el.style.opacity = ok ? '' : '0.5';
+    }
+}
 function renderStatus(st){
     awgsStatus = st;
+    applyAwg3CapabilitySrv(st.awg3);
     var badge = document.getElementById('awgs_badge');
     if (st.starting) {
         badge.className = 'awg-status connecting';
@@ -1054,10 +1143,13 @@ function initial(){
                     </td>
                 </tr>
                 <tr>
-                    <th>S1 / S2</th>
+                    <th>S1 / S2 / S3 / S4</th>
                     <td>
-                        <input type="text" id="awgs_s1_f" class="input_6_table" maxlength="4" onchange="markDirty();">
-                        <input type="text" id="awgs_s2_f" class="input_6_table" maxlength="4" onchange="markDirty();">
+                        <input type="text" id="awgs_s1_f" class="input_6_table" maxlength="4" placeholder="S1" onchange="markDirty();">
+                        <input type="text" id="awgs_s2_f" class="input_6_table" maxlength="4" placeholder="S2" onchange="markDirty();">
+                        <input type="text" id="awgs_s3_f" class="input_6_table" maxlength="4" placeholder="S3" onchange="markDirty();">
+                        <input type="text" id="awgs_s4_f" class="input_6_table" maxlength="4" placeholder="S4" onchange="markDirty();">
+                        <div class="awg-hint" data-i18n="HINT_S_ALL">S3/S4 are optional for AWG 2.0, but Header protection (AWG 3.0) needs all four ≥ 12.</div>
                     </td>
                 </tr>
                 <tr>
@@ -1080,6 +1172,47 @@ function initial(){
                         <input type="text" id="awgs_i4_f" class="input_32_table" style="width:96%;" placeholder="I4" onchange="markDirty();">
                         <input type="text" id="awgs_i5_f" class="input_32_table" style="width:96%;" placeholder="I5" onchange="markDirty();">
                     </td>
+                </tr>
+                </table>
+
+                <!-- AmneziaWG 3.0 -->
+                <div class="awg-section" data-i18n="SEC_AWG3">AmneziaWG 3.0</div>
+                <div id="awgs3_unsupported" class="awg-hint" style="display:none; margin:0 0 6px 5px; padding:6px 10px; border:1px solid #7a6a3a; background:#4a4230; border-radius:3px; color:#e8dfc8;"
+                     data-i18n="AWG3_UNSUPPORTED">AmneziaWG 3.0 parameters are not supported by the installed binaries — the fields below are disabled.</div>
+                <table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" class="FormTable">
+                <tr>
+                    <th width="30%">HeaderProtectionKey</th>
+                    <td>
+                        <input type="text" id="awgs_hpk_f" class="input_32_table" style="width:70%; font-family:monospace;" maxlength="44" placeholder="(optional)" onchange="markDirty();">
+                        <input type="button" class="button_gen awg-mini" value="Generate" data-i18n-val="BTN_GENERATE" onclick="genHpk();">
+                        <div class="awg-hint" data-i18n="HINT_AWG3_HPK_SRV">Written into every peer config and QR code — server and clients must share it. Requires S1–S4 ≥ 12.</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th>ContentPaddingAddition</th>
+                    <td><input type="text" id="awgs_cpa_f" class="input_6_table" maxlength="21" placeholder="10-40" onchange="markDirty();">
+                        <div class="awg-hint" data-i18n="HINT_AWG3_RANGE">A single number or a "lo-hi" range.</div></td>
+                </tr>
+                <tr>
+                    <th>RekeyAfterTime / RekeyTimeout</th>
+                    <td>
+                        <input type="text" id="awgs_rat_f" class="input_6_table" maxlength="21" placeholder="120" onchange="markDirty();">
+                        <input type="text" id="awgs_rto_f" class="input_6_table" maxlength="21" placeholder="5" onchange="markDirty();">
+                        <div class="awg-hint" data-i18n="HINT_AWG3_REKEY">Seconds. Defaults 120 / 5.</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th>RejectAfterTime / KeepaliveTimeout</th>
+                    <td>
+                        <input type="text" id="awgs_rjt_f" class="input_6_table" maxlength="21" placeholder="180" onchange="markDirty();">
+                        <input type="text" id="awgs_kat_f" class="input_6_table" maxlength="21" placeholder="10" onchange="markDirty();">
+                        <div class="awg-hint" data-i18n="HINT_AWG3_REJECT">Seconds. Defaults 180 / 10. RejectAfterTime must stay above RekeyAfterTime.</div>
+                    </td>
+                </tr>
+                <tr>
+                    <th>MaxHandshakeAttempts</th>
+                    <td><input type="text" id="awgs_mha_f" class="input_6_table" maxlength="21" placeholder="18" onchange="markDirty();">
+                        <div class="awg-hint" data-i18n="HINT_AWG3_MHA">Handshake retries before giving up. Default 18.</div></td>
                 </tr>
                 </table>
 

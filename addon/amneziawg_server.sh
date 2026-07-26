@@ -250,6 +250,45 @@ srv_generate_config(){
         [ -n "$_iv" ] && { validate_iparam "$_iv" || { log_msg "ERROR: I$_in looks truncated/malformed (unbalanced <> or no closing '>')"; return 1; }; }
     done
 
+    # --- AmneziaWG 3.0 device params (validators + gate come from amneziawg.sh, lib mode) ---
+    local hpk cpa rat rto rjt kat mha awg3=0
+    hpk=$(get_setting awgs_hpk)
+    cpa=$(get_setting awgs_cpa); rat=$(get_setting awgs_rat)
+    rto=$(get_setting awgs_rto); rjt=$(get_setting awgs_rjt)
+    kat=$(get_setting awgs_kat); mha=$(get_setting awgs_mha)
+
+    [ -n "$hpk" ] && { validate_wgkey "$hpk" || { log_msg "ERROR: Invalid HeaderProtectionKey"; return 1; }; }
+    [ -n "$cpa" ] && { validate_range "$cpa" || { log_msg "ERROR: Invalid ContentPaddingAddition: $cpa"; return 1; }; }
+    [ -n "$rat" ] && { validate_range "$rat" || { log_msg "ERROR: Invalid RekeyAfterTime: $rat"; return 1; }; }
+    [ -n "$rto" ] && { validate_range "$rto" || { log_msg "ERROR: Invalid RekeyTimeout: $rto"; return 1; }; }
+    [ -n "$rjt" ] && { validate_range "$rjt" || { log_msg "ERROR: Invalid RejectAfterTime: $rjt"; return 1; }; }
+    [ -n "$kat" ] && { validate_range "$kat" || { log_msg "ERROR: Invalid KeepaliveTimeout: $kat"; return 1; }; }
+    [ -n "$mha" ] && { validate_range "$mha" || { log_msg "ERROR: Invalid MaxHandshakeAttempts: $mha"; return 1; }; }
+
+    # Header protection needs ALL FOUR S params >= HeaderCipherNonceSize (12) — the nonce is
+    # the leading 12 bytes of each message's S-padding. Refuse here: on a LIVE awgs0 the
+    # daemon's own rejection has already committed H1-H4, which blackholes every connected
+    # peer on a config it then refused (verified against v3.0.1).
+    if [ -n "$hpk" ]; then
+        local _sn _sv
+        for _sn in 1 2 3 4; do
+            eval "_sv=\$s$_sn"
+            [ -z "$_sv" ] && _sv=0
+            if [ "$_sv" -lt 12 ] 2>/dev/null; then
+                log_msg "ERROR: HeaderProtectionKey requires S1-S4 >= 12 (S$_sn = $_sv) — refusing before setconf so a running server is not left dead"
+                return 1
+            fi
+        done
+    fi
+
+    if [ -n "$hpk$cpa$rat$rto$rjt$kat$mha" ]; then
+        if awg3_supported; then
+            awg3=1
+        else
+            log_msg "WARNING: AmneziaWG 3.0 parameters are set but this build does not support them — NOT applied; the server starts with the 2.0 parameters only"
+        fi
+    fi
+
     {
         echo "[Interface]"
         echo "PrivateKey = $privkey"
@@ -270,6 +309,15 @@ srv_generate_config(){
         [ -n "$i3" ]   && echo "I3 = $i3"
         [ -n "$i4" ]   && echo "I4 = $i4"
         [ -n "$i5" ]   && echo "I5 = $i5"
+        if [ "$awg3" = "1" ]; then
+            [ -n "$hpk" ] && echo "HeaderProtectionKey = $hpk"
+            [ -n "$cpa" ] && echo "ContentPaddingAddition = $cpa"
+            [ -n "$rat" ] && echo "RekeyAfterTime = $rat"
+            [ -n "$rto" ] && echo "RekeyTimeout = $rto"
+            [ -n "$rjt" ] && echo "RejectAfterTime = $rjt"
+            [ -n "$kat" ] && echo "KeepaliveTimeout = $kat"
+            [ -n "$mha" ] && echo "MaxHandshakeAttempts = $mha"
+        fi
     } > "$CONF"
 
     # One [Peer] per ENABLED stored peer. Keys are validated per-peer; a malformed entry is
@@ -707,8 +755,13 @@ do_srv_apply(){
     # `setconf` — the start path — parses them fine (verified on the router). So with I-params
     # present, skip the doomed syncconf and restart directly (setconf-based), instead of logging
     # a scary "syncconf failed" and falling back. Peers reconnect in ~1-2s either way.
-    if grep -qE '^I[1-5] ' "$CONF" 2>/dev/null; then
-        log_msg "Server config has I1-I5 (tagged junk) — applying via restart (syncconf can't diff those)"
+    # The AmneziaWG 3.0 device keys are in exactly the same boat, for two reasons: `syncconf`
+    # builds its diff from `showconf`, and (a) an older awg cannot even print them, (b) applying
+    # a partial diff to a LIVE device is precisely the case where the daemon commits H1-H4 before
+    # rejecting a bad S/HeaderProtectionKey pair — which leaves every peer blackholed on a config
+    # it refused. Restart instead: it is setconf-based and all-or-nothing.
+    if grep -qE '^(I[1-5]|HeaderProtectionKey|ContentPaddingAddition|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts) ' "$CONF" 2>/dev/null; then
+        log_msg "Server config has I1-I5 or AmneziaWG 3.0 params — applying via restart (syncconf can't diff those)"
         release_lock
         do_srv_restart
         srv_poke_policies
@@ -880,7 +933,7 @@ srv_update_status(){
 
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     cat > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","port":"${port}","subnet":"${subnet}","router_ip":"${router_ip}","public_key":"${pubkey}","endpoint_hint":"${ep_hint}","wan_private":$([ "$wan_priv" = "1" ] && echo true || echo false),"port_conflict":$([ "$port_conf" = "1" ] && echo true || echo false),"nat_lan":${nat_lan},"autostart":${autostart},"client_running":${client_running},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"xray_peers_uncovered":${xray_uncov},"peers":${peers_json},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","port":"${port}","subnet":"${subnet}","router_ip":"${router_ip}","public_key":"${pubkey}","endpoint_hint":"${ep_hint}","wan_private":$([ "$wan_priv" = "1" ] && echo true || echo false),"port_conflict":$([ "$port_conf" = "1" ] && echo true || echo false),"nat_lan":${nat_lan},"autostart":${autostart},"awg3":$(awg3_supported && echo true || echo false),"client_running":${client_running},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"xray_peers_uncovered":${xray_uncov},"peers":${peers_json},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
