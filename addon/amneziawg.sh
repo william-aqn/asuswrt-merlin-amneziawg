@@ -4,11 +4,18 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.2"
+AWG_VERSION="1.5.3"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
 AWG_GO="$AWG_DIR/amneziawg-go"
+# Canonical daemon path for CAPABILITY probing only. The server role re-points AWG_GO at
+# its own `awgs-go` hardlink, and srv_generate_config runs BEFORE srv_ensure_binary creates
+# that link — so probing $AWG_GO there finds nothing on a first start and silently drops
+# every AmneziaWG 3.0 param from the generated server config (field-reproduced on the
+# RT-AC66U_B1: "parameters are set but this build does not support them"). The hardlink is
+# the same inode anyway, so its capabilities are identical. Never override this.
+AWG_GO_CANON="$AWG_DIR/amneziawg-go"
 AWG_BIN="$AWG_DIR/awg"
 IFACE="awg0"
 STATUS_FILE="/www/user/awg_status.htm"
@@ -3559,19 +3566,23 @@ AWG_CAPS_FILE="/tmp/.awg_caps"
 # 43 base64 chars + '=' — a syntactically valid all-zero key. parse_key only checks the shape,
 # and it never reaches a real interface (the probe iface is asserted absent first).
 AWG_CAP_DUMMY_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+# How long a NEGATIVE capability verdict is trusted before re-probing (seconds).
+# Positives are cached until the binaries change; negatives expire so a transient
+# failure cannot hide the AWG 3.0 fields until the next package update.
+AWG_CAPS_NEG_TTL=600
 
 _awg3_probe(){
     local pconf perr iface="awgcap0"
     # Never let the probe touch a live netdev — it would push a zero private key into it.
     [ -e "/sys/class/net/$iface" ] && return 1
     [ -s "$AWG_BIN" ] && [ -x "$AWG_BIN" ] || return 1
-    [ -s "$AWG_GO" ]  && [ -x "$AWG_GO" ]  || return 1
+    [ -s "$AWG_GO_CANON" ] && [ -x "$AWG_GO_CANON" ] || return 1
 
     # 1) The daemon: our CI stamps an explicit `-awg3-` marker into version.go's const Version
     #    when it builds from the v3 fork branch. Deliberately an explicit marker and not a
     #    version-number comparison — upstream hardcodes a stale const and we've been fooled by
     #    that string before (see CLAUDE.md).
-    case "$("$AWG_GO" --version 2>/dev/null)" in
+    case "$("$AWG_GO_CANON" --version 2>/dev/null)" in
         *-awg3-*) ;;
         *) return 1 ;;
     esac
@@ -3597,21 +3608,41 @@ _awg3_probe(){
 # Cached wrapper. The cache key is `ls -l` of both binaries, so an opkg update (size or mtime
 # change) invalidates it for free, and /tmp means a reboot always re-probes.
 awg3_supported(){
-    local sig cached
-    sig=$(ls -l "$AWG_GO" "$AWG_BIN" 2>/dev/null | tr -d ' \n')
-    [ -n "$sig" ] || return 1
+    local sig lines cached cstamp now
+    # BOTH binaries must be listed. Mid-upgrade opkg has already removed one of them, and a probe
+    # in that window would cache a bogus "unsupported" under a signature that looks perfectly
+    # valid. Field-observed on a real 1.5.0->1.5.2 upgrade: the cached line held only the awg
+    # entry, so the page said "AWG 3.0 not supported" until something re-probed. Refuse to
+    # answer (and refuse to cache) while the pair is incomplete.
+    sig=$(ls -l "$AWG_GO_CANON" "$AWG_BIN" 2>/dev/null)
+    lines=$(echo "$sig" | grep -c .)
+    [ "$lines" = "2" ] || return 1
+    sig=$(echo "$sig" | tr -d ' \n')
+
+    now=$(date +%s 2>/dev/null) || now=0
     if [ -f "$AWG_CAPS_FILE" ]; then
         cached=$(cat "$AWG_CAPS_FILE" 2>/dev/null)
         case "$cached" in
+            # A positive verdict is permanent for these binaries: a CLI that parses the v3 keys
+            # will not stop, and the daemon's version marker cannot change without the file
+            # changing (which moves the signature).
             "awg3=1 $sig") return 0 ;;
-            "awg3=0 $sig") return 1 ;;
+            # A NEGATIVE is only trusted for AWG_CAPS_NEG_TTL seconds. It can be produced by a
+            # transient failure (no fork memory, a full /tmp, the probe interface briefly
+            # existing) and would otherwise stick until the next package update, silently
+            # hiding the AWG 3.0 fields for good. Re-probing costs one exec of a static binary.
+            "awg3=0 "*" $sig")
+                cstamp=$(echo "$cached" | cut -d' ' -f2)
+                [ -n "$cstamp" ] && [ "$now" -gt 0 ] 2>/dev/null \
+                    && [ $((now - cstamp)) -lt "$AWG_CAPS_NEG_TTL" ] 2>/dev/null && return 1
+                ;;
         esac
     fi
     if _awg3_probe; then
         echo "awg3=1 $sig" > "$AWG_CAPS_FILE" 2>/dev/null
         return 0
     fi
-    echo "awg3=0 $sig" > "$AWG_CAPS_FILE" 2>/dev/null
+    echo "awg3=0 $now $sig" > "$AWG_CAPS_FILE" 2>/dev/null
     return 1
 }
 
