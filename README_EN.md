@@ -11,6 +11,8 @@ A DPI-bypassing VPN **client and server** based on [AmneziaWG](https://github.co
 
 Fully userspace implementation -- no kernel module required, works on any kernel version.
 
+**Protocol: AmneziaWG 3.0** (daemon `amneziawg-go v3.0.1`, since addon 1.5.0). All 1.5/2.0 obfuscation params are supported (`Jc/Jmin/Jmax`, `S1-S4`, `H1-H4`, `I1-I5`) plus the new 3.0 ones: `HeaderProtectionKey` (packet-header encryption with a shared key), `ContentPaddingAddition` and the configurable timings `RekeyAfterTime` / `RekeyTimeout` / `RejectAfterTime` / `KeepaliveTimeout` / `MaxHandshakeAttempts`. Range params accept either a single number or `lo-hi`; so does `PersistentKeepalive`. Existing 2.0 configs keep working unchanged. The one exception is the `armv7-2.6` package (2.6.3x kernels, RT-AC68U and kin): it deliberately stays on the `v0.2.19` daemon, the 3.0 params are disabled there, everything else works as before.
+
 > **About:** originally a fork of [r0otx/asuswrt-merlin-amneziawg](https://github.com/r0otx/asuswrt-merlin-amneziawg), but the project has changed substantially since forking and is now maintained independently. Thanks to r0otx for the excellent foundation.
 
 <details>
@@ -62,7 +64,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full changelog (in Russian).
 
 ## Features
 
-- **AmneziaWG protocol** -- WireGuard with DPI obfuscation (Jc, Jmin, Jmax, S1-S4, H1-H4, long I1-I5 from AWG 2.x)
+- **AmneziaWG 3.0 protocol** -- WireGuard with DPI obfuscation: Jc, Jmin, Jmax, S1-S4, H1-H4, long I1-I5 (AWG 2.x) + the 3.0 params — header protection (header encryption with a shared key), ContentPaddingAddition and configurable timings
 - **Userspace daemon** -- based on [amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go), no kernel module; runs even on old ARM32 routers with 2.6.x kernels (RT-AC68U) — a dedicated legacy daemon build ships for them
 - **Web UI** -- ROG-styled addon page (VPN > AmneziaWG), **bilingual RU/EN** (follows the firmware language), plus a **status widget in the header** of every router page with quick tunnel start/stop
 - **Config import** -- upload a `.conf` file exported from the Amnezia VPN client
@@ -234,7 +236,7 @@ The same fields exist in the **"Pointwise exclusions"** block — but there they
 
 ### Server mode — inbound connections (v1.3.0)
 
-The router can act not only as a client but also as an **AmneziaWG server**: a device (phone, laptop, another router) connects to your home from anywhere — gets access to the home network (NAS, cameras, RDP) and, optionally, reaches the internet through your home. All with AmneziaWG obfuscation, so it gets through where plain WireGuard is DPI-blocked. Target clients — the official **AmneziaWG 2.x** apps (Android/iOS/Windows/macOS).
+The router can act not only as a client but also as an **AmneziaWG server**: a device (phone, laptop, another router) connects to your home from anywhere — gets access to the home network (NAS, cameras, RDP) and, optionally, reaches the internet through your home. All with AmneziaWG obfuscation, so it gets through where plain WireGuard is DPI-blocked. Target clients — the official **AmneziaWG** apps (Android/iOS/Windows/macOS). The 3.0 params (header protection included) are written into peer configs and QR codes — those need an AmneziaWG 3.0 capable client.
 
 A dedicated **VPN > AmneziaWG Server** page (the client part is untouched; both roles can stay enabled at the same time):
 
@@ -269,7 +271,7 @@ CLI: `/opt/etc/init.d/S99amneziawg server {start|stop|status|restart|diag}`. Aut
 > - **[PR #152](https://github.com/amnezia-vpn/amneziawg-go/pull/152)** — a bounded buffer pool (`PreallocatedBuffersPerPool`) adjustable via the `WG_PREALLOCATED_BUFFERS_PER_POOL` environment variable: the cure for `runtime: out of memory` under load. The build default is 1024 and the cap deliberately applies on **all** routers: it is flow control — without it a slow egress leg balloons the daemon's heap into an OOM even on 2GB boxes (field case, 1.3.13→1.3.14). The variable remains for manual experiments;
 > - **[PR #153](https://github.com/amnezia-vpn/amneziawg-go/pull/153)** — a `sendmmsg`/`recvmmsg` → per-packet `sendmsg`/`recvmsg` fallback on `ENOSYS`: without it, on Linux kernels < 3.0 (RT-AC68U / 2.6.36) the daemon cannot send a single packet and the tunnel passes no traffic.
 >
-> The fork branch **`router-build`** = the `v0.2.19` tag (same AmneziaWG 1.5/2.0 parameters) + both patches as separate commits. **Once both PRs are merged upstream**, the build returns to `amnezia-vpn/amneziawg-go` — a two-line change (`AWG_GO_REPO`/`AWG_GO_REF`) in `.github/workflows/release.yml`.
+> The fork branch **`router-build-v3`** = the `v3.0.1` tag (AmneziaWG 3.0) + four patches as separate commits. The `router-build` branch (tag `v0.2.19`) remains for the `armv7-2.6` package. **Once both PRs are merged upstream**, the build returns to `amnezia-vpn/amneziawg-go` — a two-line change (`AWG_GO_REPO`/`AWG_GO_REF`) in `.github/workflows/release.yml`.
 
 ```shell
 git clone --depth 1 --branch router-build https://github.com/william-aqn/amneziawg-go.git
@@ -291,7 +293,7 @@ GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 \
   go build -ldflags="-s -w" -o ../output/amneziawg-go-arm5
 ```
 
-The canonical commands (including the version patch so `--version` reports `v0.2.19-legacy26-pool1024-smfix`, and the hard asserts that both patches are present) live in `.github/workflows/release.yml`, step "Build amneziawg-go-arm5 (legacy Go 1.23…)".
+The canonical commands (including the version patch so `--version` reports `v0.2.19-legacy26-poolcfg-smfix`, and the hard asserts that both patches are present) live in `.github/workflows/release.yml`, step "Build amneziawg-go-arm5 (legacy Go 1.23…)".
 
 ### Building the awg CLI (static musl)
 
@@ -416,7 +418,7 @@ A: Add CIDR ranges to the "Own IPs / subnets" field (GeoCustom), e.g. `149.154.1
 
 **Q: Is ARM32 (RT-AC68U) supported?**
 
-A: Yes, there is a dedicated ARM32 `.ipk` (`armv7-2.6`). Since **1.2.32** the daemon in this package is built with a special legacy toolchain (Go 1.23) — regular Go ≥ 1.24 builds don't support these routers' 2.6.36 kernel and died silently with `ERROR: amneziawg-go failed to create interface`. To check you have the right build: `/opt/amneziawg/amneziawg-go --version` must report `v0.2.19-legacy26-pool1024-smfix (…)` (the daemon is built from [the fork](https://github.com/william-aqn/amneziawg-go) with two fixes — see "Building amneziawg-go"; the `-smfix` suffix = the `sendmmsg` fix, without which a 2.6.36 tunnel passes no traffic).
+A: Yes, there is a dedicated ARM32 `.ipk` (`armv7-2.6`). Since **1.2.32** the daemon in this package is built with a special legacy toolchain (Go 1.23) — regular Go ≥ 1.24 builds don't support these routers' 2.6.36 kernel and died silently with `ERROR: amneziawg-go failed to create interface`. To check you have the right build: `/opt/amneziawg/amneziawg-go --version` must report `v0.2.19-legacy26-poolcfg-smfix (…)` (this package deliberately stays on the 2.0 daemon — AmneziaWG 3.0 has never been tested on a 2.6.36 kernel) (the daemon is built from [the fork](https://github.com/william-aqn/amneziawg-go) with two fixes — see "Building amneziawg-go"; the `-smfix` suffix = the `sendmmsg` fix, without which a 2.6.36 tunnel passes no traffic).
 
 **Q: The tunnel stops by itself a minute or two after starting (or "runs 2 minutes → drop → reconnect")?**
 
@@ -436,7 +438,7 @@ Important: this only removes the DNS-level clash. With the default policy **"VPN
 
 **Q: What do I need for server mode (connecting to my home)?**
 
-A: A public (white) IP on the WAN — or a forward of the addon's UDP port (51821 by default) on the upstream router. Behind CGNAT / a private address, inbound connections physically can't reach you — the server page warns with a red banner. The address for peer configs is filled in automatically (the firmware's DDNS, otherwise the current WAN IP); the client on the device is the official **AmneziaWG 2.x** app (it scans the QR from the page). Server autostart after reboot is a separate checkbox, off by default.
+A: A public (white) IP on the WAN — or a forward of the addon's UDP port (51821 by default) on the upstream router. Behind CGNAT / a private address, inbound connections physically can't reach you — the server page warns with a red banner. The address for peer configs is filled in automatically (the firmware's DDNS, otherwise the current WAN IP); the client on the device is the official **AmneziaWG** app (it scans the QR from the page). Server autostart after reboot is a separate checkbox, off by default.
 
 **Q: I connected to the router's server — the handshake is there, but a "VPN"-policied peer has no internet?**
 

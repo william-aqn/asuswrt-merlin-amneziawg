@@ -216,10 +216,14 @@ srv_generate_config(){
     [ -n "$jc" ]   && { validate_uint "$jc"    || { log_msg "ERROR: Invalid Jc: $jc"; return 1; }; }
     [ -n "$jmin" ] && { validate_uint "$jmin"  || { log_msg "ERROR: Invalid Jmin: $jmin"; return 1; }; }
     [ -n "$jmax" ] && { validate_uint "$jmax"  || { log_msg "ERROR: Invalid Jmax: $jmax"; return 1; }; }
-    [ -n "$s1" ]   && { validate_uint "$s1"    || { log_msg "ERROR: Invalid S1: $s1"; return 1; }; }
-    [ -n "$s2" ]   && { validate_uint "$s2"    || { log_msg "ERROR: Invalid S2: $s2"; return 1; }; }
-    [ -n "$s3" ]   && { validate_uint "$s3"    || { log_msg "ERROR: Invalid S3: $s3"; return 1; }; }
-    [ -n "$s4" ]   && { validate_uint "$s4"    || { log_msg "ERROR: Invalid S4: $s4"; return 1; }; }
+    [ -n "$s1" ]   && { validate_padding "$s1" || { log_msg "ERROR: Invalid S1: $s1 (0-65535)"; return 1; }; }
+    [ -n "$s2" ]   && { validate_padding "$s2" || { log_msg "ERROR: Invalid S2: $s2 (0-65535)"; return 1; }; }
+    [ -n "$s3" ]   && { validate_padding "$s3" || { log_msg "ERROR: Invalid S3: $s3 (0-65535)"; return 1; }; }
+    [ -n "$s4" ]   && { validate_padding "$s4" || { log_msg "ERROR: Invalid S4: $s4 (0-65535)"; return 1; }; }
+    # See the client's note: Jmin > Jmax wraps a uint32 subtraction into a ~4 GiB allocation.
+    if [ -n "$jmin" ] && [ -n "$jmax" ]; then
+        [ "$jmin" -le "$jmax" ] 2>/dev/null || { log_msg "ERROR: Jmin ($jmin) must not exceed Jmax ($jmax)"; return 1; }
+    fi
     [ -n "$h1" ]   && { validate_header "$h1"  || { log_msg "ERROR: Invalid H1: $h1"; return 1; }; }
     [ -n "$h2" ]   && { validate_header "$h2"  || { log_msg "ERROR: Invalid H2: $h2"; return 1; }; }
     [ -n "$h3" ]   && { validate_header "$h3"  || { log_msg "ERROR: Invalid H3: $h3"; return 1; }; }

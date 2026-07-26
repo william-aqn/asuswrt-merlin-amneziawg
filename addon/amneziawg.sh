@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.0"
+AWG_VERSION="1.5.1"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3508,6 +3508,16 @@ validate_iparam(){
     case "$t" in '<'*'>') return 0 ;; *) return 1 ;; esac
 }
 
+# S1-S4 padding. AmneziaWG 3.0 parses these with ParseUint(value, 10, 16), i.e. they became
+# 16-BIT — v0.2.19 used a plain Atoi and accepted anything. A config carrying S > 65535 used to
+# work and is now refused by the daemon with the generic "Invalid argument", so name it here.
+validate_padding(){
+    validate_uint "$1" || return 1
+    [ "${#1}" -le 5 ] || return 1
+    [ "$1" -le 65535 ] 2>/dev/null || return 1
+    return 0
+}
+
 # An AmneziaWG 3.0 "range" param: "N" or "lo-hi", both uint32, hi >= lo.
 # The daemon's UintRange.FromString splits on '-' and ParseUint's each half, so a NEGATIVE
 # value becomes an empty low bound and dies with the useless `parsing "": invalid syntax`;
@@ -3679,10 +3689,16 @@ generate_config(){
     [ -n "$jc" ] && { validate_uint "$jc" || { log_msg "ERROR: Invalid Jc: $jc"; return 1; }; }
     [ -n "$jmin" ] && { validate_uint "$jmin" || { log_msg "ERROR: Invalid Jmin: $jmin"; return 1; }; }
     [ -n "$jmax" ] && { validate_uint "$jmax" || { log_msg "ERROR: Invalid Jmax: $jmax"; return 1; }; }
-    [ -n "$s1" ] && { validate_uint "$s1" || { log_msg "ERROR: Invalid S1: $s1"; return 1; }; }
-    [ -n "$s2" ] && { validate_uint "$s2" || { log_msg "ERROR: Invalid S2: $s2"; return 1; }; }
-    [ -n "$s3" ] && { validate_uint "$s3" || { log_msg "ERROR: Invalid S3: $s3"; return 1; }; }
-    [ -n "$s4" ] && { validate_uint "$s4" || { log_msg "ERROR: Invalid S4: $s4"; return 1; }; }
+    [ -n "$s1" ] && { validate_padding "$s1" || { log_msg "ERROR: Invalid S1: $s1 (0-65535)"; return 1; }; }
+    [ -n "$s2" ] && { validate_padding "$s2" || { log_msg "ERROR: Invalid S2: $s2 (0-65535)"; return 1; }; }
+    [ -n "$s3" ] && { validate_padding "$s3" || { log_msg "ERROR: Invalid S3: $s3 (0-65535)"; return 1; }; }
+    [ -n "$s4" ] && { validate_padding "$s4" || { log_msg "ERROR: Invalid S4: $s4 (0-65535)"; return 1; }; }
+    # Jmin > Jmax is silently ACCEPTED by both daemons but is a broken config: the junk size is
+    # picked as rand(jmax-jmin+1), and on v3 those are uint32, so the subtraction wraps to a
+    # ~4 GiB allocation on the first handshake — instant OOM on a router. Refuse it here.
+    if [ -n "$jmin" ] && [ -n "$jmax" ]; then
+        [ "$jmin" -le "$jmax" ] 2>/dev/null || { log_msg "ERROR: Jmin ($jmin) must not exceed Jmax ($jmax)"; return 1; }
+    fi
     [ -n "$h1" ] && { validate_header "$h1" || { log_msg "ERROR: Invalid H1: $h1"; return 1; }; }
     [ -n "$h2" ] && { validate_header "$h2" || { log_msg "ERROR: Invalid H2: $h2"; return 1; }; }
     [ -n "$h3" ] && { validate_header "$h3" || { log_msg "ERROR: Invalid H3: $h3"; return 1; }; }
