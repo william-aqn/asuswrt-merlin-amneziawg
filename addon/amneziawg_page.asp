@@ -4439,9 +4439,15 @@ function importConfig(){
 // imported provider config) already stored, so the values survive until the binaries catch up.
 // Undefined (older backend that predates the field) is treated as "unsupported" — fail closed.
 function applyAwg3Capability(cap){
-    var ok = (cap === true);
+    // Three states, not two. Only an EXPLICIT false means "the installed binaries cannot do
+    // this" — undefined means the status simply has not reported yet (a seeded stub, a poll
+    // that has not landed), and claiming unsupported there is a false statement the user acts
+    // on. Leave the fields usable in that case: the backend gates emission independently, so
+    // the disabling is a convenience, never the safety mechanism.
+    var known = (cap === true || cap === false);
+    var ok = (cap !== false);
     var note = document.getElementById('awg3_unsupported');
-    if(note) note.style.display = ok ? 'none' : '';
+    if(note) note.style.display = (known && !ok) ? '' : 'none';
     for(var i = 0; i < AWG3_FIELDS.length; i++){
         var el = document.getElementById('awg_' + AWG3_FIELDS[i]);
         if(!el) continue;

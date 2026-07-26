@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.4"
+AWG_VERSION="1.5.5"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -5517,7 +5517,13 @@ do_install_page(){
 
     echo "{\"running\":false,\"starting\":false,\"stopping\":false,\"version\":\"${AWG_VERSION}\",\"killswitch\":false,\"coexist_warn\":false,\"dpi_tool\":\"\",\"peers\":[],\"log\":\"Installed.\"}" > "$STATUS_FILE"
     # Seed the server status file too, so the server page's first poll isn't a 404.
-    [ -f /www/user/awgs_status.htm ] || echo "{\"running\":false,\"starting\":false,\"stopping\":false,\"version\":\"${AWG_VERSION}\",\"peers\":[],\"log\":\"\"}" > /www/user/awgs_status.htm 2>/dev/null
+    # It MUST carry "awg3": the full status is only written by srv_update_status, which runs
+    # from the server's own */1 cron and therefore never on a router where the server role was
+    # never configured. Without the field the page reads undefined and — failing closed — told
+    # the user "AmneziaWG 3.0 parameters are not supported by the installed binaries", which is
+    # simply false on a box whose daemon and CLI both handle 3.0 (field-reported on the RT-AX).
+    _seed_awg3=false; awg3_supported && _seed_awg3=true
+    [ -f /www/user/awgs_status.htm ] || echo "{\"running\":false,\"starting\":false,\"stopping\":false,\"version\":\"${AWG_VERSION}\",\"awg3\":${_seed_awg3},\"peers\":[],\"log\":\"\"}" > /www/user/awgs_status.htm 2>/dev/null
 
     [ ! -f /jffs/scripts/service-event ] && echo "#!/bin/sh" > /jffs/scripts/service-event
     chmod +x /jffs/scripts/service-event 2>/dev/null

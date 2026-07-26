@@ -892,9 +892,14 @@ function refreshStatus(){
 // until the binaries catch up. Undefined => unsupported (fail closed).
 var AWGS3_FIELDS = ['hpk','cpa','rat','rto','rjt','kat','mha'];
 function applyAwg3CapabilitySrv(cap){
-    var ok = (cap === true);
+    // See applyAwg3Capability() on the client page. The server status is only written in full
+    // by srv_update_status, which runs from the server's own cron — so on a router where the
+    // server role was never configured the page used to read undefined and wrongly announce
+    // "not supported by the installed binaries". Only an explicit false says that now.
+    var known = (cap === true || cap === false);
+    var ok = (cap !== false);
     var note = document.getElementById('awgs3_unsupported');
-    if (note) note.style.display = ok ? 'none' : '';
+    if (note) note.style.display = (known && !ok) ? '' : 'none';
     for (var i = 0; i < AWGS3_FIELDS.length; i++) {
         var el = document.getElementById('awgs_' + AWGS3_FIELDS[i] + '_f');
         if (!el) continue;
