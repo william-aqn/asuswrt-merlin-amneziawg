@@ -40,21 +40,21 @@ env:
   #      minutes (a slow UDP-TX leg + line-rate RX balloons the heap — the cap is FLOW CONTROL,
   #      not just low-RAM armor; reverted 1.3.14). The env stays honored for manual experiments;
   #      the compiled default stays the router-safe 1024.
-  # The branch is based on the v0.2.19 tag (AWG_GO_TAG), so it keeps the AmneziaWG 1.5/2.0
-  # obfuscation params (I1-I5, S3/S4) + "handle empty I1-I5" fix — reproducible, not floating
+  #   4. S4 keepalive classification (upstream PR #161) — an AWG 3.0 regression against 1.5/2.0
+  #      configs: with S4 > 0 every keepalive counted as data and re-handshaked an idle tunnel
+  #      every ~15 s. See the assert in the build step below.
+  # The branch is based on the v3.0.1 tag (AWG_GO_TAG) — AmneziaWG 3.0 — keeping the 1.5/2.0
+  # obfuscation params (I1-I5, S3/S4) and adding the 3.0 ones. Reproducible, not floating
   # master. When upstream merges the PRs, point AWG_GO_REPO back to amnezia-vpn + drop the
   # asserts that are then upstream. (version.go still hardcodes a stale const — see the sed below.)
   AWG_GO_TAG: v3.0.1
   AWG_GO_REPO: https://github.com/william-aqn/amneziawg-go.git
   AWG_GO_REF: router-build-v3
-  # The armv7-2.6 package (RT-AC68U class, kernel 2.6.3x) deliberately stays on the
-  # field-proven v0.2.19 daemon. v3.0.1 DOES build with the legacy Go 1.23 toolchain (verified),
-  # but nobody has ever run AmneziaWG 3.0 on a 2.6.36 kernel, and that box took a dozen releases
-  # to stabilise. It still ships the newer awg CLI (harmless — it just parses more), and the
-  # addon's runtime capability gate probes the DAEMON as well as the CLI, so the v3 fields
-  # simply stay disabled there instead of producing a config the daemon would reject.
-  AWG_GO_TAG_LEGACY: v0.2.19
-  AWG_GO_REF_LEGACY: router-build
+  # armv7-2.6 (kernel 2.6.3x) builds the SAME v3 ref, just with the legacy Go 1.23 toolchain.
+  # AmneziaWG 3.0 was verified on a real RT-AC66U_B1 (kernel 2.6.36.4, ARMv7 with NO VFP):
+  # interface created, UAPI up, setconf accepted the full 3.0 param set (HeaderProtectionKey,
+  # S1-S4=12, all five timings, ranges), no sendmmsg ENOSYS, 806 B actually egressed, no
+  # panic/SIGILL. So there is no reason to keep that package a protocol version behind.
 
 jobs:
   build:
@@ -151,15 +151,12 @@ jobs:
           # this build. Verified on a real 2.6.32 kernel (qemu-system-arm versatilepb, Debian
           # Squeeze armel): TUN creation + obfuscated setconf + UAPI all pass.
           #
-          # This package is pinned to its OWN daemon ref (AWG_GO_REF_LEGACY = the v0.2.19-based
-          # router-build), NOT the v3 branch the other arches use — see the env block. Hence a
-          # separate clone instead of the previous `cp -r` of the v3 tree.
-          git clone --depth 1 --branch "$AWG_GO_REF_LEGACY" "$AWG_GO_REPO" amneziawg-go-legacy
+          cp -r amneziawg-go amneziawg-go-legacy
           cd amneziawg-go-legacy
           AWG_GO_COMMIT=$(git rev-parse --short HEAD)
-          # No -awg3- marker here on purpose: this daemon cannot do AmneziaWG 3.0, and the
-          # addon's capability gate keys off that marker to disable the v3 fields.
-          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG_LEGACY-legacy26-poolcfg-smfix ($AWG_GO_COMMIT)\"|" version.go
+          # Carries the -awg3- marker like every other arch: verified working on a real 2.6.36
+          # kernel, so the addon's capability gate should open here too.
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-awg3-legacy26-poolcfg-smfix ($AWG_GO_COMMIT)\"|" version.go
           grep '^const Version' version.go
           # The fork patches rode in via the cp -r above — assert them, hard-fail otherwise.
           # The 2.6.x fleet (RT-AC68U, 256MB!) needs the pool cap even more than 512MB boxes
@@ -169,6 +166,17 @@ jobs:
           grep -q 'var PreallocatedBuffersPerPool uint32 = 1024' device/queueconstants_default.go
           grep -q 'WG_PREALLOCATED_BUFFERS_PER_POOL' main.go
           grep -q 'batchUnsupported' conn/bind_std.go
+          grep -q 'int(elem.padding)+MessageKeepaliveSize' device/send.go
+          # AWG 3.0 moved the Outline SDK to golang.getoutline.org/sdk, which declares
+          # `go >= 1.25` AND is now a DIRECT require, so Go 1.23 refuses to load the module
+          # graph at all — before compiling a single line — even though the daemon never links
+          # it (`go list -deps .` reaches no outline package; only ./outline/*.go import it).
+          # Drop the subpackage and its two module requirements for THIS build only.
+          rm -rf outline
+          go mod edit -droprequire=golang.getoutline.org/sdk -droprequire=golang.getoutline.org/sdk/x
+          # NB the go get below deliberately runs on the runner's DEFAULT (modern) toolchain: it
+          # must read the current graph (x/crypto v0.42 etc, all go>=1.24) before it can
+          # downgrade it. Only the final `go build` is pinned to go1.23.12.
           go get golang.org/x/sys@v0.35.0 golang.org/x/net@v0.43.0 golang.org/x/crypto@v0.41.0
           go mod edit -go=1.23.0 -toolchain=none
           GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 \

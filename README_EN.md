@@ -11,7 +11,7 @@ A DPI-bypassing VPN **client and server** based on [AmneziaWG](https://github.co
 
 Fully userspace implementation -- no kernel module required, works on any kernel version.
 
-**Protocol: AmneziaWG 3.0** (daemon `amneziawg-go v3.0.1`, since addon 1.5.0). All 1.5/2.0 obfuscation params are supported (`Jc/Jmin/Jmax`, `S1-S4`, `H1-H4`, `I1-I5`) plus the new 3.0 ones: `HeaderProtectionKey` (packet-header encryption with a shared key), `ContentPaddingAddition` and the configurable timings `RekeyAfterTime` / `RekeyTimeout` / `RejectAfterTime` / `KeepaliveTimeout` / `MaxHandshakeAttempts`. Range params accept either a single number or `lo-hi`; so does `PersistentKeepalive`. Existing 2.0 configs keep working unchanged. The one exception is the `armv7-2.6` package (2.6.3x kernels, RT-AC68U and kin): it deliberately stays on the `v0.2.19` daemon, the 3.0 params are disabled there, everything else works as before.
+**Protocol: AmneziaWG 3.0** (daemon `amneziawg-go v3.0.1`, since addon 1.5.0). All 1.5/2.0 obfuscation params are supported (`Jc/Jmin/Jmax`, `S1-S4`, `H1-H4`, `I1-I5`) plus the new 3.0 ones: `HeaderProtectionKey` (packet-header encryption with a shared key), `ContentPaddingAddition` and the configurable timings `RekeyAfterTime` / `RekeyTimeout` / `RejectAfterTime` / `KeepaliveTimeout` / `MaxHandshakeAttempts`. Range params accept either a single number or `lo-hi`; so does `PersistentKeepalive`. Existing 2.0 configs keep working unchanged. Works on every supported architecture, the `armv7-2.6` package for old ARM32 routers on 2.6.3x kernels included — verified on a real RT-AC66U_B1 (kernel 2.6.36.4).
 
 > **About:** originally a fork of [r0otx/asuswrt-merlin-amneziawg](https://github.com/r0otx/asuswrt-merlin-amneziawg), but the project has changed substantially since forking and is now maintained independently. Thanks to r0otx for the excellent foundation.
 
@@ -418,7 +418,7 @@ A: Add CIDR ranges to the "Own IPs / subnets" field (GeoCustom), e.g. `149.154.1
 
 **Q: Is ARM32 (RT-AC68U) supported?**
 
-A: Yes, there is a dedicated ARM32 `.ipk` (`armv7-2.6`). Since **1.2.32** the daemon in this package is built with a special legacy toolchain (Go 1.23) — regular Go ≥ 1.24 builds don't support these routers' 2.6.36 kernel and died silently with `ERROR: amneziawg-go failed to create interface`. To check you have the right build: `/opt/amneziawg/amneziawg-go --version` must report `v0.2.19-legacy26-poolcfg-smfix (…)` (this package deliberately stays on the 2.0 daemon — AmneziaWG 3.0 has never been tested on a 2.6.36 kernel) (the daemon is built from [the fork](https://github.com/william-aqn/amneziawg-go) with two fixes — see "Building amneziawg-go"; the `-smfix` suffix = the `sendmmsg` fix, without which a 2.6.36 tunnel passes no traffic).
+A: Yes, there is a dedicated ARM32 `.ipk` (`armv7-2.6`). Since **1.2.32** the daemon in this package is built with a special legacy toolchain (Go 1.23) — regular Go ≥ 1.24 builds don't support these routers' 2.6.36 kernel and died silently with `ERROR: amneziawg-go failed to create interface`. To check you have the right build: `/opt/amneziawg/amneziawg-go --version` must report `v3.0.1-awg3-legacy26-poolcfg-smfix (…)` (the daemon is built from [the fork](https://github.com/william-aqn/amneziawg-go) with two fixes — see "Building amneziawg-go"; the `-smfix` suffix = the `sendmmsg` fix, without which a 2.6.36 tunnel passes no traffic).
 
 **Q: The tunnel stops by itself a minute or two after starting (or "runs 2 minutes → drop → reconnect")?**
 
