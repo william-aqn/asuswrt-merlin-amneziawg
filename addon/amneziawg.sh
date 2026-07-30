@@ -4081,10 +4081,27 @@ do_diag(){
     echo "ip rule:"; ip rule show 2>/dev/null | sed 's/^/  /'
     echo "ip route table $RT_TABLE:"; ip route show table "$RT_TABLE" 2>/dev/null | sed 's/^/  /'
     echo "mangle marks:"; mangle_dump | grep -iE 'awg|0x100|MARK' | head -60 | sed 's/^/  /'
-    echo "rule copy counts (running tunnel expects TCPMSS=2, ACCEPT/MASQ=1 each; more = duplicates):"
-    echo "  TCPMSS clamp   : $(iptables -t mangle -S FORWARD 2>/dev/null | grep -c TCPMSS)"
-    echo "  INPUT accept   : $(iptables -S INPUT 2>/dev/null | grep -c -- "-i $IFACE -j ACCEPT")"
-    echo "  MASQUERADE     : $(iptables -t nat -S POSTROUTING 2>/dev/null | grep -c -- "-o $IFACE -j MASQUERADE")"
+    # Copy counters scoped to OUR rules. The old bare `grep -c TCPMSS` also counted FOREIGN
+    # clamps (field RT-BE92U: xrayui_custom's PPTP MSS rule kept the counter at 1 with both
+    # tunnels down), and the server role's rules matched the client substrings — its
+    # double-hop NAT `-s <subnet> -o awg0 -j MASQUERADE` ends in the client's exact rule, so
+    # a healthy dual-role box read "MASQUERADE: 2" and looked like duplicates. Expected per
+    # ACTIVE role: client = 2 TCPMSS (awg0) + 1 INPUT accept + 1 exact MASQ; server = 2
+    # TCPMSS (awgs0) + 1 double-hop MASQ (its WAN/br0-scoped MASQs and the udp-port accept
+    # live in the server's own diag). Duplicates = one of OUR counts above its expectation;
+    # the foreign line is informational. TCPMSS counts ride mangle_dump (firmware binary
+    # first) so an Entware iptables aborting on a proprietary target (SKIPLOG) can't
+    # truncate them mid-table. printf '%s' (no \n) keeps an empty capture at 0 lines —
+    # `printf '%s\n' ""` would feed grep -cv one empty line and fake a count of 1.
+    _fwd_mss=$(mangle_dump | grep '^-A FORWARD' | grep TCPMSS)
+    _nat_post=$(iptables -t nat -S POSTROUTING 2>/dev/null)
+    echo "rule copy counts (expected per ACTIVE role: client TCPMSS=2 accept=1 masq=1, server TCPMSS=2 double-hop-masq=1; more of OURS = duplicates):"
+    echo "  TCPMSS clamp awg0  : $(printf '%s' "$_fwd_mss" | grep -c "awg0 ")"
+    echo "  TCPMSS clamp awgs0 : $(printf '%s' "$_fwd_mss" | grep -c "awgs0 ")"
+    echo "  TCPMSS foreign     : $(printf '%s' "$_fwd_mss" | grep -v "awg0 " | grep -cv "awgs0 ") (other tools' clamps, e.g. a PPTP MSS fix — not ours)"
+    echo "  INPUT accept awg0  : $(iptables -S INPUT 2>/dev/null | grep -c -- "-i $IFACE -j ACCEPT")"
+    echo "  MASQ awg0 exact    : $(printf '%s' "$_nat_post" | grep -c -- "^-A POSTROUTING -o awg0 -j MASQUERADE$")"
+    echo "  MASQ double-hop    : $(printf '%s' "$_nat_post" | grep -- "-o awg0 -j MASQUERADE" | grep -cv -- "^-A POSTROUTING -o awg0 -j MASQUERADE$") (server peers: -s <subnet> -o awg0)"
     echo "geo ipsets (per policy):"
     for _dgid in $(geo_ids); do
         _ds=$(geo_ipset "$_dgid")
