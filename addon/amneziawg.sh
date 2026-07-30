@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.7"
+AWG_VERSION="1.5.8"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -45,6 +45,16 @@ AWG_UPLOAD_STATUS="/www/user/awg_upload.htm"
 STARTING_FLAG="/tmp/.awg_starting"
 STOPPING_FLAG="/tmp/.awg_stopping"
 GEO_BUSY_FLAG="/tmp/.awg_geo_busy"
+# Boot-init liveness protocol (1.5.8). do_boot_start touches BOOT_MARKER FIRST THING — before
+# any toggle/running check — so it answers "did the Entware init path invoke S99amneziawg at
+# all this boot", which is what the services-start fallback (do_boot_guard) and diag need to
+# tell a SKIPPED Entware start from a declined autostart. Field case (RT-BE92U @ Merlin
+# 3006.102.8): the firmware-native Entware starter and the amtm/post-mount hook collided
+# ("Entware: Not starting Entware services … Entware is already started" in syslog) and
+# NEITHER ran the /opt/etc/init.d/S* start scripts — autostart silently dead, no status/
+# watchdog crons, server tab stuck on «Загрузка…». tmpfs => both reset every boot.
+BOOT_MARKER="/tmp/.awg_boot_start_ran"
+BOOT_GUARD_STATE="/tmp/.awg_boot_guard_state"   # do_boot_guard verdict, shown in diag
 # "DNS via tunnel" active-marker. While it exists, our /jffs/scripts/dnsmasq.postconf hook
 # strips the firmware's upstream directives (servers-file/resolv-file) from the generated
 # dnsmasq conf, leaving ONLY our server=<awg_dns>@awg0 lines — so ISP DNS can't answer at all.
@@ -3991,6 +4001,32 @@ do_diag(){
     for _F in /tmp/.awg_no_autostart "$DNSRELOAD_DEFER" "$DNSRELOAD_PENDING"; do
         [ -f "$_F" ] && echo "updater flag: $_F ($([ -n "$(find "$_F" -mmin +15 2>/dev/null)" ] && echo 'STALE >15min — updater died?' || echo 'fresh'))"
     done
+    # Boot/Entware-init forensics (1.5.8, field: RT-BE92U @ 3006.102.8): when the firmware's
+    # native Entware starter and the amtm/post-mount hook collide, NEITHER runs the
+    # /opt/etc/init.d/S* start scripts ("Not starting Entware services … already started" in
+    # syslog) — S99amneziawg start never fires, autostart silently dies and the status/
+    # watchdog crons (installed by do_start only) never appear. One glance answers it here.
+    echo "--- boot / Entware init (autostart) ---"
+    echo "S99 init script      : $([ -x /opt/etc/init.d/S99amneziawg ] && echo present || echo 'ABSENT — /opt not mounted (or package removed)')"
+    if [ -f "$BOOT_MARKER" ]; then
+        echo "boot_start invoked   : yes ($(date -r "$BOOT_MARKER" 2>/dev/null || echo 'marker present'))"
+    else
+        echo "boot_start invoked   : NO — the Entware init never ran 'S99amneziawg start' this boot (autostart + crons never armed; see the Entware syslog lines below)"
+    fi
+    echo "boot fallback (guard): $(cat "$BOOT_GUARD_STATE" 2>/dev/null || echo '(no state — hook pre-1.5.8, or not rebooted since the update)')"
+    echo "services-start hook  :"
+    _ss_hook=$(grep -n "amneziawg" /jffs/scripts/services-start 2>/dev/null)
+    if [ -n "$_ss_hook" ]; then echo "$_ss_hook" | sed 's/^/  /'; else echo "  (MISSING — neither the page mount nor the boot fallback are armed!)"; fi
+    echo "Entware start/skip (syslog):"
+    _ent_log=$(grep -i "Entware services" /tmp/syslog.log-1 /tmp/syslog.log 2>/dev/null | tail -n 4)
+    if [ -n "$_ent_log" ]; then echo "$_ent_log" | sed 's/^/  /'; else echo "  (no 'Starting/Not starting Entware services' lines in syslog)"; fi
+    if [ -f /jffs/scripts/post-mount ]; then
+        echo "post-mount Entware refs:"
+        _pm_ent=$(grep -inE 'entware|rc\.unslung' /jffs/scripts/post-mount 2>/dev/null | head -n 6)
+        if [ -n "$_pm_ent" ]; then echo "$_pm_ent" | sed 's/^/  /'; else echo "  (post-mount exists but has no Entware lines)"; fi
+    else
+        echo "post-mount           : (no /jffs/scripts/post-mount)"
+    fi
     echo "--- co-resident DPI / coexistence ---"
     _dpi_tool=$(detect_dpi_tool 2>/dev/null)
     echo "co-resident DPI tool : ${_dpi_tool:-none}"
@@ -4410,6 +4446,9 @@ conn_record_stop(){
 # with autostart off nothing else will start the tunnel; do_firewall_restart/do_wan_event are
 # is_running-gated.)
 do_boot_start(){
+    # Liveness marker FIRST — before any toggle/running check (see BOOT_MARKER): even a
+    # declined autostart proves the Entware init path ran, so the boot fallback stands down.
+    touch "$BOOT_MARKER" 2>/dev/null
     # is_running guard: with the tunnel already up, fall through to do_start's own
     # "Already running" no-op — a second `S99amneziawg start` must not claim it skipped.
     if ! is_running && [ "$(get_setting awg_autostart)" = "0" ]; then
@@ -4422,6 +4461,48 @@ do_boot_start(){
         return 0
     fi
     do_start
+}
+
+# services-start fallback for the Entware init race (1.5.8; field: RT-BE92U @ Merlin
+# 3006.102.8). On 3006.102.x Entware services get started by TWO parties — the firmware
+# itself (its shutdown counterpart is visible as `sh /opt/S99amneziawg.1 stop` in syslog)
+# and the classic amtm/post-mount hook. On a bad boot they collide: one bind-mounts /opt,
+# the other sees it populated and logs "Not starting Entware services on …, Entware is
+# already started" — and NEITHER runs the S* start scripts. S99amneziawg start is then never
+# invoked: no tunnel/server autostart, no status/watchdog crons (do_start installs them),
+# the server tab sits on «Загрузка…». services-start is firmware-owned and runs on EVERY
+# boot regardless of Entware, so do_install_page arms this guard there:
+#   1. wait for /opt (the S99 script) to appear — a slow USB + fsck can take minutes;
+#   2. grace-wait for BOOT_MARKER (do_boot_start touches it before any toggle check) so a
+#      healthy rc.unslung/native start wins and the guard stands down;
+#   3. only if nobody invoked the init within the grace — run `S99amneziawg start` ourselves
+#      (both roles: client boot_start honors awg_autostart, server's honors awgs_autostart).
+# Idempotent by construction: do_start re-checks is_running UNDER the lock (1.2.31), so a
+# late-racing rc.unslung start just no-ops with "Already running". BOOT_GUARD_STATE records
+# the verdict for diag. NOTE for hook authors: the hook line backgrounds this (`… boot_guard &`)
+# — the waits below would otherwise stall the firmware's services-start for minutes.
+do_boot_guard(){
+    local waited=0 grace=0
+    echo "waiting for /opt" > "$BOOT_GUARD_STATE"
+    while [ ! -x /opt/etc/init.d/S99amneziawg ] && [ "$waited" -lt 600 ]; do
+        sleep 5; waited=$((waited+5))
+    done
+    if [ ! -x /opt/etc/init.d/S99amneziawg ]; then
+        # No Entware / package gone this boot — nothing to start, and deliberately no syslog
+        # noise (a pulled USB must not log an error line on every boot).
+        echo "stand down: no /opt/etc/init.d/S99amneziawg after ${waited}s (Entware not mounted or package removed)" > "$BOOT_GUARD_STATE"
+        return 0
+    fi
+    while [ ! -f "$BOOT_MARKER" ] && [ "$grace" -lt 90 ]; do
+        sleep 5; grace=$((grace+5))
+    done
+    if [ -f "$BOOT_MARKER" ]; then
+        echo "stand down: Entware init ran S99amneziawg itself (waited ${waited}s for /opt, ${grace}s for the init)" > "$BOOT_GUARD_STATE"
+        return 0
+    fi
+    echo "FIRED at uptime $(cut -d. -f1 /proc/uptime 2>/dev/null)s: Entware init never ran S99amneziawg (native-vs-post-mount double-starter race?)" > "$BOOT_GUARD_STATE"
+    log_msg "Boot fallback: Entware init did not run S99amneziawg within ${grace}s of /opt appearing (firmware-native vs post-mount Entware race — look for 'Not starting Entware services' in syslog) — starting it from the services-start guard"
+    /opt/etc/init.d/S99amneziawg start
 }
 
 do_start(){
@@ -5577,7 +5658,19 @@ do_install_page(){
 
     [ ! -f /jffs/scripts/services-start ] && echo "#!/bin/sh" > /jffs/scripts/services-start
     chmod +x /jffs/scripts/services-start 2>/dev/null
-    grep -q "amneziawg" /jffs/scripts/services-start || echo "/jffs/addons/amneziawg/amneziawg.sh mount_ui &" >> /jffs/scripts/services-start
+    # Rewrite OUR lines idempotently on every install (same pattern as dnsmasq.postconf above)
+    # so upgrades gain new hooks. Two delete patterns cover history: the legacy untagged
+    # mount_ui line (pre-1.5.8) and the '# amneziawg-addon' tag on everything since. Do NOT
+    # gate the append on a bare `grep -q amneziawg` (the pre-1.5.8 shape): any USER-added line
+    # mentioning amneziawg — e.g. a manual S99 autostart workaround from the support chat —
+    # used to suppress installing our hooks entirely.
+    sed -i '/amneziawg.sh mount_ui/d;/# amneziawg-addon$/d' /jffs/scripts/services-start 2>/dev/null
+    # A user file whose last line lacks \n would glue our first line onto it — pad once.
+    [ -n "$(tail -c1 /jffs/scripts/services-start 2>/dev/null)" ] && echo "" >> /jffs/scripts/services-start
+    echo "/jffs/addons/amneziawg/amneziawg.sh mount_ui & # amneziawg-addon" >> /jffs/scripts/services-start
+    # Boot fallback for the Entware init race (firmware-native vs post-mount double-starter
+    # skipping ALL S* start scripts) — see do_boot_guard. Backgrounded: it sleeps for minutes.
+    echo "/jffs/addons/amneziawg/amneziawg.sh boot_guard & # amneziawg-addon" >> /jffs/scripts/services-start
 
     [ -f "$GEO_DIR/v2fly_categories.txt" ] && cp "$GEO_DIR/v2fly_categories.txt" /www/user/v2fly_categories.htm 2>/dev/null
 
@@ -6656,6 +6749,7 @@ case "$_ipn" in ''|*[!A-Za-z0-9_.-]*) _ipn="" ;; esac
 case "$1" in
     start)          do_start ;;
     boot_start)     do_boot_start ;;   # S99 init (boot/opkg): honors the awg_autostart toggle
+    boot_guard)     do_boot_guard ;;   # services-start fallback: starts S99 if the Entware init never did
     stop)           do_stop user ;;
     stop_auto)      do_stop "" deadman ;;   # internal: auto-rollback stop (deadman); keeps watchdog cron
     restart)        do_restart ;;

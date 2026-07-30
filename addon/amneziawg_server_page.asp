@@ -879,11 +879,21 @@ function fetchStatus(cb){
     x.onerror = x.ontimeout = function(){ cb(null); };
     x.send();
 }
+var awgsStatusMisses = 0;
 function refreshStatus(){
     var myGen = awgsActionGen;
     fetchStatus(function(st){
         if (myGen !== awgsActionGen) return;   // an action started while this read was in flight
-        if (st) renderStatus(st);
+        if (st) { awgsStatusMisses = 0; renderStatus(st); return; }
+        // No status file at all (404/unparsable). /www/user is tmpfs: after a reboot the file
+        // only reappears when the server starts or its status cron runs — with the server
+        // stopped (or autostart never fired, e.g. the Entware init race) NOTHING writes it,
+        // and the badge used to sit on «Загрузка…» forever. After 2 consecutive misses with
+        // no real status ever seen, render a synthetic "stopped" so the page shows the
+        // actionable Start button. A real status (or an in-flight action) always wins:
+        // awg3 stays undefined => the 1.5.5 three-state logic keeps the 3.0 fields enabled.
+        if (!awgsStatus && ++awgsStatusMisses >= 2)
+            renderStatus({ running: false, starting: false, stopping: false, port: gs('awgs_port') || '51821' });
     });
 }
 // Mirrors applyAwg3Capability() on the client page: the AmneziaWG 3.0 fields are disabled
