@@ -68,6 +68,20 @@
 }
 
 .awg-btn { margin: 0 4px; }
+/* The firmware's stock `.button_gen` is a FIXED-size box, and our RU labels are long. Two things
+   went wrong together on a gnuton/TUF-AX3000_V2 (field photo 2026-08-03), where the stock button
+   is narrower and/or the font larger than on the Merlin builds we develop against:
+     - «Сохранить и полностью перезапустить VPN» wrapped to three lines and the fixed height
+       CLIPPED the last one, so the button read «Сохранить и полностью»;
+     - as inline-blocks the buttons align on the baseline of their LAST line, so the taller,
+       wrapped button extended UPWARD and sat visibly above «Применить».
+   Fix both at the source: let our buttons size to their content and wrap (awg-btn-fit), and lay
+   the action row out with flex + align-items:center so alignment stops depending on line count.
+   Scoped to our own class rather than overriding .button_gen globally — the firmware uses that
+   class in its own chrome too. */
+.awg-btn-fit { width: auto; height: auto; min-height: 26px; white-space: normal; line-height: 1.25;
+               padding: 5px 12px; box-sizing: border-box; max-width: 320px; vertical-align: middle; }
+.awg-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
 
 /* Config-profile bar (multi-config): one row per slot, rendered by pfRenderBar(). */
 .awg-pf-row {
@@ -5475,9 +5489,9 @@ function initAutocompleteIp(){
                 </table>
 
                 <!-- Apply -->
-                <div style="margin-top:12px; text-align:center;">
-                    <input type="button" class="button_gen" value="Apply" data-i18n-val="BTN_APPLY" onclick="saveSettings();" title="Save and apply without restarting the VPN" data-i18n-title="TITLE_APPLY">
-                    <input type="button" class="button_gen" value="Save and fully restart the VPN" data-i18n-val="BTN_SAVE_RESTART" onclick="forceApply();" style="margin-left:8px;" title="Save + restart the VPN (stop → start) + full rebuild of routes and firewall" data-i18n-title="TITLE_SAVE_RESTART">
+                <div class="awg-actions" style="margin-top:12px;">
+                    <input type="button" class="button_gen awg-btn-fit" value="Apply" data-i18n-val="BTN_APPLY" onclick="saveSettings();" title="Save and apply without restarting the VPN" data-i18n-title="TITLE_APPLY">
+                    <input type="button" class="button_gen awg-btn-fit" value="Save and fully restart the VPN" data-i18n-val="BTN_SAVE_RESTART" onclick="forceApply();" title="Save + restart the VPN (stop → start) + full rebuild of routes and firewall" data-i18n-title="TITLE_SAVE_RESTART">
                     <span id="awg_ack_bottom" class="awg-ack"></span>
                 </div>
                 <div style="font-size:11px; opacity:0.7; margin:8px auto 0; max-width:640px; line-height:1.55; text-align:left;">
@@ -5488,7 +5502,10 @@ function initAutocompleteIp(){
                 <!-- ==================== LOG ==================== -->
                 <div class="awg-section" style="margin-top:15px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
                     <span data-i18n="SEC_LOG">Log</span>
-                    <input type="button" class="button_gen" value="Get diagnostic data and copy log" data-i18n-val="BTN_GET_DIAG" onclick="awgRunDiag(this);" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
+                    <!-- awg-btn-fit for the same reason as the Apply row: this label is even
+                         longer in RU and the stock fixed-size box clipped it on the TUF build.
+                         The inline padding/font-size intentionally still win over the class. -->
+                    <input type="button" class="button_gen awg-btn-fit" value="Get diagnostic data and copy log" data-i18n-val="BTN_GET_DIAG" onclick="awgRunDiag(this);" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
                 <div id="awg_log" class="awg-log" data-i18n="LOG_WAITING">Waiting for data…</div>
                 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px 10px; font-size:11px; opacity:0.55; margin-top:4px;">
