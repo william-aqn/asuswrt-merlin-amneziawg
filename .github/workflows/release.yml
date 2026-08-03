@@ -20,13 +20,18 @@ permissions:
 
 env:
   # amneziawg-tools (awg) release tag — the static-musl awg CLI is built from this tag.
-  # Back on a RELEASE tag: while the daemon is parked on AmneziaWG 2.0 (see AWG_GO_REF below)
-  # a v3-capable CLI buys nothing — the addon never emits 3.0 keys, because the capability gate
-  # is closed by the daemon's version marker. Shipping an unmerged upstream branch to every user
-  # for zero benefit is not a trade worth making. To go back to 3.0 this must return to the
-  # feat/awg3 SHA 05434cab7d91bbbc607d18ec5fade91f4b83774c (no released tag parses the v3 keys),
-  # and the clone steps below must fetch it by SHA — `git clone --branch <sha>` does NOT work.
-  AWG_TOOLS_TAG: v1.0.20260223
+  # AmneziaWG 3.0 support used to live ONLY on the unmerged feat/awg3 branch, so 1.5.0-1.5.6 had
+  # to pin it by SHA (05434cab…) and 1.5.7 retreated to the last 2.0 release tag. Both are
+  # history now: the v3 work was merged to master and RELEASED as v3.0.20260730, and upstream's
+  # own amneziawg-go Dockerfile pins that exact tag next to the v3 daemon — so the pair built
+  # here is the upstream-sanctioned one. NB the merged code is NOT the old branch commit
+  # (05434cab is not even an ancestor of master): config.c, ipc-linux.h, ipc-uapi.h, show.c and
+  # showconf.c were reworked and type.c/type.h added. Consequences for us, both verified:
+  #   * the 7 AWG-3.0 config keys keep their names, so generate_config is unchanged;
+  #   * `awg show <if> dump` gains 7 columns on the INTERFACE line (before fwmark) and prints
+  #     ranges where it used to print scalars. Every addon consumer skips that line (`tail -n +2`,
+  #     `awk NR==2`), so no parser breaks — do not "simplify" those skips away.
+  AWG_TOOLS_TAG: v3.0.20260730
   # amneziawg-go (daemon) — built from OUR FORK, not upstream, until upstream merges the
   # patches the router build needs (all carried as real commits on the fork branch below):
   #   1. bounded buffer pool (PreallocatedBuffersPerPool, router default 1024) — the fix for
@@ -39,27 +44,34 @@ env:
   #      minutes (a slow UDP-TX leg + line-rate RX balloons the heap — the cap is FLOW CONTROL,
   #      not just low-RAM armor; reverted 1.3.14). The env stays honored for manual experiments;
   #      the compiled default stays the router-safe 1024.
-  #   4. S4 keepalive classification (upstream PR #161) — carried on the router-build-v3 branch
-  #      only. It fixes an AWG 3.0 regression (with S4 > 0 every keepalive counted as data and
-  #      re-handshaked an idle tunnel every ~15 s); v0.2.19 never had that bug, so the branch
-  #      built here neither needs nor contains it, and there is deliberately no assert for it.
-  # The branch is based on the v0.2.19 tag (AWG_GO_TAG) — AmneziaWG 1.5/2.0 params (I1-I5,
-  # S3/S4) + "handle empty I1-I5". Reproducible, not floating master.
+  #   4. S4 keepalive classification (upstream PR #161) — an AmneziaWG 3.0 regression against
+  #      1.5/2.0 configs: with S4 > 0 every keepalive counted as data and re-handshaked an idle
+  #      tunnel every ~15 s. See the assert (and the measurements) in the build step below.
+  # The branch is based on the v3.0.x tag (AWG_GO_TAG) — AmneziaWG 3.0, keeping the 1.5/2.0
+  # params (I1-I5, S3/S4) and adding the 3.0 ones. Reproducible, not floating master.
   #
-  # ROLLED BACK FROM v3.0.1 (router-build-v3) on 2026-07-26: the AmneziaWG 3.0 daemon is not
-  # considered stable enough to ship yet. The v3 branch and everything around it stay in place
-  # — flipping AWG_GO_TAG/AWG_GO_REF back to v3.0.1/router-build-v3, restoring the -awg3- marker
-  # in the version sed, re-adding the two `int(elem.padding)+MessageKeepaliveSize` asserts, the
-  # Outline drop in the legacy step, and the feat/awg3 tools SHA is all that is needed to return.
-  # The addon's 3.0 plumbing (UI fields, validators, capability gate) ships regardless and simply
-  # stays inert while the daemon reports no -awg3- marker.
-  AWG_GO_TAG: v0.2.19
+  # BACK ON AmneziaWG 3.0 as of 1.5.9 (1.5.7 had parked the daemon on 2.0 out of caution, with no
+  # field bug behind it). What actually changed since: the v3 `awg` CLI stopped being an unmerged
+  # branch (see AWG_TOOLS_TAG above) and upstream cut v3.0.2/v3.0.3. Those two daemon releases are
+  # functionally identical to v3.0.1 — the whole diff is Dockerfile + README + one error string in
+  # device/uapi.go — so the daemon shipped here behaves exactly like the 1.5.6 one.
+  AWG_GO_TAG: v3.0.3
   AWG_GO_REPO: https://github.com/william-aqn/amneziawg-go.git
-  AWG_GO_REF: router-build
-  # armv7-2.6 (kernel 2.6.3x) builds the SAME ref, just with the legacy Go 1.23 toolchain.
-  # For the record, AmneziaWG 3.0 WAS verified working there (RT-AC66U_B1, kernel 2.6.36.4,
-  # ARMv7 with no VFP: full 3.0 handshake with header protection, no sendmmsg ENOSYS) — that box
-  # is not the reason for the rollback.
+  AWG_GO_REF: router-build-v3
+  # armv7-2.6 (kernel 2.6.3x — RT-AC68U / RT-AC66U_B1 class) is pinned SEPARATELY since 1.5.9.
+  # Go >= 1.24 supports only Linux >= 3.2, so that package is built by its own step with a pinned
+  # Go 1.23 toolchain plus dependency downgrades and an Outline SDK drop. Giving it its own
+  # repo/ref/tag means:
+  #   (a) the modern arches build with the stable toolchain and carry NONE of that machinery —
+  #       a future daemon version does not have to stay buildable under Go 1.23 for them to move;
+  #   (b) if a future version ever stops building there, this pin simply stays put instead of
+  #       failing the whole release.
+  # Both tracks point at the same branch today: AmneziaWG 3.0 was verified on a real 2.6.36 kernel
+  # (RT-AC66U_B1, ARMv7 with no VFP — full 3.0 handshake with header protection, no sendmmsg
+  # ENOSYS), so there is no reason to keep that package a protocol version behind.
+  AWG_GO_TAG_LEGACY: v3.0.3
+  AWG_GO_REPO_LEGACY: https://github.com/william-aqn/amneziawg-go.git
+  AWG_GO_REF_LEGACY: router-build-v3
 
 jobs:
   build:
@@ -90,13 +102,13 @@ jobs:
           # a glance whether the running daemon carries them, in particular whether it honors the
           # pool env the addon launcher sets on high-RAM boxes (pre-1.3.13 daemons say -pool1024
           # here and ignore that env).
-          # There is deliberately NO `-awg3-` marker here while the daemon is on 2.0.
-          # awg3_supported() in addon/amneziawg.sh gates the AmneziaWG 3.0 params on that exact
-          # substring, so its absence keeps the gate closed and the addon never writes a 3.0 key
-          # into a config this daemon would reject — a rejected setconf aborts the WHOLE file and
-          # the tunnel would not come up at all. The marker MUST be restored in the same commit
-          # that moves AWG_GO_REF back to the v3 branch, and never before.
-          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-poolcfg-smfix ($AWG_GO_COMMIT)\"|" amneziawg-go/version.go
+          # The `-awg3-` marker is LOAD-BEARING, not cosmetic: awg3_supported() in
+          # addon/amneziawg.sh gates the AmneziaWG 3.0 params on that exact substring. Stamping it
+          # onto a 2.0 daemon would open the gate, the addon would emit 3.0 keys, `awg setconf`
+          # would reject them and abort the WHOLE file, and the tunnel would not come up at all.
+          # So the marker moves in the SAME commit as AWG_GO_TAG/AWG_GO_REF — never on its own,
+          # in either direction.
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-awg3-poolcfg-smfix ($AWG_GO_COMMIT)\"|" amneziawg-go/version.go
           grep '^const Version' amneziawg-go/version.go || true
           # The functional patches now ride in as COMMITS on the fork branch (see the env
           # block) rather than seds — but still HARD-assert each is present, so a bad rebase or a
@@ -133,6 +145,7 @@ jobs:
           #      1 at S4=0 but 5 at S4=30; with the fix, 1 again. Also reproduced with a v3
           #      client against an unmodified v0.2.19 peer — it breaks EXISTING provider configs
           #      on upgrade, since S4 is a plain AWG 2.0 param the addon has always passed through.
+          grep -q 'int(elem.padding)+MessageKeepaliveSize' amneziawg-go/device/send.go
           mkdir -p "$GITHUB_WORKSPACE/output"
           cd amneziawg-go
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64       go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go"
@@ -148,21 +161,29 @@ jobs:
           # officially unsupported and was seen dying silently right after the wireguard-go
           # banner ("failed to create interface", daemon exit with no message). Go 1.23
           # supports Linux >= 2.6.32, so the armv7-2.6 package ships a Go 1.23 build.
-          # amneziawg-go v0.2.19 demands go 1.24 only through dependency pins — the code
-          # compiles clean on 1.23 against the newest 1.23-compatible x/* line (x/sys v0.35,
-          # x/net v0.43, x/crypto v0.41). The mobile-only ./outline subpackage (hard-requires
-          # go 1.24 via outline-sdk) is NOT linked into the daemon, so it doesn't constrain
-          # this build. Verified on a real 2.6.32 kernel (qemu-system-arm versatilepb, Debian
-          # Squeeze armel): TUN creation + obfuscated setconf + UAPI all pass.
+          # amneziawg-go demands a newer go only through dependency pins — the code compiles
+          # clean on 1.23 against the newest 1.23-compatible x/* line (x/sys v0.35, x/net v0.43,
+          # x/crypto v0.41). Verified on a real 2.6.32 kernel (qemu-system-arm versatilepb,
+          # Debian Squeeze armel): TUN creation + obfuscated setconf + UAPI all pass; and AWG 3.0
+          # specifically on a real 2.6.36 (RT-AC66U_B1): full handshake with header protection.
           #
-          cp -r amneziawg-go amneziawg-go-legacy
+          # This step OWNS its pins and its own clone (since 1.5.9). It used to `cp -r` the tree
+          # the modern step had already cloned, which silently made every arch share one daemon
+          # version — so a future upstream release would have had to stay buildable under Go 1.23
+          # or the whole release would fail. Now the downgrade machinery below (Outline drop,
+          # dependency downgrades, GOTOOLCHAIN pin) exists ONLY here: the modern arches build with
+          # the stable toolchain and touch none of it, and if a future version ever stops building
+          # here, AWG_GO_REF_LEGACY simply stays put while AWG_GO_REF moves on.
+          git clone --depth 1 --branch "$AWG_GO_REF_LEGACY" "$AWG_GO_REPO_LEGACY" amneziawg-go-legacy
           cd amneziawg-go-legacy
           AWG_GO_COMMIT=$(git rev-parse --short HEAD)
-          # No -awg3- marker, same as every other arch while the daemon is on 2.0 (see the
-          # env block): the capability gate must stay closed.
-          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG-legacy26-poolcfg-smfix ($AWG_GO_COMMIT)\"|" version.go
+          echo "amneziawg-go (legacy): $AWG_GO_REPO_LEGACY ref $AWG_GO_REF_LEGACY (based on $AWG_GO_TAG_LEGACY) commit: $AWG_GO_COMMIT"
+          # Carries the -awg3- marker like every other arch (see the marker note in the modern
+          # step): AmneziaWG 3.0 is verified working on these kernels, so there is no reason to
+          # hold the capability gate closed here.
+          sed -i "s|^const Version = .*|const Version = \"$AWG_GO_TAG_LEGACY-awg3-legacy26-poolcfg-smfix ($AWG_GO_COMMIT)\"|" version.go
           grep '^const Version' version.go
-          # The fork patches rode in via the cp -r above — assert them, hard-fail otherwise.
+          # Same hard asserts as the modern step — this clone is independent, so it needs its own.
           # The 2.6.x fleet (RT-AC68U, 256MB!) needs the pool cap even more than 512MB boxes
           # (all far below 768MiB, so the launcher never un-caps the pool there), and
           # — critically — this legacy build is the ONLY one that runs on the 2.6.36 kernels where
@@ -170,16 +191,24 @@ jobs:
           grep -q 'var PreallocatedBuffersPerPool uint32 = 1024' device/queueconstants_default.go
           grep -q 'WG_PREALLOCATED_BUFFERS_PER_POOL' main.go
           grep -q 'batchUnsupported' conn/bind_std.go
-          # NB when this returns to the v3 branch, the Outline SDK drop must come back here:
-          # AWG 3.0 moved it to golang.getoutline.org/sdk, which declares `go >= 1.25` and is a
-          # DIRECT require, so Go 1.23 refuses to load the module graph at all before compiling
-          # anything — even though the daemon never links it. v0.2.19's older outline-sdk chain
-          # does not constrain a 1.23 build, so nothing is needed for the ref built here.
+          grep -q 'int(elem.padding)+MessageKeepaliveSize' device/send.go
+          # AWG 3.0 moved the Outline SDK to golang.getoutline.org/sdk, which declares `go >= 1.25`
+          # and is a DIRECT require — Go 1.23 refuses to load the module graph at all, before
+          # compiling anything, even though the daemon never links it (only ./outline/*.go import
+          # it). Dropping the directory removes every importer, so the requires can go too.
+          rm -rf outline
+          go mod edit -droprequire=golang.getoutline.org/sdk -droprequire=golang.getoutline.org/sdk/x
           # NB the go get below deliberately runs on the runner's DEFAULT (modern) toolchain: it
           # must read the current graph (x/crypto v0.42 etc, all go>=1.24) before it can
           # downgrade it. Only the final `go build` is pinned to go1.23.12.
           go get golang.org/x/sys@v0.35.0 golang.org/x/net@v0.43.0 golang.org/x/crypto@v0.41.0
           go mod edit -go=1.23.0 -toolchain=none
+          # The surgery must be PROVEN, not assumed: a silently-surviving outline require or a
+          # go directive the edit didn't take would fail later as an unreadable module-graph error.
+          grep -q '^go 1.23.0' go.mod
+          if grep -q 'golang.getoutline.org/sdk' go.mod; then
+            echo "ERROR: the Outline SDK require survived the droprequire — Go 1.23 cannot load this graph"; exit 1
+          fi
           GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 \
             go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/output/amneziawg-go-arm5"
           # Prove the legacy toolchain + pins actually made it into the shipped binary.
@@ -189,9 +218,10 @@ jobs:
         run: |
           set -eux
           mkdir -p "$GITHUB_WORKSPACE/output"
-          # AWG_TOOLS_TAG is a SHA (see the env block), and `clone --branch` only takes refs —
-          # so init+fetch the exact commit instead. GitHub serves reachable SHAs to a shallow
-          # fetch, verified against this repo.
+          # init+fetch rather than `clone --branch`: AWG_TOOLS_TAG has been a raw SHA before
+          # (1.5.0-1.5.6 pinned the unmerged feat/awg3 branch that way, and `clone --branch <sha>`
+          # does NOT work). It is a real tag again today, which this shape also handles — so the
+          # pin can move back to a SHA without touching the three build steps.
           docker run --rm --platform linux/arm64 -v "$GITHUB_WORKSPACE/output:/out" alpine:3.19 sh -c "apk add --no-cache build-base linux-headers git && git init /t && git -C /t remote add origin https://github.com/amnezia-vpn/amneziawg-tools.git && git -C /t fetch --depth 1 origin $AWG_TOOLS_TAG && git -C /t checkout FETCH_HEAD && cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && { cp awg /out/awg 2>/dev/null || cp wg /out/awg; } && chmod +x /out/awg"
           file "$GITHUB_WORKSPACE/output/awg"
 

@@ -5029,7 +5029,10 @@ function initAutocompleteIp(){
                 </tr>
                 <tr>
                     <th>Persistent Keepalive</th>
-                    <td><input type="text" class="input_6_table" id="awg_peer_keepalive" maxlength="4" placeholder="25" aria-label="Persistent Keepalive"> sec</td>
+                    <!-- maxlength 21, not 4: with an AmneziaWG 3.0 build the backend accepts a
+                         "lo-hi" range here (generate_config validates the shape either way). A
+                         range could always be IMPORTED (setVal bypasses maxlength) but not typed. -->
+                    <td><input type="text" class="input_6_table" id="awg_peer_keepalive" maxlength="21" placeholder="25" aria-label="Persistent Keepalive"> sec</td>
                 </tr>
                 </table>
 

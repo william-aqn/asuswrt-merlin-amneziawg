@@ -11,7 +11,7 @@ A DPI-bypassing VPN **client and server** based on [AmneziaWG](https://github.co
 
 Fully userspace implementation -- no kernel module required, works on any kernel version.
 
-**Protocol: AmneziaWG 3.0** (daemon `amneziawg-go v3.0.1`, since addon 1.5.0). All 1.5/2.0 obfuscation params are supported (`Jc/Jmin/Jmax`, `S1-S4`, `H1-H4`, `I1-I5`) plus the new 3.0 ones: `HeaderProtectionKey` (packet-header encryption with a shared key), `ContentPaddingAddition` and the configurable timings `RekeyAfterTime` / `RekeyTimeout` / `RejectAfterTime` / `KeepaliveTimeout` / `MaxHandshakeAttempts`. Range params accept either a single number or `lo-hi`; so does `PersistentKeepalive`. Existing 2.0 configs keep working unchanged. Works on every supported architecture, the `armv7-2.6` package for old ARM32 routers on 2.6.3x kernels included — verified on a real RT-AC66U_B1 (kernel 2.6.36.4).
+**Protocol: AmneziaWG 3.0** (daemon `amneziawg-go v3.0.3`, since addon 1.5.9; first shipped in 1.5.0). All 1.5/2.0 obfuscation params are supported (`Jc/Jmin/Jmax`, `S1-S4`, `H1-H4`, `I1-I5`) plus the new 3.0 ones: `HeaderProtectionKey` (packet-header encryption with a shared key), `ContentPaddingAddition` and the configurable timings `RekeyAfterTime` / `RekeyTimeout` / `RejectAfterTime` / `KeepaliveTimeout` / `MaxHandshakeAttempts`. Range params accept either a single number or `lo-hi`; so does `PersistentKeepalive`. Existing 2.0 configs keep working unchanged. Works on every supported architecture, the `armv7-2.6` package for old ARM32 routers on 2.6.3x kernels included — verified on a real RT-AC66U_B1 (kernel 2.6.36.4).
 
 > **About:** originally a fork of [r0otx/asuswrt-merlin-amneziawg](https://github.com/r0otx/asuswrt-merlin-amneziawg), but the project has changed substantially since forking and is now maintained independently. Thanks to r0otx for the excellent foundation.
 
@@ -269,12 +269,13 @@ CLI: `/opt/etc/init.d/S99amneziawg server {start|stop|status|restart|diag}`. Aut
 
 > **The daemon is built from our fork [`william-aqn/amneziawg-go`](https://github.com/william-aqn/amneziawg-go), not from upstream.** The reason is two router-critical fixes not yet accepted upstream (while the PRs are pending, the build comes from the fork):
 > - **[PR #152](https://github.com/amnezia-vpn/amneziawg-go/pull/152)** — a bounded buffer pool (`PreallocatedBuffersPerPool`) adjustable via the `WG_PREALLOCATED_BUFFERS_PER_POOL` environment variable: the cure for `runtime: out of memory` under load. The build default is 1024 and the cap deliberately applies on **all** routers: it is flow control — without it a slow egress leg balloons the daemon's heap into an OOM even on 2GB boxes (field case, 1.3.13→1.3.14). The variable remains for manual experiments;
-> - **[PR #153](https://github.com/amnezia-vpn/amneziawg-go/pull/153)** — a `sendmmsg`/`recvmmsg` → per-packet `sendmsg`/`recvmsg` fallback on `ENOSYS`: without it, on Linux kernels < 3.0 (RT-AC68U / 2.6.36) the daemon cannot send a single packet and the tunnel passes no traffic.
+> - **[PR #153](https://github.com/amnezia-vpn/amneziawg-go/pull/153)** — a `sendmmsg`/`recvmmsg` → per-packet `sendmsg`/`recvmsg` fallback on `ENOSYS`: without it, on Linux kernels < 3.0 (RT-AC68U / 2.6.36) the daemon cannot send a single packet and the tunnel passes no traffic;
+> - **[PR #161](https://github.com/amnezia-vpn/amneziawg-go/pull/161)** — S4-padded keepalive classification: an AmneziaWG 3.0 regression against 1.5/2.0 configs — with `S4 > 0` every keepalive counted as data and re-handshaked an idle tunnel roughly every 15 seconds.
 >
-> The fork branch **`router-build-v3`** = the `v3.0.1` tag (AmneziaWG 3.0) + four patches as separate commits. The `router-build` branch (tag `v0.2.19`) remains for the `armv7-2.6` package. **Once both PRs are merged upstream**, the build returns to `amnezia-vpn/amneziawg-go` — a two-line change (`AWG_GO_REPO`/`AWG_GO_REF`) in `.github/workflows/release.yml`.
+> The fork branch **`router-build-v3`** = the `v3.0.3` tag (AmneziaWG 3.0) + four patches as separate commits; **every** package is built from it, but since 1.5.9 the legacy `armv7-2.6` package has **its own pins** (`AWG_GO_*_LEGACY`) so the Go downgrade lives only in its build step. The `router-build` branch (tag `v0.2.19`) is the parked AmneziaWG 2.0 fallback. **Once the PRs are merged upstream**, the build returns to `amnezia-vpn/amneziawg-go` — a two-line change (`AWG_GO_REPO`/`AWG_GO_REF`) in `.github/workflows/release.yml`.
 
 ```shell
-git clone --depth 1 --branch router-build https://github.com/william-aqn/amneziawg-go.git
+git clone --depth 1 --branch router-build-v3 https://github.com/william-aqn/amneziawg-go.git
 cd amneziawg-go
 
 # ARM64 (aarch64-3.10) — GT-AX11000, RT-AX86U, RT-AX88U
@@ -293,7 +294,7 @@ GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 \
   go build -ldflags="-s -w" -o ../output/amneziawg-go-arm5
 ```
 
-The canonical commands (including the version patch so `--version` reports `v0.2.19-legacy26-poolcfg-smfix`, and the hard asserts that both patches are present) live in `.github/workflows/release.yml`, step "Build amneziawg-go-arm5 (legacy Go 1.23…)".
+The canonical commands (including the version patch so `--version` reports `v3.0.3-awg3-legacy26-poolcfg-smfix`, and the hard asserts that both patches are present) live in `.github/workflows/release.yml`, step "Build amneziawg-go-arm5 (legacy Go 1.23…)".
 
 ### Building the awg CLI (static musl)
 
@@ -302,7 +303,7 @@ The `awg` tool is statically linked with musl (so it runs on the router's old gl
 ```shell
 docker run --rm --platform linux/arm64 -v "$PWD/output:/out" alpine:3.19 sh -c \
   'apk add --no-cache build-base linux-headers git && \
-   git clone --depth 1 --branch v1.0.20260223 https://github.com/amnezia-vpn/amneziawg-tools.git /t && \
+   git clone --depth 1 --branch v3.0.20260730 https://github.com/amnezia-vpn/amneziawg-tools.git /t && \
    cd /t/src && make LDFLAGS=-static PLATFORM_CFLAGS= && cp awg /out/awg'
 ```
 
@@ -418,7 +419,7 @@ A: Add CIDR ranges to the "Own IPs / subnets" field (GeoCustom), e.g. `149.154.1
 
 **Q: Is ARM32 (RT-AC68U) supported?**
 
-A: Yes, there is a dedicated ARM32 `.ipk` (`armv7-2.6`). Since **1.2.32** the daemon in this package is built with a special legacy toolchain (Go 1.23) — regular Go ≥ 1.24 builds don't support these routers' 2.6.36 kernel and died silently with `ERROR: amneziawg-go failed to create interface`. To check you have the right build: `/opt/amneziawg/amneziawg-go --version` must report `v3.0.1-awg3-legacy26-poolcfg-smfix (…)` (the daemon is built from [the fork](https://github.com/william-aqn/amneziawg-go) with two fixes — see "Building amneziawg-go"; the `-smfix` suffix = the `sendmmsg` fix, without which a 2.6.36 tunnel passes no traffic).
+A: Yes, there is a dedicated ARM32 `.ipk` (`armv7-2.6`). Since **1.2.32** the daemon in this package is built with a special legacy toolchain (Go 1.23) — regular Go ≥ 1.24 builds don't support these routers' 2.6.36 kernel and died silently with `ERROR: amneziawg-go failed to create interface`. To check you have the right build: `/opt/amneziawg/amneziawg-go --version` must report `v3.0.3-awg3-legacy26-poolcfg-smfix (…)` (the daemon is built from [the fork](https://github.com/william-aqn/amneziawg-go) with two fixes — see "Building amneziawg-go"; the `-smfix` suffix = the `sendmmsg` fix, without which a 2.6.36 tunnel passes no traffic).
 
 **Q: The tunnel stops by itself a minute or two after starting (or "runs 2 minutes → drop → reconnect")?**
 

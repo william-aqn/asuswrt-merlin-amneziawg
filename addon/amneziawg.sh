@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.8"
+AWG_VERSION="1.5.9"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -3890,12 +3890,21 @@ probe_bin(){
     [ -n "$out" ] && echo "      $(echo "$out" | head -2 | tr '\n' '|')"
 }
 
-# Mask WireGuard secret values (private + preshared keys) from a config stream on stdin, so the
-# dump is safe to paste into a chat/issue. Public keys, endpoint and obfuscation params are kept —
-# they're needed to debug a setconf rejection and aren't secret.
+# Mask secret values from a stream on stdin, so the dump is safe to paste into a chat/issue.
+# Public keys, endpoint and obfuscation params are kept — they're needed to debug a setconf
+# rejection and aren't secret. HeaderProtectionKey IS secret: knowing it lets an observer decrypt
+# the packet headers, which is exactly what AmneziaWG 3.0 hides.
+# Two shapes are handled, because two different producers feed this:
+#   * `Key = value`   — our generated awg0.conf and any config paste;
+#   * `label: value`  — the `awg show` pretty output, where v3 prints the header protection key in
+#                       full (show.c uses key(), not masked_key(), unlike the preshared key).
+# NOT handled: the tab-separated `awg show <if> dump`, whose interface line carries the private key
+# and the header protection key. Nothing pipes that into diag — keep it that way.
 redact_secrets(){
     sed -e 's/\(PrivateKey[[:space:]]*=[[:space:]]*\).*/\1<redacted>/' \
-        -e 's/\(PresharedKey[[:space:]]*=[[:space:]]*\).*/\1<redacted>/'
+        -e 's/\(PresharedKey[[:space:]]*=[[:space:]]*\).*/\1<redacted>/' \
+        -e 's/\(HeaderProtectionKey[[:space:]]*=[[:space:]]*\).*/\1<redacted>/' \
+        -e '/header protection key/ s/:.*/: <redacted>/'
 }
 
 # Last N lines of a file, indented, or a "(no <file>)" note. Usage: tail_clip <file> [lines]
@@ -4073,10 +4082,20 @@ do_diag(){
     if [ -f "$CONF" ]; then redact_secrets < "$CONF" | sed 's/^/  /'; else echo "  (no config generated yet)"; fi
     echo "--- awg settings (custom_settings, secrets redacted) ---"
     if [ -f "$SETTINGS" ]; then
-        grep '^awg_' "$SETTINGS" 2>/dev/null | awk '{k=$1; if(k ~ /^awg_iface_p1/||k ~ /^awg_peer_p2/||k ~ /priv/||k ~ /psk/||k ~ /preshar/||k ~ /secret/){print k" <redacted>"}else{print}}' | head -120 | sed 's/^/  /'
+        # EVERY secret-bearing field must be matched with the OPTIONAL profile-slot prefix. The
+        # anchors used to be bare `^awg_iface_p1` / `^awg_peer_p2`, which matched slot 1 only —
+        # slots 2-5 are `awg_pf<N>_iface_p1` / `awg_pf<N>_peer_p2` (see pf_key), so every
+        # secondary profile's PRIVATE and PRESHARED key was printed in clear into a file users
+        # routinely paste into chats. `hpk` (HeaderProtectionKey) needs the same treatment and
+        # matches none of the generic /priv/ /psk/ /preshar/ /secret/ globs — note /psk/ does NOT
+        # match "hpk". Neutral field names come from migrate_field_names: iface_p1 = interface
+        # private key, peer_p2 = peer preshared key.
+        grep '^awg_' "$SETTINGS" 2>/dev/null | awk '{k=$1; if(k ~ /^awg_(pf[0-9]+_)?iface_p1/||k ~ /^awg_(pf[0-9]+_)?peer_p2/||k ~ /^awg_(pf[0-9]+_)?hpk/||k ~ /priv/||k ~ /psk/||k ~ /preshar/||k ~ /secret/){print k" <redacted>"}else{print}}' | head -120 | sed 's/^/  /'
     else echo "  (no $SETTINGS)"; fi
-    echo "--- awg show (live UAPI state, no secrets) ---"
-    if pidof amneziawg-go >/dev/null 2>&1; then "$AWG_BIN" show "$IFACE" 2>&1 | sed 's/^/  /'; else echo "  (daemon not running)"; fi
+    echo "--- awg show (live UAPI state, secrets redacted) ---"
+    # Through redact_secrets: an AmneziaWG 3.0 daemon makes `awg show` print the header protection
+    # key in full, and this output goes straight into the pasteable diag.
+    if pidof amneziawg-go >/dev/null 2>&1; then "$AWG_BIN" show "$IFACE" 2>&1 | redact_secrets | sed 's/^/  /'; else echo "  (daemon not running)"; fi
     echo "--- routing (rule / table $RT_TABLE / fwmark marks) ---"
     echo "ip rule:"; ip rule show 2>/dev/null | sed 's/^/  /'
     echo "ip route table $RT_TABLE:"; ip route show table "$RT_TABLE" 2>/dev/null | sed 's/^/  /'
@@ -4727,9 +4746,14 @@ do_start(){
             #  (1) dump the non-secret advanced params actually sent — long I-hex is collapsed to
             #      "<head…tail>" so a malformed/unterminated tag (e.g. an I-param missing its
             #      closing '>') is visible in the journal without dumping a kilobyte of hex;
+            #      The AmneziaWG 3.0 params are listed too — a rejected one is otherwise invisible
+            #      here, which is the worst case to debug blind. HeaderProtectionKey is EXCLUDED ON
+            #      PURPOSE: it is a secret and this line goes to the journal. Do not "complete" the
+            #      3.0 set by adding it.
             local adv
             adv=$(awk '
                 /^(Jc|Jmin|Jmax|S[1-4]|H[1-4]) /{ print; next }
+                /^(ContentPaddingAddition|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts|PersistentKeepalive) /{ print; next }
                 /^I[1-5] /{ if(length($0)>44) $0=substr($0,1,28)"…"substr($0,length($0)-7); print }
             ' "$CONF" 2>/dev/null | tr '\n' '|')
             [ -n "$adv" ] && log_msg "  awg params: $adv"
