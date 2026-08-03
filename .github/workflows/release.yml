@@ -268,6 +268,18 @@ jobs:
       - name: Build .ipk packages
         run: |
           set -eux
+          # GUARD: the addon's LAST-RESORT version resolver (awg_resolve_version, used when both
+          # api.github.com and data.jsdelivr.com are unreachable) reads AWG_VERSION off this very
+          # script as served by the CDN. That rung was silently DEAD from 1.1.85 to 1.5.10 — it
+          # used to grep PKG_VERSION out of build-ipk.sh, and 1.1.85 changed that to
+          # "${AWG_VERSION}-1", so the numeric pattern stopped matching and nobody noticed for
+          # twenty-five releases. Assert the pattern still resolves what we are about to ship, so
+          # it can never rot silently again.
+          _fb=$(sed -n 's/^AWG_VERSION="\([0-9][0-9.]*\)".*/\1/p' addon/amneziawg.sh | head -1)
+          if [ -z "$_fb" ]; then
+            echo "ERROR: awg_resolve_version's jsDelivr fallback pattern no longer matches AWG_VERSION in addon/amneziawg.sh"; exit 1
+          fi
+          echo "last-resort version fallback would resolve: $_fb"
           # build-ipk.sh calls gtar (GNU tar); Ubuntu's tar is GNU tar
           sudo ln -sf "$(command -v tar)" /usr/local/bin/gtar
           ./build-ipk.sh

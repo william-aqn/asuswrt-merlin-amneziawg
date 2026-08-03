@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.10"
+AWG_VERSION="1.5.11"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -6249,8 +6249,19 @@ resolve_pkg_arch(){
 
 # Resolve the latest published version (e.g. "1.1.43"). GitHub's API is freshest, but
 # api.github.com is blocked in some regions, so fall back to jsDelivr (reachable where
-# GitHub's API is not): first its data API (newest git tag), then PKG_VERSION from
-# build-ipk.sh on the CDN. Echoes the version, or nothing if every source is unreachable.
+# GitHub's API is not): first its data API (newest git tag), then AWG_VERSION read straight
+# off this very script on the CDN. Echoes the version, or nothing if every source is
+# unreachable. NB data.jsdelivr.com and cdn.jsdelivr.net are DIFFERENT hosts — one can be
+# reachable while the other is not, which is the whole reason the third rung exists.
+#
+# That third rung used to read PKG_VERSION from build-ipk.sh, and it was DEAD from 1.1.85 to
+# 1.5.10: that release switched the file to `PKG_VERSION="${AWG_VERSION}-1"` (single-sourcing
+# the version), so the value starts with `$` and the `[0-9]` pattern could never match again.
+# Twenty-five releases with a silently broken last resort — nobody noticed, because the two
+# rungs above it kept working. Read a LITERAL now: AWG_VERSION sits at byte ~272 of this
+# script, so a range request pulls ~1.2 KB instead of a whole file, and if some middlebox
+# ignores Range the pattern still matches inside the first bytes of the full body.
+# The build asserts this pattern still matches what ships — see release.yml.
 awg_resolve_version(){
     local repo="$1" skip_api="$2" v=""
     local awg_bind=$(awg_dl_iface_opt update)
@@ -6260,7 +6271,7 @@ awg_resolve_version(){
         v=$(curl -sfL $awg_bind --connect-timeout 5 --max-time 12 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/^v//;s/".*//')
     fi
     [ -z "$v" ] && v=$(curl -sfL $awg_bind --connect-timeout 6 --max-time 15 "https://data.jsdelivr.com/v1/packages/gh/${repo}/resolved" 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
-    [ -z "$v" ] && v=$(curl -sfL $awg_bind --connect-timeout 6 --max-time 15 "https://cdn.jsdelivr.net/gh/${repo}@latest/build-ipk.sh" 2>/dev/null | sed -n 's/^PKG_VERSION="\([0-9][0-9.]*\).*/\1/p' | head -1)
+    [ -z "$v" ] && v=$(curl -sfL $awg_bind --connect-timeout 6 --max-time 15 -r 0-1200 "https://cdn.jsdelivr.net/gh/${repo}@latest/addon/amneziawg.sh" 2>/dev/null | sed -n 's/^AWG_VERSION="\([0-9][0-9.]*\)".*/\1/p' | head -1)
     case "$v" in ""|*[!0-9.]*) return 1 ;; esac
     echo "$v"
 }
