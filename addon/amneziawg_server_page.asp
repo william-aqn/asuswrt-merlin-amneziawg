@@ -156,7 +156,7 @@ en: {
     OPT_MODE_FULL: "All traffic",
     OPT_MODE_LAN: "Home network only",
     BYPASS_XRAY: "bypass Xray",
-    BYPASS_XRAY_TT: "Force this peer into the client tunnel (double hop) even while Xray runs — a rule is inserted ahead of Xray's transparent proxy so this peer's traffic isn't captured by it. Needs the client tunnel up. Direct peers are unaffected.",
+    BYPASS_XRAY_TT: "Force this peer into the client tunnel (double hop) even while Xray runs — a rule is inserted ahead of Xray's transparent proxy so this peer's traffic isn't captured by it. Needs the client tunnel up. Available for «VPN: all traffic» peers only: the rule works by terminating packet processing early, which would skip the marking a geo policy needs.",
     OPT_DIRECT: "Direct",
     OPT_VPN_ALL: "VPN: all traffic",
     OPT_VPN_GEO: "VPN: Geo only",
@@ -188,7 +188,8 @@ en: {
     BAN_PORT_CONFLICT: "<b>The firmware WireGuard server uses the same UDP port {0}.</b> Change this server's port or disable the firmware WG server (VPN → WireGuard).",
     BAN_CLIENT_DOWN: "The AmneziaWG <b>client</b> tunnel is not running — peers with a «VPN…» policy currently go <b>directly</b> to the internet through your WAN (fail-open). Start the client tunnel on the AmneziaWG page for the policies to apply.",
     BAN_UNSAVED: "Unsaved changes — press «Apply».",
-    BAN_XRAY_POLICY: "⛔ <b>Xray / XRAYUI</b> is running in transparent-proxy mode («redirect all»), and some peers have a «VPN…» policy <b>without «bypass Xray»</b>. For those peers the double hop doesn't happen — Xray captures their traffic in PREROUTING before AmneziaWG's routing rule (ip-rule 19 vs 99), so they exit through Xray, not the client tunnel. Fixes:<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li><b>Want the double hop</b> — tick <b>«bypass Xray»</b> on the peer: a rule is placed ahead of Xray so this peer goes into the client tunnel (which must be up). Xray keeps running for everything else.</li><li><b>Fine with Xray</b> — switch the peer to «Direct»: its traffic flows through Xray anyway (DPI bypass).</li><li>Or stop Xray entirely (button below).</li></ul>",
+    BAN_XRAY_POLICY: "⛔ <b>Xray / XRAYUI</b> is running in transparent-proxy mode («redirect all»), and some peers have a «VPN…» policy <b>without «bypass Xray»</b>. For those peers the double hop doesn't happen — Xray captures their traffic in PREROUTING before AmneziaWG's routing rule (ip-rule 19 vs 99), so they exit through Xray, not the client tunnel. Fixes:<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li><b>Want the double hop</b> — on a <b>«VPN: all traffic»</b> peer tick <b>«bypass Xray»</b>: a rule is placed ahead of Xray so this peer goes into the client tunnel (which must be up). Xray keeps running for everything else.</li><li><b>Fine with Xray</b> — switch the peer to «Direct»: its traffic flows through Xray anyway (DPI bypass).</li><li>Or stop Xray entirely (button below).</li></ul>",
+    BAN_XRAY_GEO: "<div style=\"margin-top:6px;\">Peers on a <b>geo policy</b> have no «bypass Xray» option: that rule works by ending packet processing early, which would skip the marking a geo policy needs — it would send the peer straight out of the WAN instead. For a geo peer, either switch it to <b>«VPN: all traffic»</b> and tick «bypass Xray», or accept that Xray handles it (its DPI bypass still applies), or stop Xray.</div>",
     BAN_XRAY_INFO: "<b>Xray / XRAYUI</b> is running in transparent-proxy mode («redirect all») — peer traffic automatically flows <b>through Xray</b> (DPI bypass), non-proxied destinations go straight to WAN. This is a working setup. For a peer that should instead double-hop through the client tunnel, give it a «VPN…» policy and tick «bypass Xray».",
     BAN_XRAY_UNCOVERED: "<b>Xray / XRAYUI</b> is running, but the peer subnet <code>{0}</code> is <b>not in its capture rules</b> — peer traffic bypasses Xray and goes straight to WAN (no DPI bypass). This usually means XRAYUI started before this server did. Fix: <b>restart XRAYUI</b> (it picks up existing interfaces at start), or add the subnet to its transparent-proxy settings.",
     XRAY_STOP_BTN: "Stop Xray",
@@ -259,7 +260,7 @@ ru: {
     OPT_MODE_FULL: "Весь трафик",
     OPT_MODE_LAN: "Только домашняя сеть",
     BYPASS_XRAY: "мимо Xray",
-    BYPASS_XRAY_TT: "Заворачивать трафик этого пира в клиентский туннель (двойной хоп) даже при работающем Xray — правило ставится перед перехватом Xray, чтобы трафик пира в него не попадал. Нужен поднятый клиентский туннель. На Direct-пиров не влияет.",
+    BYPASS_XRAY_TT: "Заворачивать трафик этого пира в клиентский туннель (двойной хоп) даже при работающем Xray — правило ставится перед перехватом Xray, чтобы трафик пира в него не попадал. Нужен поднятый клиентский туннель. Доступно только для пиров с политикой «VPN: весь трафик»: правило работает через раннее прекращение обработки пакета, а это пропустило бы простановку метки, без которой гео-политика не работает.",
     OPT_DIRECT: "Напрямую",
     OPT_VPN_ALL: "VPN: весь трафик",
     OPT_VPN_GEO: "VPN: только Гео",
@@ -291,7 +292,8 @@ ru: {
     BAN_PORT_CONFLICT: "<b>Встроенный WireGuard-сервер прошивки использует тот же UDP-порт {0}.</b> Смените порт этого сервера или выключите WG-сервер прошивки (VPN → WireGuard).",
     BAN_CLIENT_DOWN: "<b>Клиентский</b> туннель AmneziaWG не запущен — пиры с политикой «VPN…» сейчас ходят в интернет <b>напрямую</b> через WAN (fail-open). Запустите клиентский туннель на странице AmneziaWG, чтобы политики заработали.",
     BAN_UNSAVED: "Есть несохранённые изменения — нажмите «Применить».",
-    BAN_XRAY_POLICY: "⛔ <b>Xray / XRAYUI</b> работает в режиме прозрачного прокси («весь трафик»), и у части пиров стоит политика «VPN…» <b>без галочки «мимо Xray»</b>. Для таких пиров двойной хоп не происходит — Xray перехватывает их трафик в PREROUTING раньше правила маршрутизации AmneziaWG (приоритет ip-rule 19 против 99), поэтому они выходят через Xray, а не через клиентский туннель. Что делать:<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li><b>Нужен двойной хоп</b> — включите у пира галочку <b>«мимо Xray»</b>: правило ставится перед Xray, и этот пир уходит в клиентский туннель (он должен быть поднят). Xray для остального продолжает работать.</li><li><b>Xray устраивает</b> — переведите пира на «Напрямую»: его трафик и так пойдёт через Xray (обход DPI).</li><li>Либо остановите Xray целиком (кнопка ниже).</li></ul>",
+    BAN_XRAY_POLICY: "⛔ <b>Xray / XRAYUI</b> работает в режиме прозрачного прокси («весь трафик»), и у части пиров стоит политика «VPN…» <b>без галочки «мимо Xray»</b>. Для таких пиров двойной хоп не происходит — Xray перехватывает их трафик в PREROUTING раньше правила маршрутизации AmneziaWG (приоритет ip-rule 19 против 99), поэтому они выходят через Xray, а не через клиентский туннель. Что делать:<ul style=\"margin:5px 0 4px 0; padding-left:20px;\"><li><b>Нужен двойной хоп</b> — у пира с политикой <b>«VPN: весь трафик»</b> включите галочку <b>«мимо Xray»</b>: правило ставится перед Xray, и этот пир уходит в клиентский туннель (он должен быть поднят). Xray для остального продолжает работать.</li><li><b>Xray устраивает</b> — переведите пира на «Напрямую»: его трафик и так пойдёт через Xray (обход DPI).</li><li>Либо остановите Xray целиком (кнопка ниже).</li></ul>",
+    BAN_XRAY_GEO: "<div style=\"margin-top:6px;\">У пиров с <b>гео-политикой</b> галочки «мимо Xray» нет: это правило работает через раннее прекращение обработки пакета, из-за чего пропускается простановка метки, без которой гео-политика не работает — пир ушёл бы прямо в WAN. Для гео-пира: либо переведите его на <b>«VPN: весь трафик»</b> и включите «мимо Xray», либо примите, что им занимается Xray (обход DPI при этом работает), либо остановите Xray.</div>",
     BAN_XRAY_INFO: "<b>Xray / XRAYUI</b> работает в режиме прозрачного прокси («весь трафик») — трафик пиров автоматически идёт <b>через Xray</b> (обход DPI), непроксируемые адреса — напрямую в WAN. Это штатная рабочая схема. Если какому-то пиру нужен именно двойной хоп через клиентский туннель — поставьте ему политику «VPN…» и галочку «мимо Xray».",
     BAN_XRAY_UNCOVERED: "<b>Xray / XRAYUI</b> запущен, но подсети пиров <code>{0}</code> <b>нет в его правилах перехвата</b> — трафик пиров идёт мимо Xray, напрямую в WAN (без обхода DPI). Обычно так бывает, когда XRAYUI стартовал раньше этого сервера. Решение: <b>перезапустите XRAYUI</b> (при старте он подхватывает существующие интерфейсы) или добавьте подсеть в его настройки прозрачного прокси.",
     XRAY_STOP_BTN: "Остановить Xray",
@@ -600,7 +602,11 @@ function renderPeers(){
           '<td width="16%"><input type="text" maxlength="24" value="' + escHtml(p.name) + '" onchange="peerEdit(' + i + ',\'name\',this.value)"></td>' +
           '<td width="12%" style="font-family:monospace; font-size:12px;">' + escHtml(p.ip) + '</td>' +
           '<td width="20%"><select onchange="peerEdit(' + i + ',\'policy\',this.value)">' + policyOptions(p.policy) + '</select>' +
-              (p.policy !== 'direct' ? '<label style="display:block; font-size:10px; color:#b6bdc7; margin-top:3px; cursor:pointer;" title="' + escHtml(T('BYPASS_XRAY_TT')) + '"><input type="checkbox"' + (p.xbypass ? ' checked' : '') + ' onchange="peerEdit(' + i + ',\'xbypass\',this.checked)" style="vertical-align:middle;"> ' + escHtml(T('BYPASS_XRAY')) + '</label>' : '') +
+              /* vpn_all ONLY (1.5.12): the bypass is a blanket mangle ACCEPT at PREROUTING
+                 position 1, which terminates the chain before the mark that a GEO policy
+                 depends on — ticking it on a geo peer sent it straight out of the WAN. The
+                 stored flag is left alone so switching back to vpn_all restores the intent. */
+              (p.policy === 'vpn_all' ? '<label style="display:block; font-size:10px; color:#b6bdc7; margin-top:3px; cursor:pointer;" title="' + escHtml(T('BYPASS_XRAY_TT')) + '"><input type="checkbox"' + (p.xbypass ? ' checked' : '') + ' onchange="peerEdit(' + i + ',\'xbypass\',this.checked)" style="vertical-align:middle;"> ' + escHtml(T('BYPASS_XRAY')) + '</label>' : '') +
           '</td>' +
           '<td width="16%"><select onchange="peerEdit(' + i + ',\'mode\',this.value)">' +
               '<option value="full"' + (p.mode !== 'lan' ? ' selected' : '') + '>' + escHtml(T('OPT_MODE_FULL')) + '</option>' +
@@ -948,11 +954,15 @@ function renderStatus(st){
     showBanner('awgs_ban_port', !!st.port_conflict, st.port_conflict ? T('BAN_PORT_CONFLICT', escHtml(st.port || '')) : '');
     // Classify peers by what they expect: a VPN policy WITH «bypass Xray» goes into the client
     // tunnel past Xray (1.3.10); WITHOUT it, Xray grabs it first; Direct goes through Xray.
-    var vpnNoBypass = false, vpnBypass = false, anyDirect = false;
+    // Since 1.5.12 «bypass Xray» exists for vpn_all peers only (a geo peer needs the packet mark
+    // the bypass would skip), so a geo peer is its own bucket: it can never satisfy the red
+    // banner by ticking a box, and telling it to would be advice that breaks its routing.
+    var vpnNoBypass = false, vpnBypass = false, anyDirect = false, geoNoBypass = false;
     for (var i = 0; i < awgsPeers.length; i++) {
         var pp = awgsPeers[i];
         if (!pp.enabled) continue;
-        if (pp.policy && pp.policy !== 'direct') { if (pp.xbypass) vpnBypass = true; else vpnNoBypass = true; }
+        if (pp.policy === 'vpn_all') { if (pp.xbypass) vpnBypass = true; else vpnNoBypass = true; }
+        else if (pp.policy && pp.policy !== 'direct') geoNoBypass = true;
         else anyDirect = true;
     }
     // Coverage guard (backend srv_xray_covers_peers): xray is capturing, but its TPROXY
@@ -963,7 +973,7 @@ function renderStatus(st){
     showBanner('awgs_ban_xraycov', uncov, T('BAN_XRAY_UNCOVERED', escHtml(st.subnet || '')));
     // Fail-open: a peer that WANTS the client tunnel (a «bypass Xray» peer, or a vpn peer while
     // Xray isn't grabbing it) but the tunnel is down → its traffic falls open to WAN.
-    var wantsTunnel = vpnBypass || (vpnNoBypass && (!st.xray_capture || uncov));
+    var wantsTunnel = vpnBypass || ((vpnNoBypass || geoNoBypass) && (!st.xray_capture || uncov));
     showBanner('awgs_ban_client', st.running && wantsTunnel && !st.client_running, T('BAN_CLIENT_DOWN'));
     // Xray coexistence banner (verified live on a box running XRAYUI):
     //  - RED: some vpn peer has NO «bypass Xray» while Xray captures → its double hop doesn't
@@ -971,10 +981,13 @@ function renderStatus(st){
     //  - YELLOW info: Xray captures and there are Direct peers (they flow through Xray) with no
     //    red case. Both suppressed while uncovered — the coverage banner is the story then. A
     //    box with only «bypass Xray» peers gets no banner (they're all in the client tunnel).
-    var redPolicy = st.xray_capture && !uncov && vpnNoBypass;
+    //  - A GEO-policy peer also loses its double hop under Xray, but «bypass Xray» is NOT the
+    //    fix for it (1.5.12) — so it turns the banner red too and gets its own sentence.
+    var redPolicy = st.xray_capture && !uncov && (vpnNoBypass || geoNoBypass);
     var xb = document.getElementById('awgs_ban_xray');
     if (xb) xb.className = 'awg-banner ' + (redPolicy ? 'red' : 'yellow');
-    var xrayHtml = T(redPolicy ? 'BAN_XRAY_POLICY' : 'BAN_XRAY_INFO');
+    var xrayHtml = T(redPolicy ? 'BAN_XRAY_POLICY' : 'BAN_XRAY_INFO')
+                 + (redPolicy && geoNoBypass ? T('BAN_XRAY_GEO') : '');
     if (st.xray_capture && st.xray_ctl)
         xrayHtml += '<div style="margin-top:7px;"><input type="button" class="awg-mini danger" value="' +
                     escHtml(awgsXrayStopping ? T('XRAY_STOPPING') : T('XRAY_STOP_BTN')) + '"' +

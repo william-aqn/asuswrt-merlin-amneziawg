@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.11"
+AWG_VERSION="1.5.12"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -5093,7 +5093,15 @@ stale_status_pids(){
         c=""
         { read -r c < "$d/cmdline"; } 2>/dev/null
         [ -n "$c" ] || continue
-        case "$c" in *amneziawg.sh*status*) ;; *) continue ;; esac
+        # BOTH roles: the server has its own */1 status cron with its own nvram reads, and
+        # "amneziawg_server.sh" does NOT contain the substring "amneziawg.sh", so 1.5.10 left it
+        # unprotected. Anchored on $ADDON_DIR rather than a bare script name — a user's own
+        # /jffs/scripts/amneziawg.sh taking a `status` argument must never be kill -9'd by us
+        # (1.5.10's pattern would have). Verified against 11 cmdline shapes under busybox.
+        case "$c" in
+            *"$ADDON_DIR"/amneziawg.sh*status*|*"$ADDON_DIR"/amneziawg_server.sh*status*) ;;
+            *) continue ;;
+        esac
         sline=""
         { read -r sline < "$d/stat"; } 2>/dev/null
         [ -n "$sline" ] || continue

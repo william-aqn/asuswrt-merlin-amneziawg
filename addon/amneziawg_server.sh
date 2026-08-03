@@ -450,10 +450,30 @@ srv_cleanup_firewall(){
 # packet was going to prio 99 anyway). Only vpn_* peers get it; Direct peers stay on Xray.
 # We never touch Xray's own rules — this is our own rule, ahead of its chain.
 
-# Tunnel IPs of peers that opted into the bypass (enabled, VPN policy, xbypass flag set).
+# Tunnel IPs of peers that opted into the bypass — `vpn_all` ONLY (narrowed 1.5.12).
+#
+# The bypass is a blanket `-j ACCEPT` at mangle PREROUTING position 1, and ACCEPT TERMINATES that
+# chain. `vpn_all` survives that: it routes on the prio-99 `from <peer-ip> lookup 300` ip rule,
+# which needs no packet mark. A GEO policy does not — its only path into table 300 is fwmark
+# 0x100, and that mark is set exclusively inside the client's AWG chain, which is hooked with
+# `-A PREROUTING` (append) and therefore always sits AFTER our position-1 ACCEPT. So ticking
+# «bypass Xray» on a geo peer silently stopped it being marked: no mark, no table 300, straight
+# out of the WAN under the server's own MASQUERADE — while the page still showed policy «Гео».
+# Worse, the rule was installed whether or not Xray was even running, so it broke geo peers on
+# boxes that have no Xray at all.
+# The stored flag is NOT rewritten — it stays on the peer record so switching the policy back to
+# «VPN: весь трафик» restores the intent; it is simply inert (and hidden in the UI) meanwhile.
+# Making it work for geo peers needs a mark-then-accept pair at position 1 instead of a bare
+# ACCEPT, duplicating emit_geo_rules' per-policy ipset logic here — deliberately deferred.
 srv_xray_bypass_ips(){
     srv_peers_raw | awk -F'|' '
-        NF>=9 && $5=="1" && $9=="1" && $3!="" && $3!="direct" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $2}'
+        NF>=9 && $5=="1" && $9=="1" && $3=="vpn_all" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $2}'
+}
+
+# Peers whose «bypass Xray» flag is set but IGNORED because their policy is geo-based (above).
+srv_xray_bypass_ignored(){
+    srv_peers_raw | awk -F'|' '
+        NF>=9 && $5=="1" && $9=="1" && $3!="" && $3!="direct" && $3!="vpn_all" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $2}'
 }
 
 # IPs of the bypass rules currently installed (mangle PREROUTING `-s <subnet-ip>/32 -j ACCEPT`).
@@ -473,8 +493,13 @@ srv_bypass_rule_ips(){
 # also flushes that peer's live conntrack so Xray-captured sessions re-path immediately; an
 # already-present rule is left untouched (no needless flush on every Apply/watchdog tick).
 srv_setup_xray_bypass(){
-    local want ip
+    local want ip ignored
     want=" $(srv_xray_bypass_ips | tr '\n' ' ') "
+    # Say it out loud rather than quietly doing nothing: a geo peer with the flag ticked used to
+    # get a rule that broke its routing (see srv_xray_bypass_ips), and the flag is still visible
+    # in the exported peer record.
+    ignored=$(srv_xray_bypass_ignored | tr '\n' ' ')
+    [ -n "${ignored% }" ] && log_msg "Xray bypass ignored for geo-policy peer(s): ${ignored% } — it only applies to «VPN: all traffic» (a geo peer needs the packet mark that the bypass would skip)"
     srv_bypass_rule_ips | while read -r ip; do
         case "$want" in *" $ip "*) : ;; *) ipt_drain -t mangle -D PREROUTING -s "$ip" -j ACCEPT ;; esac
     done
@@ -730,6 +755,15 @@ do_srv_boot_start(){
     fi
 }
 
+# Does the RUNNING interface currently carry any param that `syncconf` can neither diff nor
+# clear? `awg show` prints them lowercase and indented ("  header protection key: …", "  i1: …").
+# Only meaningful while the interface exists; a non-running one simply produces no output.
+# NB matches the LABELS, so it is independent of whether the CLI can round-trip them via showconf.
+srv_live_has_advanced_params(){
+    "$AWG_BIN" show "$IFACE" 2>/dev/null | grep -qiE \
+        '^[[:space:]]*(i[1-5]|header protection key|content padding addition|rekey after time|rekey timeout|reject after time|keepalive timeout|max handshake attempts):'
+}
+
 # Apply saved settings to a RUNNING server without dropping every peer when possible:
 # syncconf diffs the conf (peer add/remove, params); a changed subnet/address needs the
 # full restart. Firewall re-applied either way (port may have changed; old port drained).
@@ -764,8 +798,19 @@ do_srv_apply(){
     # a partial diff to a LIVE device is precisely the case where the daemon commits H1-H4 before
     # rejecting a bad S/HeaderProtectionKey pair — which leaves every peer blackholed on a config
     # it refused. Restart instead: it is setconf-based and all-or-nothing.
-    if grep -qE '^(I[1-5]|HeaderProtectionKey|ContentPaddingAddition|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts) ' "$CONF" 2>/dev/null; then
-        log_msg "Server config has I1-I5 or AmneziaWG 3.0 params — applying via restart (syncconf can't diff those)"
+    # Gate on the LIVE DEVICE TOO, not just the new file (fixed 1.5.12). Looking only at the new
+    # conf handles turning these params ON, but silently loses turning them OFF: clearing e.g.
+    # HeaderProtectionKey in the UI produces a conf WITHOUT any of these keys, the grep misses,
+    # and apply takes the syncconf path — which does NOT remove a device attribute that is simply
+    # absent from the file. Measured on a v3.0.3 daemon: `syncconf` of a conf with no 3.0 keys
+    # returns rc=0 and leaves `header protection key`, `content padding addition` and `max
+    # handshake attempts` still set on the interface. A plain `setconf` on the LIVE device does
+    # not clear them either — only tearing the interface down and recreating it does, i.e. a real
+    # restart. So the server kept demanding header protection while the page said it was off, and
+    # freshly generated peer configs (correctly without the key) could no longer connect.
+    if grep -qE '^(I[1-5]|HeaderProtectionKey|ContentPaddingAddition|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts) ' "$CONF" 2>/dev/null \
+       || srv_live_has_advanced_params; then
+        log_msg "Server config or live interface has I1-I5 / AmneziaWG 3.0 params — applying via restart (syncconf can neither diff nor clear those)"
         release_lock
         do_srv_restart
         srv_poke_policies
@@ -1003,7 +1048,11 @@ case "$1" in
     stop)             do_srv_stop "$2" ;;
     restart)          do_srv_restart ;;
     apply)            do_srv_apply ;;
-    status)           srv_update_status ;;
+    # Reap first, exactly as the client's status path does: srv_update_status makes 5-7 `nvram
+    # get` calls per tick (preferred_lang, the endpoint hint, the WAN-private check, the port
+    # conflict check) and any of them can wedge forever on the firmware's envrams IPC. The
+    # reaper is shared (lib mode) and since 1.5.12 its pattern covers this script too.
+    status)           reap_stale_status; srv_update_status ;;
     watchdog)         do_srv_watchdog ;;
     firewall_restart) do_srv_firewall_restart ;;
     diag)             do_srv_diag ;;
