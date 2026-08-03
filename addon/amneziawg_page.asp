@@ -592,7 +592,8 @@ en: {
     DIAG_DOWNLOADED: "Downloaded ✓",
     DIAG_DOWNLOAD_FAILED: "Download failed",
     DIAG_DOWNLOAD_NOTE: "Saves the diagnostics + log as a .txt file. Or copy (📋) to paste into Telegram.",
-    BTN_DOWNLOAD_DIAG: "Download diagnostic data",
+    BTN_DOWNLOAD_DIAG: "Download .txt",
+    TITLE_DOWNLOAD_DIAG: "Download the diagnostics and the log as a .txt file",
     BTN_COPY_DIAG_MINI: "Copy to clipboard (for Telegram)",
     DIAG_COPY_FAILED_ALERT: "Could not copy. Select the text in the window and copy it manually (Ctrl+C).",
     // ---- status info lines ----
@@ -706,7 +707,8 @@ en: {
     MSG_PF_FULL: "All {0} profile slots are in use.",
     MSG_SETTINGS_TOO_BIG: "Settings are too large to save ({0} KB — the firmware caps one save at ~50 KB): shorten I1-I5 junk data or delete an unused profile.",
     SEC_CONFIG: "Configuration",
-    BTN_IMPORT_CONF_FILE: "Import a .conf file from the Amnezia VPN client",
+    BTN_IMPORT_CONF_FILE: "Import .conf",
+    TITLE_IMPORT_CONF_FILE: "Import a .conf file from the Amnezia VPN client",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— obfuscation parameters (usually filled in by importing a config) ▾</span>",
     TBL_AWG3: "AmneziaWG 3.0 — needs a 3.0-capable peer on the OTHER side too. Leave empty unless the provider's config has them.",
     AWG3_UNSUPPORTED: "AmneziaWG 3.0 parameters are not supported by the installed binaries — the fields below are disabled. Update the addon to a build with AWG 3.0 support.",
@@ -1020,7 +1022,8 @@ ru: {
     DIAG_DOWNLOADED: "Скачано ✓",
     DIAG_DOWNLOAD_FAILED: "Не удалось скачать",
     DIAG_DOWNLOAD_NOTE: "Сохраняет диагностику + журнал в файл .txt. Или скопировать (📋) для вставки в Telegram.",
-    BTN_DOWNLOAD_DIAG: "Скачать диагностические данные",
+    BTN_DOWNLOAD_DIAG: "Скачать .txt",
+    TITLE_DOWNLOAD_DIAG: "Скачать диагностику и журнал одним .txt-файлом",
     BTN_COPY_DIAG_MINI: "Скопировать в буфер (для Telegram)",
     DIAG_COPY_FAILED_ALERT: "Не удалось скопировать. Выделите текст в окне и скопируйте вручную (Ctrl+C).",
     // ---- status info lines ----
@@ -1134,7 +1137,8 @@ ru: {
     MSG_PF_FULL: "Все {0} слотов профилей заняты.",
     MSG_SETTINGS_TOO_BIG: "Настройки слишком велики для сохранения ({0} КБ — прошивка ограничивает одно сохранение ~50 КБ): сократите I1-I5 или удалите неиспользуемый профиль.",
     SEC_CONFIG: "Конфигурация",
-    BTN_IMPORT_CONF_FILE: "Импорт .conf-файла из клиента Amnezia VPN",
+    BTN_IMPORT_CONF_FILE: "Импорт .conf",
+    TITLE_IMPORT_CONF_FILE: "Импорт .conf-файла из клиента Amnezia VPN",
     OBF_SUMMARY_HTML: "AmneziaWG Obfuscation <span style=\"font-weight:normal; text-transform:none; letter-spacing:0; color:#b6bdc7;\">— параметры обфускации (обычно заполняются импортом конфига) ▾</span>",
     TBL_AWG3: "AmneziaWG 3.0 — нужна поддержка 3.0 и на ДРУГОЙ стороне. Оставьте пустым, если их нет в конфиге провайдера.",
     AWG3_UNSUPPORTED: "Параметры AmneziaWG 3.0 не поддерживаются установленными бинарниками — поля ниже отключены. Обновите аддон до сборки с поддержкой AWG 3.0.",
@@ -5004,7 +5008,7 @@ function initAutocompleteIp(){
                 <!-- ==================== CONFIG ==================== -->
                 <div class="awg-section" style="display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
                     <span data-i18n="SEC_CONFIG">Configuration</span>
-                    <input type="button" class="button_gen" value="Import a .conf file from the Amnezia VPN client" data-i18n-val="BTN_IMPORT_CONF_FILE" onclick="importConfig();" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
+                    <input type="button" class="button_gen" value="Import .conf" data-i18n-val="BTN_IMPORT_CONF_FILE" title="Import a .conf file from the Amnezia VPN client" data-i18n-title="TITLE_IMPORT_CONF_FILE" onclick="importConfig();" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
 
                 <!-- Config profiles (multi-config): slot rows + failover toggle, rendered by pfRenderBar() -->
@@ -5574,7 +5578,7 @@ function initAutocompleteIp(){
         </div>
         <div id="awg_diag_body" style="padding:14px 18px; overflow:auto; font-family:'Courier New','Lucida Console',monospace; font-size:12px; line-height:1.45; white-space:pre-wrap; word-wrap:break-word;"></div>
         <div style="padding:10px 18px; border-top:1px solid #444; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
-            <input type="button" class="button_gen" value="Download diagnostic data" data-i18n-val="BTN_DOWNLOAD_DIAG" onclick="awgDownloadDiagReport(this);">
+            <input type="button" class="button_gen" value="Download .txt" data-i18n-val="BTN_DOWNLOAD_DIAG" title="Download the diagnostics and the log as a .txt file" data-i18n-title="TITLE_DOWNLOAD_DIAG" onclick="awgDownloadDiagReport(this);">
             <button type="button" id="awg_diag_copy_btn" onclick="awgCopyDiagReport(this);" title="Copy to clipboard (for Telegram)" data-i18n-title="BTN_COPY_DIAG_MINI" aria-label="Copy to clipboard" data-i18n-aria="BTN_COPY_DIAG_MINI" style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; padding:0; background:transparent; border:1px solid #666; border-radius:5px; color:inherit; cursor:pointer; flex:0 0 auto;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
