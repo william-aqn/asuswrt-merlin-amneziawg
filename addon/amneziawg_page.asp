@@ -68,19 +68,18 @@
 }
 
 .awg-btn { margin: 0 4px; }
-/* The firmware's stock `.button_gen` is a FIXED-size box, and our RU labels are long. Two things
-   went wrong together on a gnuton/TUF-AX3000_V2 (field photo 2026-08-03), where the stock button
-   is narrower and/or the font larger than on the Merlin builds we develop against:
-     - «Сохранить и полностью перезапустить VPN» wrapped to three lines and the fixed height
-       CLIPPED the last one, so the button read «Сохранить и полностью»;
-     - as inline-blocks the buttons align on the baseline of their LAST line, so the taller,
-       wrapped button extended UPWARD and sat visibly above «Применить».
-   Fix both at the source: let our buttons size to their content and wrap (awg-btn-fit), and lay
-   the action row out with flex + align-items:center so alignment stops depending on line count.
-   Scoped to our own class rather than overriding .button_gen globally — the firmware uses that
-   class in its own chrome too. */
-.awg-btn-fit { width: auto; height: auto; min-height: 26px; white-space: normal; line-height: 1.25;
-               padding: 5px 12px; box-sizing: border-box; max-width: 320px; vertical-align: middle; }
+/* Action row. Flex + align-items:center ONLY — deliberately no sizing of our own.
+   History, because it is easy to "improve" this back into a bug (1.5.15 -> 1.5.16):
+   the stock `.button_gen` is a fixed-height box, and on a gnuton/TUF build (field photos
+   2026-08-03) «Сохранить и полностью перезапустить VPN» wrapped to three lines, so the fixed
+   height clipped the last one AND, as inline-blocks align on the baseline of their LAST line,
+   the taller button sat above «Применить». 1.5.15 fixed that by making our buttons size to their
+   content (width/height auto) — which traded one bug for a worse one: a content-sized box is
+   re-laid-out by ANY state-dependent metric the theme applies, so hovering a button resized it
+   and the whole row jumped. The stock fixed box cannot do that, by construction.
+   So: keep the stock geometry and make the LABELS fit it instead (they were shortened in 1.5.16;
+   the full wording lives in each button's `title` and in the description block below the row).
+   Do not add width/height/padding here without a way to test on the affected theme. */
 .awg-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; }
 
 /* Config-profile bar (multi-config): one row per slot, rendered by pfRenderBar(). */
@@ -827,12 +826,13 @@ en: {
     HINT_UPDATE_VIA_VPN: "Version check and <code>.ipk</code> download go through the VPN while the tunnel is active — you can install updates straight from GitHub bypassing regional blocking (and verify SHA256 via the GitHub API). DNS resolution stays system-wide; the bypass works for IP/TCP blocking. If the VPN is off — directly, as before.",
     BTN_APPLY: "Apply",
     TITLE_APPLY: "Save and apply without restarting the VPN",
-    BTN_SAVE_RESTART: "Save and fully restart the VPN",
+    BTN_SAVE_RESTART: "Save and restart",
     TITLE_SAVE_RESTART: "Save + restart the VPN (stop → start) + full rebuild of routes and firewall",
     APPLY_DESC1_HTML: "<b>Apply</b> — save the settings and apply them «on the fly»: devices, routing policies, the firewall and the GeoIP/GeoSite lists update <b>without dropping the VPN connection</b>. Changes to the connection config itself (keys, endpoint, obfuscation, DNS, MTU) take effect only after <b>«Restart»</b> — a yellow notice will point that out. If the VPN is stopped — the settings are just saved and applied at the next start.",
     APPLY_DESC2_HTML: "<b>Save and fully restart the VPN</b> (stop → start) — the config is re-applied (awg setconf), the interface, routes and firewall are rebuilt, the connection drops for a couple of seconds. Needed when changing keys, the server (Endpoint), MTU or obfuscation parameters (Jc, S1, H1…H4), or if the connection is «stuck».",
     SEC_LOG: "Log",
-    BTN_GET_DIAG: "Get diagnostic data",
+    BTN_GET_DIAG: "Diagnostics",
+    TITLE_GET_DIAG: "Collect a full diagnostic report and copy it together with the log",
     LOG_WAITING: "Waiting for data…",
     MODAL_UPDATE_TITLE: "Update",
     INSTALL_LABEL: "Install:",
@@ -1254,12 +1254,13 @@ ru: {
     HINT_UPDATE_VIA_VPN: "Проверка версии и загрузка <code>.ipk</code> идут через VPN, пока туннель активен — можно ставить обновления прямо с GitHub в обход региональных блокировок (и проверять SHA256 по GitHub API). DNS-резолвинг остаётся системным; обход работает для блокировок по IP/TCP. Если VPN выключен — напрямую, как раньше.",
     BTN_APPLY: "Применить",
     TITLE_APPLY: "Сохранить и применить без перезапуска VPN",
-    BTN_SAVE_RESTART: "Сохранить и полностью перезапустить VPN",
+    BTN_SAVE_RESTART: "Сохранить и перезапустить",
     TITLE_SAVE_RESTART: "Сохранить + перезапуск VPN (stop → start) + полная пересборка маршрутов и firewall",
     APPLY_DESC1_HTML: "<b>Применить</b> — сохранить настройки и применить их «на лету»: устройства, политики маршрутизации, firewall и списки GeoIP/GeoSite обновляются <b>без разрыва VPN-соединения</b>. Изменения самой конфигурации подключения (ключи, endpoint, обфускация, DNS, MTU) вступают в силу только после <b>«Перезапустить»</b> — страница подскажет жёлтой плашкой. Если VPN остановлен — настройки просто сохранятся и применятся при следующем запуске.",
     APPLY_DESC2_HTML: "<b>Сохранить и полностью перезапустить VPN</b> (stop → start) — заново применяется конфиг (awg setconf), пересобираются интерфейс, маршруты и firewall, соединение на пару секунд прерывается. Нужно при смене ключей, сервера (Endpoint), MTU или параметров обфускации (Jc, S1, H1…H4), а также если соединение «залипло».",
     SEC_LOG: "Журнал",
-    BTN_GET_DIAG: "Получить диагностические данные",
+    BTN_GET_DIAG: "Диагностика",
+    TITLE_GET_DIAG: "Собрать полный отчёт диагностики и скопировать его вместе с журналом",
     LOG_WAITING: "Ожидание данных…",
     MODAL_UPDATE_TITLE: "Обновление",
     INSTALL_LABEL: "Установить:",
@@ -5490,8 +5491,8 @@ function initAutocompleteIp(){
 
                 <!-- Apply -->
                 <div class="awg-actions" style="margin-top:12px;">
-                    <input type="button" class="button_gen awg-btn-fit" value="Apply" data-i18n-val="BTN_APPLY" onclick="saveSettings();" title="Save and apply without restarting the VPN" data-i18n-title="TITLE_APPLY">
-                    <input type="button" class="button_gen awg-btn-fit" value="Save and fully restart the VPN" data-i18n-val="BTN_SAVE_RESTART" onclick="forceApply();" title="Save + restart the VPN (stop → start) + full rebuild of routes and firewall" data-i18n-title="TITLE_SAVE_RESTART">
+                    <input type="button" class="button_gen" value="Apply" data-i18n-val="BTN_APPLY" onclick="saveSettings();" title="Save and apply without restarting the VPN" data-i18n-title="TITLE_APPLY">
+                    <input type="button" class="button_gen" value="Save and restart" data-i18n-val="BTN_SAVE_RESTART" onclick="forceApply();" title="Save + restart the VPN (stop → start) + full rebuild of routes and firewall" data-i18n-title="TITLE_SAVE_RESTART">
                     <span id="awg_ack_bottom" class="awg-ack"></span>
                 </div>
                 <div style="font-size:11px; opacity:0.7; margin:8px auto 0; max-width:640px; line-height:1.55; text-align:left;">
@@ -5502,10 +5503,10 @@ function initAutocompleteIp(){
                 <!-- ==================== LOG ==================== -->
                 <div class="awg-section" style="margin-top:15px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
                     <span data-i18n="SEC_LOG">Log</span>
-                    <!-- awg-btn-fit for the same reason as the Apply row: this label is even
-                         longer in RU and the stock fixed-size box clipped it on the TUF build.
-                         The inline padding/font-size intentionally still win over the class. -->
-                    <input type="button" class="button_gen awg-btn-fit" value="Get diagnostic data and copy log" data-i18n-val="BTN_GET_DIAG" onclick="awgRunDiag(this);" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
+                    <!-- Short label on purpose (1.5.16): the long RU one overflowed the stock
+                         fixed-size button on gnuton/TUF builds. The `value=` fallback is what
+                         shows before applyI18n() runs, so it must be short too. -->
+                    <input type="button" class="button_gen" value="Diagnostics" data-i18n-val="BTN_GET_DIAG" onclick="awgRunDiag(this);" title="Collect a full diagnostic report and copy it together with the log" data-i18n-title="TITLE_GET_DIAG" style="margin-left:auto; font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;">
                 </div>
                 <div id="awg_log" class="awg-log" data-i18n="LOG_WAITING">Waiting for data…</div>
                 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px 10px; font-size:11px; opacity:0.55; margin-top:4px;">
