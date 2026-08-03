@@ -73,6 +73,11 @@
 <script>
 var custom_settings = <% get_custom_settings(); %>;
 var statusTimer = null;
+// Last AmneziaWG 3.0 capability verdict: true / false / null while unknown. Three-state on
+// purpose — only an explicit false means "this build cannot do 3.0" (see
+// applyAwg3CapabilitySrv); unknown must NOT disable anything. Declared here, next to the other
+// page state, because genHpk() and the peer-config export both read it.
+var awgs3Cap = null;
 var awgsActionGen = 0;          // generation token: stale in-flight polls must not repaint the UI
 var awgsStatus = null;
 var awgsPeers = [];             // working copy of the peer store (saved on Apply)
@@ -182,6 +187,7 @@ en: {
     MSG_PEERS_FULL: "No free addresses left in the subnet (.2–.254 are taken).",
     MSG_GEN_CONFIRM: "Generate new obfuscation parameters? All existing peers will need to re-import their configs.",
     MSG_REGEN_KEYS: "Generate a NEW server key pair? Every existing peer config becomes invalid (clients must re-import).",
+    MSG_SETTINGS_TOO_BIG: "Settings are too large to save ({0} KB — the firmware caps one save at ~50 KB): remove a peer or shorten the I1-I5 junk data. The client's settings share the same store.",
     MSG_APPLY_RESTART_HINT: "Settings are applied live where possible; subnet/key changes restart the server.",
     BAN_FIRSTRUN: "<b>Server is not configured yet.</b><br>Click «Generate» for the server keys, check the port and subnet, add a peer, then press «Apply» and «Start server».",
     BAN_WAN_PRIVATE: "<b>WAN address is private/CGNAT ({0}).</b> Peers from the internet cannot reach this router directly — you need a public IP from your ISP or a port forward (UDP {1}) on the upstream router.",
@@ -286,6 +292,7 @@ ru: {
     MSG_PEERS_FULL: "В подсети не осталось свободных адресов (.2–.254 заняты).",
     MSG_GEN_CONFIRM: "Сгенерировать новые параметры обфускации? Всем существующим пирам придётся переимпортировать конфиги.",
     MSG_REGEN_KEYS: "Сгенерировать НОВУЮ пару ключей сервера? Все существующие конфиги пиров перестанут работать (переимпорт на клиентах).",
+    MSG_SETTINGS_TOO_BIG: "Настройки слишком велики для сохранения ({0} КБ — прошивка ограничивает одно сохранение ~50 КБ): удалите пира или сократите мусорные данные I1-I5. Настройки клиента лежат в том же хранилище.",
     MSG_APPLY_RESTART_HINT: "Настройки применяются на лету, где возможно; смена подсети/ключей перезапускает сервер.",
     BAN_FIRSTRUN: "<b>Сервер ещё не настроен.</b><br>Нажмите «Сгенерировать» для ключей сервера, проверьте порт и подсеть, добавьте пира, затем «Применить» и «Запустить сервер».",
     BAN_WAN_PRIVATE: "<b>WAN-адрес приватный/CGNAT ({0}).</b> Пиры из интернета не достучатся до роутера напрямую — нужен белый IP от провайдера или проброс порта (UDP {1}) на вышестоящем роутере.",
@@ -490,6 +497,11 @@ function genServerKeys(){
 // curve25519 clamping involved), which is why `awg genkey` output is also accepted.
 // Generated in the browser like every other key on this page: it never transits the backend.
 function genHpk(){
+    // The 3.0 INPUTS were disabled when the gate is closed, but this button was not — and
+    // setting .value on a disabled input works fine, so a user could still mint a key the
+    // backend then refuses to emit. The result was a server running WITHOUT header protection
+    // while every generated peer config demanded it (1.5.14). It also silently bumped S1-S4.
+    if (awgs3Cap === false) { alert(T('AWG3_UNSUPPORTED')); return; }
     if (gv('awgs_hpk_f') && !confirm(T('MSG_REGEN_KEYS'))) return;
     loadQrLib(function(ok){
         if (!ok) { alert(T('QR_LIB_FAIL')); return; }
@@ -709,9 +721,14 @@ function buildPeerConf(p){
         if (iv) lines.push('I' + n + ' = ' + iv);
     }
     // AmneziaWG 3.0. HeaderProtectionKey is the one that MUST match; the rest are mirrored so
-    // the peer behaves like the server the admin configured. All of these need an AWG 3.0
-    // client — the fields are disabled (hence empty) when this build can't do v3 anyway.
-    var awg3f = [['HeaderProtectionKey', 'awgs_hpk_f'], ['ContentPaddingAddition', 'awgs_cpa_f'],
+    // the peer behaves like the server the admin configured.
+    // Gated on the CAPABILITY, not on "the fields are disabled hence empty" as this used to
+    // assume (1.5.14): the fields are populated from saved settings on load — 1.5.7 promised
+    // stored 3.0 values are never wiped — so with the gate closed the server emits no
+    // HeaderProtectionKey while every peer config here would still demand one, and no peer
+    // could connect. Emit them only when the build actually supports them.
+    var awg3f = (awgs3Cap === false) ? [] :
+                [['HeaderProtectionKey', 'awgs_hpk_f'], ['ContentPaddingAddition', 'awgs_cpa_f'],
                  ['RekeyAfterTime', 'awgs_rat_f'], ['RekeyTimeout', 'awgs_rto_f'],
                  ['RejectAfterTime', 'awgs_rjt_f'], ['KeepaliveTimeout', 'awgs_kat_f'],
                  ['MaxHandshakeAttempts', 'awgs_mha_f']];
@@ -820,6 +837,17 @@ function saveSettings(){
     setChunked('awgs_initdata', itxt ? btoa(itxt) : '', 30);
     setChunked('awgs_peers', serializePeers(), 10);
 
+    // Whole-store size guard, same as the client page's Apply (1.5.14): this posts the ENTIRE
+    // custom_settings object and the firmware caps one request body at ~64 KB. The server side
+    // can genuinely reach it — many peers (each carrying pub/priv/psk) plus chunked I1-I5 junk,
+    // in a store shared with the client's five profiles. Without the check the firmware
+    // truncates silently and the settings come back corrupted. Refuse with a named cause.
+    var postLen = encodeURIComponent(JSON.stringify(custom_settings)).length;
+    if (postLen > 50000) {
+        alert(T('MSG_SETTINGS_TOO_BIG', Math.round(postLen / 1024)));
+        return;
+    }
+
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = 'start_awgsrvsave';
     var btn = document.getElementById('btn_apply');
@@ -849,8 +877,20 @@ function srvAction(action){
     var kind = action.indexOf('stop') !== -1 ? 'stop' : (action.indexOf('restart') !== -1 ? 'restart' : 'start');
     enterTransition(kind);
 }
+// Restart the steady 4 s poll after a transition resolves. Suspending it for the duration is
+// what the client page does (and documents): without that, the steady poll keeps firing DURING
+// the transition, and renderStatus() repaints «Остановлен» plus a live Start button over the
+// «Запуск…» badge — a restart is stop-then-start, so there is always a moment where the backend
+// honestly reports fully stopped. The generation token alone does not help here: it only
+// discards reads that were already IN FLIGHT when the action began, not the ones the interval
+// starts afterwards. (1.5.14; the client page fixed the same class in 1.2.13.)
+function resumeSteadyPoll(){
+    if (statusTimer) clearInterval(statusTimer);
+    statusTimer = setInterval(refreshStatus, 4000);
+}
 function enterTransition(kind){
     awgsActionGen++;
+    if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
     var myGen = awgsActionGen;
     var expect = (kind !== 'stop');
     var badge = document.getElementById('awgs_badge');
@@ -866,9 +906,11 @@ function enterTransition(kind){
             if (st && st.running === expect && !st.starting && !st.stopping) {
                 clearInterval(poll);
                 renderStatus(st);
+                resumeSteadyPoll();
             } else if (attempts > 40) {
                 clearInterval(poll);
                 if (st) renderStatus(st);
+                resumeSteadyPoll();   // give up on the transition, but never leave the page unpolled
             }
         });
     }, 1500);
@@ -921,6 +963,7 @@ function applyAwg3CapabilitySrv(cap){
     // "not supported by the installed binaries". Only an explicit false says that now.
     var known = (cap === true || cap === false);
     var ok = (cap !== false);
+    awgs3Cap = known ? cap : null;
     var note = document.getElementById('awgs3_unsupported');
     if (note) note.style.display = (known && !ok) ? '' : 'none';
     for (var i = 0; i < AWGS3_FIELDS.length; i++) {
@@ -929,6 +972,10 @@ function applyAwg3CapabilitySrv(cap){
         el.disabled = !ok;
         el.style.opacity = ok ? '' : '0.5';
     }
+    // The Generate button too — disabling only the inputs left the one control that can still
+    // WRITE into them fully live (1.5.14).
+    var gb = document.getElementById('awgs_hpk_gen');
+    if (gb) { gb.disabled = !ok; gb.style.opacity = ok ? '' : '0.5'; }
 }
 function renderStatus(st){
     awgsStatus = st;
@@ -1229,7 +1276,7 @@ function initial(){
                     <th width="30%">HeaderProtectionKey</th>
                     <td>
                         <input type="text" id="awgs_hpk_f" class="input_32_table" style="width:70%; font-family:monospace;" maxlength="44" placeholder="(optional)" onchange="markDirty();">
-                        <input type="button" class="button_gen awg-mini" value="Generate" data-i18n-val="BTN_GENERATE" onclick="genHpk();">
+                        <input type="button" id="awgs_hpk_gen" class="button_gen awg-mini" value="Generate" data-i18n-val="BTN_GENERATE" onclick="genHpk();">
                         <div class="awg-hint" data-i18n="HINT_AWG3_HPK_SRV">Written into every peer config and QR code — server and clients must share it. Requires S1–S4 ≥ 12.</div>
                     </td>
                 </tr>
