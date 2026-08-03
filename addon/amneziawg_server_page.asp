@@ -836,7 +836,14 @@ function saveSettings(){
 /* ---- start/stop/restart with transitional UI (no buttons during transitions) ---- */
 function srvAction(action){
     if (awgsDirty && action === 'start_awgsrvstart') { alert(T('MSG_NEED_SAVE')); return; }
-    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
+    // Start/stop/restart carry NO settings, so clear the hidden field instead of posting a
+    // snapshot (1.5.13 — the client page's awgAction was fixed the same way in 1.4.0).
+    // `custom_settings` is the object captured when THIS page loaded; re-posting it makes the
+    // firmware write the whole thing back, silently reverting anything changed since — by the
+    // client page in another tab, or by the CLI. Both roles share one custom_settings file, so
+    // pressing «Запустить сервер» could undo a client profile switch. Empty = write nothing.
+    var ac = document.getElementById('amng_custom');
+    if (ac) ac.value = '';
     document.form.action_script.value = action;
     document.form.submit();
     var kind = action.indexOf('stop') !== -1 ? 'stop' : (action.indexOf('restart') !== -1 ? 'restart' : 'start');
@@ -1018,7 +1025,10 @@ function stopXray(btn){
     if (!confirm(T('XRAY_STOP_CONFIRM'))) return;
     awgsXrayStopping = true;
     if (btn) { btn.disabled = true; btn.value = T('XRAY_STOPPING'); }
-    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
+    // Same as srvAction: a plain action, no settings — and this one is reachable straight from
+    // the banner we tell the user to click, so it must not revert their settings behind them.
+    var acx = document.getElementById('amng_custom');
+    if (acx) acx.value = '';
     document.form.action_script.value = 'start_awgxraystop';
     document.form.submit();
     setTimeout(function(){ awgsXrayStopping = false; refreshStatus(); }, 6000);

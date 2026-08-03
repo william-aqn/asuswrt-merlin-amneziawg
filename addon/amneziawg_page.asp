@@ -1566,6 +1566,9 @@ function doUpdate(version){
     // Pin an explicit version (one-shot) so the router installs exactly it — no backend
     // jsDelivr resolution, no crawl lag. Sent via custom_settings, then removed from
     // memory so a later "Apply" can't re-pin it (the backend also clears it after use).
+    // NB this path DOES carry settings (see just above), so it must post the object. It
+    // therefore still writes a page-load snapshot of everything ELSE — a known limitation of the
+    // firmware's whole-object custom_settings API; only paths with no settings intent can clear.
     if(version) custom_settings.awg_update_version = String(version);
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     if(version) delete custom_settings.awg_update_version;
@@ -2929,6 +2932,9 @@ function updateGeoLists(){
     awgSetGeoBusy(true);
     // Carry the current "download via VPN" choice even without a prior Apply.
     syncViaVpnToggles();
+    // NB this path DOES carry settings (see just above), so it must post the object. It
+    // therefore still writes a page-load snapshot of everything ELSE — a known limitation of the
+    // firmware's whole-object custom_settings API; only paths with no settings intent can clear.
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = "start_awgupdategeo";
     awgSubmitForm();
@@ -3219,8 +3225,12 @@ function awgRunDiag(btn){
     if(btn){ if(btn._dlbl == null) btn._dlbl = btn.value; btn.value = T('DIAG_COLLECTING'); btn.disabled = true; }
     awgDiagText = '';
     awgOpenDiag(T('DIAG_COLLECTING_WAIT'));
-    // Carry current settings (no-op save) and fire the diag event (does NOT reset the log).
-    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
+    // Diag carries NO settings, so clear the hidden field rather than re-posting the page-load
+    // snapshot (1.5.13). It used to do a "no-op save", which is not a no-op at all: the firmware
+    // writes the whole object back, reverting anything changed since this page loaded (the
+    // server page in another tab, a CLI profile switch). Same reasoning as awgAction above.
+    var acd = document.getElementById('amng_custom');
+    if(acd) acd.value = '';
     document.form.action_script.value = 'start_awgdiag';
     awgSubmitForm();
     var t0 = Date.now();
@@ -3433,6 +3443,9 @@ function awgAnalyzeToggle(){
 }
 function awgAnalyzeStart(){
     if(!awgAnalyzeIp) return;
+    // NB this path DOES carry settings (see just above), so it must post the object. It
+    // therefore still writes a page-load snapshot of everything ELSE — a known limitation of the
+    // firmware's whole-object custom_settings API; only paths with no settings intent can clear.
     custom_settings.awg_analyze_device = awgAnalyzeIp;
     document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
     document.form.action_script.value = 'start_awganalyzestart';
@@ -3447,7 +3460,10 @@ function awgAnalyzeStart(){
     setTimeout(awgAnalyzePoll, 700);
 }
 function awgAnalyzeStop(){
-    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
+    // Stop carries no settings (unlike Start, which pins awg_analyze_device) — clear, don't
+    // re-post the page-load snapshot. See awgAction / awgRunDiag (1.5.13).
+    var aca = document.getElementById('amng_custom');
+    if(aca) aca.value = '';
     document.form.action_script.value = 'start_awganalyzestop';
     awgSubmitForm();
     awgAnalyzeActive = false;

@@ -60,6 +60,11 @@ AWG_GO="$AWG_GO_SRV"
 # Last successfully-installed listen port — teardown drains THIS one, so a port change in
 # the UI can't orphan the old INPUT accept rule. tmpfs: reboot clears rules and file alike.
 AWGS_PORT_STATE="/tmp/.awgs_port"
+# Last successfully-installed tunnel subnet — the NAT and per-peer bypass rules are drained by
+# THIS value as well as the current setting, so changing the subnet in the UI cannot orphan them
+# (the change path stops the server only after the setting already holds the new value). tmpfs:
+# a reboot clears iptables and this file alike.
+AWGS_SUBNET_STATE="/tmp/.awgs_subnet"
 
 # =============================================================
 # Settings & config
@@ -375,6 +380,9 @@ srv_setup_firewall(){
     iptables -C INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null \
         || iptables -I INPUT -p udp --dport "$port" -j ACCEPT
     echo "$port" > "$AWGS_PORT_STATE" 2>/dev/null
+    # Record the subnet the NAT/bypass rules below are actually installed for, so teardown can
+    # drain them after the setting has already moved on (see srv_cleanup_firewall).
+    echo "$subnet" > "$AWGS_SUBNET_STATE" 2>/dev/null
 
     # Peer traffic through the router (LAN access + forwarding toward WAN/awg0).
     iptables -C INPUT -i "$IFACE" -j ACCEPT 2>/dev/null || iptables -I INPUT -i "$IFACE" -j ACCEPT
@@ -427,12 +435,22 @@ srv_cleanup_firewall(){
     ipt_drain -t mangle -D FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 
-    subnet=$(srv_subnet)
+    # Same treatment as the port above, and for the same reason (1.5.13): drain BOTH the subnet
+    # that was actually INSTALLED and the current setting. Reading only `srv_subnet` orphaned
+    # every NAT rule whenever the tunnel subnet changed, because the change path is
+    # do_srv_apply -> do_srv_restart -> do_srv_stop, and by then the setting already holds the
+    # NEW subnet while the live rules still carry the OLD one. The orphans survived stop AND
+    # uninstall (prerm runs this same cleanup), leaving `-s <old-subnet> … -j MASQUERADE` in nat
+    # POSTROUTING forever.
     wan_if=$(srv_wan_iface)
-    [ -n "$wan_if" ] && ipt_drain -t nat -D POSTROUTING -s "$subnet" -o "$wan_if" -j MASQUERADE
-    ipt_drain -t nat -D POSTROUTING -s "$subnet" -o awg0 -j MASQUERADE
-    ipt_drain -t nat -D POSTROUTING -s "$subnet" -o br0 -j MASQUERADE
+    for subnet in "$(cat "$AWGS_SUBNET_STATE" 2>/dev/null)" "$(srv_subnet)"; do
+        [ -n "$subnet" ] || continue
+        [ -n "$wan_if" ] && ipt_drain -t nat -D POSTROUTING -s "$subnet" -o "$wan_if" -j MASQUERADE
+        ipt_drain -t nat -D POSTROUTING -s "$subnet" -o awg0 -j MASQUERADE
+        ipt_drain -t nat -D POSTROUTING -s "$subnet" -o br0 -j MASQUERADE
+    done
     srv_cleanup_xray_bypass
+    rm -f "$AWGS_SUBNET_STATE" 2>/dev/null
 }
 
 # =============================================================
@@ -480,9 +498,11 @@ srv_xray_bypass_ignored(){
 # Scoped to OUR tunnel subnet by an exact literal prefix so we can never enumerate/remove a
 # foreign ACCEPT. Full-table read via srv_mangle_dump (firmware binary — survives the Entware
 # SKIPLOG-truncation), though our rules sit at position 1, before the truncation point anyway.
+# Optional $1 = the subnet to scope to (e.g. the recorded one); defaults to the current setting.
 srv_bypass_rule_ips(){
     local base
-    base=$(srv_subnet); base=${base%.0/24}
+    base="${1:-$(srv_subnet)}"; base=${base%.0/24}
+    [ -n "$base" ] || return 0
     srv_mangle_dump | awk -v b="$base" '
         $1=="-A" && $2=="PREROUTING" && $3=="-s" && $6=="ACCEPT" && index($4, b ".")==1 && $4 ~ /\/32$/ {
             sub(/\/32$/,"",$4); print $4 }'
@@ -514,10 +534,18 @@ srv_setup_xray_bypass(){
 }
 
 # Remove every bypass rule we own (teardown on stop; also prunes any stragglers).
+# Both the RECORDED subnet and the current one (1.5.13): the enumerator is prefix-scoped, so
+# after a subnet change the rules installed under the old prefix were invisible here and stayed
+# at mangle PREROUTING position 1 forever — surviving stop and uninstall. A stale position-1
+# ACCEPT is worse than a stale NAT rule: the address may since belong to a LAN device or a new
+# peer, and ACCEPT terminates the chain before anything gets marked.
 srv_cleanup_xray_bypass(){
-    local ip
-    srv_bypass_rule_ips | while read -r ip; do
-        ipt_drain -t mangle -D PREROUTING -s "$ip" -j ACCEPT
+    local ip sn
+    for sn in "$(cat "$AWGS_SUBNET_STATE" 2>/dev/null)" "$(srv_subnet)"; do
+        [ -n "$sn" ] || continue
+        srv_bypass_rule_ips "$sn" | while read -r ip; do
+            ipt_drain -t mangle -D PREROUTING -s "$ip" -j ACCEPT
+        done
     done
 }
 
