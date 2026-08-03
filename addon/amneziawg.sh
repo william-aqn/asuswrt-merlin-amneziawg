@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.9"
+AWG_VERSION="1.5.10"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -1671,7 +1671,7 @@ do_ctf_disable(){
 # (Per-device `from <ip>` rules of Merlin's VPN Director sit at prio >10000 — numerically
 # BELOW ours — and are fine; only from-all rules above us are the hazard, so only they alarm.)
 fw_vpn_client_state(){
-    local line prio tbl dflt en="" u v
+    local line prio tbl dflt en="" u
     while read -r line; do
         prio=${line%%:*}
         prio=$(echo "$prio" | tr -d ' ')
@@ -1699,9 +1699,13 @@ EOF
     # An enabled profile WITH its interface up routes via VPN Director rules (prio >10000 —
     # numerically below ours, no conflict) and stays silent here; if anything of its ever
     # captures for real, the from-all scan above turns red on its own.
-    for u in 1 2 3 4 5; do
-        v=$(nvram get "wgc${u}_enable" 2>/dev/null)
-        [ "$v" = "1" ] || continue
+    # ONE `nvram show` instead of five `nvram get` calls. Every nvram invocation is a chance to
+    # wedge forever on the firmware's envrams IPC (see reap_stale_status — three of the five
+    # wedged runs found in the field were exactly this loop), and this runs on the */1 status
+    # cron: five chances per minute became one. Semantics are unchanged — still NUMBERED keys
+    # only, so the bare `wgc_enable` VPN-Fusion edit-buffer leftover still cannot false-alarm,
+    # and a key that does not exist at all simply never matches (it used to read back empty).
+    for u in $(nvram show 2>/dev/null | sed -n 's/^wgc\([1-5]\)_enable=1$/\1/p'); do
         iface_exists "wgc${u}" && continue
         en="$en wgc${u}"
     done
@@ -3994,6 +3998,15 @@ do_diag(){
     if [ -n "$_crons" ]; then echo "$_crons" | sed 's/^/  /'; else echo "  (NONE — watchdog/status cron not scheduled!)"; fi
     echo "watchdog last tick   : $([ -f /tmp/.awg_wd_beat ] && cat /tmp/.awg_wd_beat || echo '(never — cron not firing, or pre-1.2.31)')"
     echo "watchdog fail state  : $([ -f /tmp/.awg_wd_state ] && tr '\n' ' ' < /tmp/.awg_wd_state || echo none)"
+    # A non-empty list means the */1 status cron is being wedged by the firmware's nvram IPC
+    # (see reap_stale_status). The next status tick reaps them, so a count here that keeps
+    # growing means the reaper itself is not running — check the cron list above first.
+    _stale=$(stale_status_pids)
+    if [ -n "$_stale" ]; then
+        echo "stale status runs    : $(echo $_stale | wc -w) — pids$_stale (wedged 'nvram get'; reaped on the next status tick)"
+    else
+        echo "stale status runs    : none"
+    fi
     echo "locks (a DEAD holder = operation crashed mid-flight):"
     for _L in "$LOCKDIR" "$GEOLOCK" /tmp/.awg_dnsreload; do
         if [ -d "$_L" ]; then
@@ -5044,6 +5057,81 @@ do_restart(){
     update_status
     wait_for_pid_exit amneziawg-go 10
     do_start
+}
+
+# --- Stale `status` reaper ---------------------------------------------------------------
+# `nvram get` can block FOREVER. It waits on a reply from the firmware's envrams daemon over a
+# socket and has NO timeout, so when that reply is lost the caller sits in the kernel
+# (__skb_wait_for_more_packets) until it is killed. Field-found 2026-08-03 on a GT-AX6000 with
+# 17 days uptime: FIVE `status` runs wedged 7, 9.6, 12.9, 16.8 and 17.0 days, each on
+# `nvram get wgc<N>_enable` (fw_vpn_client_state) or `nvram get preferred_lang` (update_status).
+# Every event leaks THREE processes — the cron wrapper, the script, and the nvram child — and
+# nothing ever cleaned them up: `status` deliberately takes no lock (see the cru comment in
+# setup_firewall), so nothing else stalls and the pile is invisible until someone reads `ps`.
+# Rate on that box was ~1 hang per 30k nvram calls, i.e. one every few days — harmless per
+# event, unbounded across a long uptime, and only a reboot cleared it.
+# A healthy status run finishes in well under a second, so anything older than STATUS_STALE_S
+# is wedged by definition. The reaper is deliberately FORK-FREE (`read` builtin + parameter
+# expansion, no tr/awk/ps per /proc entry) because it runs on the */1 cron.
+STATUS_STALE_S=600
+
+# Echo the pids of status runs older than STATUS_STALE_S. Used by the reaper and by diag.
+stale_status_pids(){
+    local up d p c sline st age out=""
+    { read -r up < /proc/uptime; } 2>/dev/null || return 0
+    up=${up%%.*}
+    case "$up" in ''|*[!0-9]*) return 0 ;; esac
+    for d in /proc/[0-9]*; do
+        p=${d#/proc/}
+        [ "$p" = "$$" ] && continue
+        # The redirect is wrapped so a process that exits between the glob and the read cannot
+        # print "can't open ..." — this runs every minute and its stderr is a shared log.
+        # NB gate on the VARIABLE, never on read's exit status: /proc/<pid>/cmdline has no
+        # trailing newline, so `read` returns 1 even when it filled the variable perfectly.
+        # `read` drops the NUL separators, so argv arrives concatenated ("…/amneziawg.shstatus")
+        # — the glob still matches, and so does the cron wrapper's `sh -c '…/amneziawg.sh' status`.
+        c=""
+        { read -r c < "$d/cmdline"; } 2>/dev/null
+        [ -n "$c" ] || continue
+        case "$c" in *amneziawg.sh*status*) ;; *) continue ;; esac
+        sline=""
+        { read -r sline < "$d/stat"; } 2>/dev/null
+        [ -n "$sline" ] || continue
+        # `set -f` ONLY around the split: it must NOT be on for the `for` glob above, and the
+        # positional params are already assigned by the time globbing is restored.
+        set -f; set -- $sline; set +f
+        [ $# -ge 22 ] || continue
+        shift 21                # field 22 = starttime, in clock ticks (USER_HZ = 100)
+        st=$1
+        case "$st" in ''|*[!0-9]*) continue ;; esac
+        age=$(( up - st / 100 ))
+        [ "$age" -gt "$STATUS_STALE_S" ] && out="$out $p"
+    done
+    echo $out
+}
+
+reap_stale_status(){
+    local victims kids="" d p sline v n
+    victims=$(stale_status_pids)
+    [ -n "$victims" ] || return 0
+    for d in /proc/[0-9]*; do
+        p=${d#/proc/}
+        sline=""
+        { read -r sline < "$d/stat"; } 2>/dev/null
+        [ -n "$sline" ] || continue
+        set -f; set -- $sline; set +f
+        [ $# -ge 4 ] || continue    # pid (comm) state ppid — comm is `sh`/`nvram`, never spaced
+        for v in $victims; do
+            [ "$4" = "$v" ] && { kids="$kids $p"; break; }
+        done
+    done
+    # Children FIRST: killing only the shells would free the wedged `nvram get` to write into a
+    # closed pipe, and killing only the nvram child would let the shell resume and publish a
+    # status file assembled from data that is DAYS old.
+    kill -9 $kids 2>/dev/null
+    kill -9 $victims 2>/dev/null
+    n=$(echo $victims $kids | wc -w)
+    log_msg "Reaped $n stale 'status' process(es) — a firmware 'nvram get' had wedged them (envrams IPC has no timeout)"
 }
 
 # --- Status JSON for web UI ---
@@ -6794,7 +6882,9 @@ case "$1" in
     stop)           do_stop user ;;
     stop_auto)      do_stop "" deadman ;;   # internal: auto-rollback stop (deadman); keeps watchdog cron
     restart)        do_restart ;;
-    status)         update_status ;;
+    # Reap before refreshing: this is the ONLY path that runs every minute, so it is where a
+    # wedged predecessor gets noticed. See reap_stale_status for what wedges and why.
+    status)         reap_stale_status; update_status ;;
     diag|diagnostics) do_diag ;;
     update_geo)     update_geo_lists; do_firewall_restart; update_status ;;
     check_update)   check_update ;;
