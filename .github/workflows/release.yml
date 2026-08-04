@@ -283,6 +283,7 @@ jobs:
           # build-ipk.sh calls gtar (GNU tar); Ubuntu's tar is GNU tar
           sudo ln -sf "$(command -v tar)" /usr/local/bin/gtar
           ./build-ipk.sh
+          ./.github/scripts/check-ipk-owners.sh output/*.ipk
           ls -lh output/*.ipk
 
       - name: Upload artifacts

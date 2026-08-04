@@ -140,7 +140,7 @@ PRERMEOF
     : > "$CONTROL_DIR/conffiles"
 
     cd "$CONTROL_DIR"
-    gtar czf "$WORK_DIR/control.tar.gz" --format=gnu ./control ./postinst ./prerm ./conffiles
+    gtar czf "$WORK_DIR/control.tar.gz" --format=gnu --owner=0 --group=0 --numeric-owner ./control ./postinst ./prerm ./conffiles
     cd - > /dev/null
 
     # --- data tarball ---
@@ -213,13 +213,13 @@ INITEOF
     chmod 755 "$DATA_DIR/opt/etc/init.d/S99amneziawg"
 
     cd "$DATA_DIR"
-    gtar czf "$WORK_DIR/data.tar.gz" --format=gnu ./opt ./jffs
+    gtar czf "$WORK_DIR/data.tar.gz" --format=gnu --owner=0 --group=0 --numeric-owner ./opt ./jffs
     cd - > /dev/null
 
     # --- Assemble .ipk (tar.gz format — Entware opkg uses tar.gz, not ar) ---
     cd "$WORK_DIR"
     mkdir -p "$SCRIPT_DIR/output"
-    gtar czf "$SCRIPT_DIR/output/$ipk_file" --format=gnu ./debian-binary ./data.tar.gz ./control.tar.gz
+    gtar czf "$SCRIPT_DIR/output/$ipk_file" --format=gnu --owner=0 --group=0 --numeric-owner ./debian-binary ./data.tar.gz ./control.tar.gz
     cd "$SCRIPT_DIR"
 
     rm -rf "$WORK_DIR"
