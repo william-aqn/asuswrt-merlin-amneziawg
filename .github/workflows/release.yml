@@ -80,6 +80,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Test base64 provider fallback and atomic decode
+        run: tests/test-base64-provider.sh
+
       - name: Set up QEMU (ARM emulation for the static-musl awg build)
         uses: docker/setup-qemu-action@v3
 
