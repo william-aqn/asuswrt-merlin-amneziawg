@@ -134,10 +134,10 @@ opkg install /tmp/amneziawg_1.0.0-1_aarch64-3.10.ipk
 
 Проект полностью **userspace**: демон `amneziawg-go` + утилита `awg`, без кастомного модуля ядра (нужен только штатный `tun`). Для чистой установки проще всего собрать `.ipk` (`./build-ipk.sh`) и поставить его через `opkg` (см. раздел «Из .ipk пакета») — пакет сам разложит бинарники в `/opt/amneziawg`, аддон в `/jffs/addons/amneziawg`, создаст init-скрипт `S99amneziawg` и зарегистрирует страницу.
 
-Для быстрого обновления **только аддона** (бэкенд-скрипт и веб-страница) без пересборки бинарников — скопируйте файлы прямо в `/jffs/addons/amneziawg/` и перезапустите:
+Для быстрого обновления **только аддона** (бэкенд-скрипт и веб-страница) без пересборки бинарников сначала убедитесь, что установлена объявленная пакетом зависимость декодера (`opkg install coreutils-base64`), затем скопируйте файлы прямо в `/jffs/addons/amneziawg/` и перезапустите:
 
 ```shell
-scp addon/amneziawg.sh addon/amneziawg_page.asp addon/amneziawg_widget.js \
+scp addon/awg_base64.sh addon/amneziawg.sh addon/amneziawg_page.asp addon/amneziawg_widget.js \
     addon/amneziawg_server.sh addon/amneziawg_server_page.asp addon/awg_qr.js \
     admin@<ip-роутера>:/jffs/addons/amneziawg/
 ssh admin@<ip-роутера>
@@ -393,6 +393,7 @@ opkg remove amneziawg
 | **amneziawg-go** | Userspace WireGuard-демон с расширениями AmneziaWG (клиентский туннель `awg0`) |
 | **awgs-go** | Тот же демон под отдельным именем процесса — серверный туннель `awgs0` (жёсткая ссылка, чтобы жизненные циклы ролей не пересекались) |
 | **awg** | CLI-утилита для управления туннелями |
+| **awg_base64.sh** | Общий fail-closed декодер настроек для клиентского и серверного backend |
 | **amneziawg.sh** | Backend клиента: жизненный цикл, firewall, маршрутизация, гео-списки, перехват DNS; общая библиотека хелперов для обеих ролей |
 | **amneziawg_server.sh** | Backend сервера: пиры, firewall входящих, DNS для пиров, per-peer политика (использует хелперы `amneziawg.sh`) |
 | **amneziawg_page.asp** | Веб-интерфейс клиента (**VPN > AmneziaWG**) |

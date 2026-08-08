@@ -158,6 +158,42 @@ if [ "$AWG_PATH_SANE" = 0 ]; then
     fi
 fi
 
+# Shared by this client backend and amneziawg_server.sh (which sources this file
+# in library mode). Every action that can consume decoded settings fails before
+# runtime initialization if the helper/provider is unavailable. Keep a narrow
+# recovery/read-only lane usable after /opt loss or a partial package update so
+# operators can still inspect or stop a running tunnel and uninstall cleanly.
+awg_base64_action_required(){
+    case "$1" in
+        stop|stop_auto|status|diag|diagnostics|uninstall|analyze_stop|check_update|ctf_status)
+            return 1
+            ;;
+        service_event)
+            case "$3" in
+                awgstop|awgdiag|awganalyzestop|awgsrvstop|awgsrvdiag|awgsrvstatus) return 1 ;;
+            esac
+            ;;
+    esac
+    return 0
+}
+
+AWG_BASE64_REQUIRED=0
+awg_base64_action_required "$@" && AWG_BASE64_REQUIRED=1
+if [ "$AWG_BASE64_REQUIRED" = 1 ]; then
+    if [ ! -r "$ADDON_DIR/awg_base64.sh" ]; then
+        logger -t "amneziawg" "ERROR: $ADDON_DIR/awg_base64.sh missing — reinstall the package"
+        exit 1
+    fi
+    . "$ADDON_DIR/awg_base64.sh" || {
+        logger -t "amneziawg" "ERROR: cannot load $ADDON_DIR/awg_base64.sh — reinstall the package"
+        exit 1
+    }
+    if ! awg_base64_provider_resolve; then
+        logger -t "amneziawg" "ERROR: no working base64 decoder — install/repair coreutils-base64"
+        exit 1
+    fi
+fi
+
 # Resolve a WORKING `ipset` once, then route every call through a wrapper. The addon runs
 # without Entware's /opt/etc/profile, so the Entware ipset in /opt/sbin loads the firmware's
 # older /usr/lib/libipset.so.13 and dies at dynamic-link time with "version `LIBIPSET_x.y'
@@ -566,8 +602,8 @@ geo_union_geosite(){ local id; for id in $(geo_ids); do get_setting "$(geo_key "
 geo_union_urls(){
     local id
     for id in $(geo_ids); do
-        get_setting "$(geo_key "$id" custom_urls)" | base64 -d 2>/dev/null; printf '\n'
-        get_setting "$(geo_key "$id" exc_urls)" | base64 -d 2>/dev/null; printf '\n'
+        get_setting "$(geo_key "$id" custom_urls)" | awg_base64_decode 2>/dev/null; printf '\n'
+        get_setting "$(geo_key "$id" exc_urls)" | awg_base64_decode 2>/dev/null; printf '\n'
     done | tr ' \t\r' '\n\n\n' | grep -E '^https?://' | sort -u
 }
 # sha256[:16] keys of policy <id>'s URLs for channel <kind> (inc=custom_urls, exc=exc_urls), one
@@ -575,7 +611,7 @@ geo_union_urls(){
 policy_url_keys(){
     local id="$1" kind="${2:-inc}" key u
     [ "$kind" = exc ] && key=exc_urls || key=custom_urls
-    get_setting "$(geo_key "$id" "$key")" | base64 -d 2>/dev/null | tr ' \t\r' '\n\n\n' | grep -E '^https?://' | while read -r u; do
+    get_setting "$(geo_key "$id" "$key")" | awg_base64_decode 2>/dev/null | tr ' \t\r' '\n\n\n' | grep -E '^https?://' | while read -r u; do
         echo "$u" | sha256sum | awk '{print $1}' | cut -c1-16
     done
 }
@@ -1392,7 +1428,8 @@ apply_custom_geo(){
         done
         seen="$seen$name "
         tmp="$GEO_DIR/.uc_${pfx}${name}.tmp"
-        echo "$b64" | base64 -d 2>/dev/null > "$tmp"
+        rm -f "$tmp"
+        printf '%s' "$b64" | awg_base64_decode_to_file "$tmp" 2>/dev/null
         [ -s "$tmp" ] && classify_user_list "$tmp" "$GEO_DIR/domains/${pfx}${name}.txt" "$GEO_DIR/geoip/${pfx}${name}.cidr"
         rm -f "$tmp"
     done
@@ -3708,7 +3745,10 @@ generate_config(){
     done
     if [ -n "$initdata" ]; then
         local decoded
-        decoded=$(echo "$initdata" | base64 -d 2>/dev/null)
+        if ! decoded=$(printf '%s' "$initdata" | awg_base64_decode 2>/dev/null); then
+            log_msg "ERROR: I1-I5 initdata is not valid base64"
+            return 1
+        fi
         i1=$(echo "$decoded" | awk '/^I1 /{sub(/^[^=]+=[ ]?/,"");print;exit}')
         i2=$(echo "$decoded" | awk '/^I2 /{sub(/^[^=]+=[ ]?/,"");print;exit}')
         i3=$(echo "$decoded" | awk '/^I3 /{sub(/^[^=]+=[ ]?/,"");print;exit}')
@@ -6330,6 +6370,17 @@ finalize_ipk_install(){
         update_status; return 1
     fi
 
+    # A package update must not tear down a working tunnel unless this process
+    # can already decode every runtime setting used by the replacement. The
+    # target package also declares coreutils-base64, but this preflight keeps a
+    # missing/broken provider on the safe side of the commit point below.
+    if ! awg_base64_provider_resolve force; then
+        log_msg "Update: ERROR no working base64 decoder (nothing changed; VPN left running)."
+        log_msg "  Reinstall/repair the coreutils-base64 dependency, then try again."
+        rm -f "$tmp"
+        update_status; return 1
+    fi
+
     # COMMIT POINT: from here we WILL stop the VPN and run opkg. Block auto-start NOW — before
     # the first teardown — so the watchdog (*/5 cron) can't catch the stopped awg0 and race a
     # restart against the installer (do_watchdog early-returns on this flag; do_start blocks the
@@ -6490,13 +6541,12 @@ do_manual_install(){
         rm -f "$b64"; update_status; return 1
     fi
 
-    # Decode base64 text -> binary .ipk (busybox base64 -d, openssl fallback).
-    if ! base64 -d "$b64" > "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
-        if ! openssl base64 -d -A -in "$b64" -out "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
-            log_msg "Manual install: ERROR base64 decode failed"
-            echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"code\":\"decode_failed\"}" > "$AWG_UPLOAD_STATUS"
-            rm -f "$b64" "$tmp"; update_status; return 1
-        fi
+    # Decode through the validated shared provider. The helper stages on /tmp
+    # and publishes atomically, so malformed input can never leave a partial IPK.
+    if ! awg_base64_decode_file "$b64" "$tmp" || [ ! -s "$tmp" ]; then
+        log_msg "Manual install: ERROR base64 decode failed"
+        echo "{\"status\":\"install_err\",\"tok\":\"$tok\",\"code\":\"decode_failed\"}" > "$AWG_UPLOAD_STATUS"
+        rm -f "$b64" "$tmp"; update_status; return 1
     fi
     rm -f "$b64"
 
@@ -6792,7 +6842,10 @@ do_service_event(){
             elif [ "$seq" -eq "$exp" ]; then
                 # Guard the append: /tmp is a small tmpfs, and a silent short-write here
                 # would only surface much later as a confusing size mismatch. Fail fast.
-                if ! printf '%s' "$chunk" >> "$AWG_UPLOAD_B64"; then
+                # One record per UI chunk keeps the shared decoder's streaming
+                # validator bounded (~50 KiB/record) even for a multi-MiB IPK.
+                # Base64 decoders ignore this allowed newline whitespace.
+                if ! printf '%s\n' "$chunk" >> "$AWG_UPLOAD_B64"; then
                     echo "{\"status\":\"err\",\"tok\":\"$tok\",\"msg\":\"write failed (disk full?)\"}" > "$AWG_UPLOAD_STATUS"
                     return
                 fi
