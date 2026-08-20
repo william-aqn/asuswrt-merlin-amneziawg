@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.18"
+AWG_VERSION="1.5.19"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -4039,6 +4039,9 @@ do_diag(){
     echo "services-start hook  :"
     _ss_hook=$(grep -n "amneziawg" /jffs/scripts/services-start 2>/dev/null)
     if [ -n "$_ss_hook" ]; then echo "$_ss_hook" | sed 's/^/  /'; else echo "  (MISSING — neither the page mount nor the boot fallback are armed!)"; fi
+    echo "firewall-start hook  :"
+    _fw_hook=$(grep -n "amneziawg" /jffs/scripts/firewall-start 2>/dev/null)
+    if [ -n "$_fw_hook" ]; then echo "$_fw_hook" | sed 's/^/  /'; else echo "  (MISSING — after a firmware firewall rebuild the rules heal only on the next watchdog tick, <=5 min)"; fi
     echo "Entware start/skip (syslog):"
     _ent_log=$(grep -i "Entware services" /tmp/syslog.log-1 /tmp/syslog.log 2>/dev/null | tail -n 4)
     if [ -n "$_ent_log" ]; then echo "$_ent_log" | sed 's/^/  /'; else echo "  (no 'Starting/Not starting Entware services' lines in syslog)"; fi
@@ -6019,9 +6022,12 @@ repin_endpoint_route(){
 
 # --- Watchdog (called by cron every 5 min) ---
 
-# One-shot probe of the two things a firmware firewall restart actually clobbers while the
-# tunnel stays up: our mangle PREROUTING hook (the packet marking) and the table-$RT_TABLE
-# policy route. THREE-way verdict, because `iptables -C` exit codes are NOT binary:
+# One-shot probe of the two things a firmware firewall restart clobbers ON SOME BUILDS while
+# the tunnel stays up: our mangle PREROUTING hook (the packet marking) and the table-$RT_TABLE
+# policy route. NB this is NOT the whole wipe surface: 3006.102.x rebuilds were field-caught
+# SPARING both of these while wiping the filter/nat/mangle-FORWARD base rules instead — that
+# class is covered by heal_base_rules below, not by this probe.
+# THREE-way verdict, because `iptables -C` exit codes are NOT binary:
 #   0 = both present; 1 = something is genuinely ABSENT (kernel table reads are atomic, so
 #       rc=1 is trustworthy; it also covers "chain gone" — same thing for us);
 #   2 = the PROBE ITSELF failed — table state UNKNOWN. iptables rc>=2 is lock/exec trouble,
@@ -6043,6 +6049,84 @@ awg_marks_state(){
     _rc=$?
     if [ $_rc -ge 2 ]; then AWG_MARKS_ERR="route probe rc=$_rc"; return 2; fi
     if [ $_rc -eq 1 ]; then AWG_MARKS_MISSING="policy route in table $RT_TABLE"; return 1; fi
+    return 0
+}
+
+# One rule for heal_base_rules: -C probe with the 3-way rc discipline (rc=1 is the only
+# trustworthy "absent"; rc>=2 is xtables-lock/exec noise — NEVER add on it, the dup would
+# outlive stop), add on confirmed absence only, record what happened for the caller's
+# journal line. One re-probe on a sick read, one retry on the add (both take the same lock).
+# Usage: _heal_base_rule <label> <table> <-I|-A> <chain> <rule tokens…>
+_heal_base_rule(){
+    local _lbl="$1" _tbl="$2" _how="$3" _chain="$4" _rc
+    shift 4
+    iptables -t "$_tbl" -C "$_chain" "$@" 2>/dev/null; _rc=$?
+    if [ $_rc -ge 2 ]; then
+        sleep 1
+        iptables -t "$_tbl" -C "$_chain" "$@" 2>/dev/null; _rc=$?
+    fi
+    case $_rc in
+        0) return 0 ;;
+        1) AWG_BASE_MISSING="${AWG_BASE_MISSING}${AWG_BASE_MISSING:+, }${_lbl}"
+           iptables -t "$_tbl" "$_how" "$_chain" "$@" 2>/dev/null && return 0
+           sleep 1
+           iptables -t "$_tbl" "$_how" "$_chain" "$@" 2>/dev/null ;;
+        *) AWG_BASE_SICK=1; return 1 ;;
+    esac
+}
+
+# The client-side twin of the server watchdog's "firewall rules missing (firewall
+# restarted?)" reconcile. A firmware firewall rebuild does NOT reliably clobber what
+# awg_marks_state watches: on 3006.102.x (field: RT-BE88U @1.5.18 — the firmware's own
+# WireGuard client wgc1 starting 1 s after our boot start finished) the rebuild wiped the
+# filter accepts, both TCPMSS clamps AND the nat MASQUERADE while SPARING the mangle
+# PREROUTING hook and the table-300 routes — the only two things the firewall-start fast
+# path and the watchdog checked. Every marked LAN packet then left awg0 unNATed and was
+# silently dropped by the provider (cryptokey routing), with a fresh handshake and growing
+# TX the whole time (142 KiB RX vs 5.8 MiB TX after 3 h) — "the whole internet hung" for
+# every geo destination until a manual restart, and the journal stayed empty because the
+# watchdog probe pings FROM the tunnel IP (needs no NAT) and the marks probe saw its hook.
+# So: re-assert the base rules whenever the marks look intact. All adds mirror do_start's
+# base block exactly; a wipe that actually healed is logged LOUDLY + recorded as an incident.
+# Arg 1 names the caller for the journal/incident line. Returns 1 only on a sick probe pass
+# (nothing asserted — the next tick/hook re-checks).
+heal_base_rules(){
+    local _ctx="${1:-reconcile}"
+    is_running || return 0
+    # An operation in flight (live lock holder — start/stop/apply) asserts or removes these
+    # rules itself; don't interleave writes with it. (A dup from that race would be benign —
+    # identical rules, drained at stop — but it's cheaper to not create it. A DEAD holder's
+    # lock does not stand down the heal: the crashed op may be exactly why rules are missing.)
+    if [ -d "$LOCKDIR" ]; then
+        local _hp
+        _hp=$(cat "$LOCKDIR/pid" 2>/dev/null)
+        [ -n "$_hp" ] && kill -0 "$_hp" 2>/dev/null && return 0
+    fi
+    AWG_BASE_MISSING=""; AWG_BASE_SICK=""
+    _heal_base_rule "INPUT accept"       filter -I INPUT   -i "$IFACE" -j ACCEPT
+    _heal_base_rule "FORWARD accept in"  filter -I FORWARD -i "$IFACE" -j ACCEPT
+    _heal_base_rule "FORWARD accept out" filter -I FORWARD -o "$IFACE" -j ACCEPT
+    _heal_base_rule "TCPMSS clamp out"   mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    _heal_base_rule "TCPMSS clamp in"    mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    _heal_base_rule "MASQUERADE"         nat    -I POSTROUTING -o "$IFACE" -j MASQUERADE
+    if [ -n "$AWG_BASE_MISSING" ]; then
+        log_msg "Base firewall rules were wiped (firmware firewall restart?) — re-added: $AWG_BASE_MISSING [$_ctx]"
+        awg_incident "base rules wiped ($AWG_BASE_MISSING) — re-added by $_ctx"
+        # The same wipe class takes the ip6tables leak-block with it; setup_ipv6_block is
+        # -C-guarded itself. Called ONLY here (not every tick): its ipv6_service nvram read
+        # must stay off the periodic path — `nvram get` can wedge forever (the 1.5.10 lesson),
+        # and a v6-only wipe with all six v4 rules intact does not occur.
+        setup_ipv6_block
+        case "$AWG_BASE_MISSING" in *MASQUERADE*)
+            # Cut flows conntrack'd while MASQUERADE was missing: the un-NATed NAT decision is
+            # cached per-connection, so a same-tuple retrier (QUIC) would stay dead even now.
+            # Targeted (explicit VPN clients only); unlisted default-policy flows sit UNREPLIED
+            # and age out in <=30-120 s on their own.
+            flush_conntrack ;;
+        esac
+        return 0
+    fi
+    [ -n "$AWG_BASE_SICK" ] && return 1
     return 0
 }
 
@@ -6207,6 +6291,15 @@ do_watchdog(){
     elif [ -n "$_mblip" ]; then
         log_msg "WATCHDOG: transient marking-probe failure ($_mblip) — cleared on retry, firewall intact, no action"
     fi
+
+    # Base-rule reconcile — the client twin of the server watchdog's "rules missing" check,
+    # and the safety net for firewall rebuilds whose firewall-start hook didn't fire (or
+    # whose fast-path heal hit a sick probe). Intact marks above prove NOTHING about these:
+    # the 3006.102.x wipe class leaves the mangle hook + routes alone (see heal_base_rules).
+    # If the marks heal already ran the full do_firewall_restart, everything is freshly
+    # asserted and this is six no-op -C probes. Safe under an inconclusive marks probe too:
+    # each per-rule probe carries its own rc discipline (add only on a confirmed rc=1).
+    is_running && heal_base_rules "watchdog"
 
     # Xray-priority reconcile (only while the tunnel is up). xray may have started AFTER our
     # firewall was built (so non-direct devices are being grabbed by xray with no priority chain
@@ -6685,12 +6778,17 @@ do_firewall_restart(){
     # burn a needless full rebuild. Verified-present (0) skips; a sick probe retries once,
     # then falls through to the rebuild — the safe default right after a REAL firewall
     # restart, when the rules are most likely genuinely gone.
+    # Marks intact does NOT mean nothing was wiped: 3006.102.x rebuilds spare the mangle
+    # hook + routes and clobber the filter/nat base rules instead (field: RT-BE88U @1.5.18,
+    # MASQUERADE gone → geo LAN one-way-dead for 3 h while this path kept skipping). The
+    # skip therefore re-asserts the base rules inline — six -C probes when nothing is wrong,
+    # a targeted re-add (no teardown, no blackhole window) when the firmware ate them.
     if [ "$1" = "fast" ]; then
         awg_marks_state
         case $? in
-            0) return 0 ;;
+            0) heal_base_rules "firewall-start"; return 0 ;;
             2) sleep 1
-               awg_marks_state && return 0 ;;
+               awg_marks_state && { heal_base_rules "firewall-start"; return 0; } ;;
         esac
     fi
     log_msg "Firewall restart detected, re-applying routes and rules"

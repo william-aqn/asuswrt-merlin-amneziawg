@@ -463,12 +463,6 @@ A: A harmless warning, not an error. The `ipset` tool (both the firmware's `/usr
 - **DCRM** -- maintainer and fork author, [github.com/william-aqn](https://github.com/william-aqn)
 - **r0otx** -- author of the original project, [github.com/r0otx](https://github.com/r0otx)
 
-## Support the project
-
-If the project has been useful — you can support development:
-
-**USDT (TRC-20):** `TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr`
-
 ## Acknowledgements
 
 - [AmneziaWG](https://github.com/amnezia-vpn) -- the protocol and implementations

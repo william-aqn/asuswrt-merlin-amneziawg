@@ -464,12 +464,6 @@ opkg remove amneziawg
 - **DCRM** -- сопровождающий и автор форка, [github.com/william-aqn](https://github.com/william-aqn)
 - **r0otx** -- автор исходного проекта, [github.com/r0otx](https://github.com/r0otx)
 
-## Поддержать проект
-
-Если проект оказался полезен — можно поддержать разработку:
-
-**USDT (TRC-20):** `TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr`
-
 ## Благодарности
 
 - [AmneziaWG](https://github.com/amnezia-vpn) -- протокол и реализации

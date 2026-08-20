@@ -201,9 +201,6 @@ en: {
     XRAY_STOP_BTN: "Stop Xray",
     XRAY_STOPPING: "Stopping Xray…",
     XRAY_STOP_CONFIRM: "Stop Xray / XRAYUI now? This is a regular stop via XRAYUI's own command — same as the Stop button on its page. Only the active TPROXY firewall rules are removed so AmneziaWG can route peer traffic; XRAYUI's saved settings and rules are not touched. Start it again from its page (VPN → X-RAY) and it will come back with all its previous settings.",
-    DONATE_LABEL: "Support the project",
-    DONATE_COPY_TITLE: "Click to copy the address",
-    ADDR_COPIED: "Copied ✓",
     LOG_EMPTY: "(empty)",
     QR_LIB_FAIL: "Could not load the QR generator (awg_qr.js). Use the .conf download instead."
 },
@@ -306,9 +303,6 @@ ru: {
     XRAY_STOP_BTN: "Остановить Xray",
     XRAY_STOPPING: "Останавливаю Xray…",
     XRAY_STOP_CONFIRM: "Остановить Xray / XRAYUI сейчас? Это штатная остановка командой самого XRAYUI — то же, что кнопка «Стоп» на его странице. Из файрвола снимаются только действующие правила TPROXY, чтобы AmneziaWG мог маршрутизировать трафик пиров; сохранённые настройки и правила XRAYUI не затрагиваются. Включите его снова на странице VPN → X-RAY — он поднимется со всеми прежними настройками.",
-    DONATE_LABEL: "Поддержать проект",
-    DONATE_COPY_TITLE: "Нажмите, чтобы скопировать адрес",
-    ADDR_COPIED: "Скопировано ✓",
     LOG_EMPTY: "(пусто)",
     QR_LIB_FAIL: "Не удалось загрузить генератор QR (awg_qr.js). Используйте скачивание .conf."
 }
@@ -1081,13 +1075,6 @@ function stopXray(btn){
     setTimeout(function(){ awgsXrayStopping = false; refreshStatus(); }, 6000);
 }
 
-// Copy a text (USDT donate address) to the clipboard with brief inline feedback.
-function awgCopyAddr(addr, el){
-    var done = function(){ var o = el.textContent; el.textContent = T('ADDR_COPIED'); setTimeout(function(){ el.textContent = o; }, 1200); };
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(addr).then(done, done);
-    else { try { var ta = document.createElement('textarea'); ta.value = addr; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); } catch(e){} done(); }
-}
-
 function initial(){
     applyI18n();
     show_menu();
@@ -1338,13 +1325,9 @@ function initial(){
                 <div class="awg-section" data-i18n="SEC_LOG">Log</div>
                 <div id="awgs_log" class="awg-log"></div>
 
-                <!-- Footer: donate + copyright (DCRM) -->
+                <!-- Footer: copyright (DCRM) -->
                 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px 10px; font-size:11px; opacity:0.55; margin-top:8px;">
-                    <span style="margin-right:auto;">
-                        <span data-i18n="DONATE_LABEL" style="color:#ffd24a; font-weight:bold;">Support the project</span>&nbsp;&middot;&nbsp;USDT (TRC-20):
-                        <code onclick="awgCopyAddr('TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr', this);" title="Click to copy the address" data-i18n-title="DONATE_COPY_TITLE" style="cursor:pointer; padding:1px 4px; border:1px solid #555; border-radius:3px; font-size:11px;">TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr</code>
-                    </span>
-                    <span style="text-align:right;">
+                    <span style="margin-left:auto; text-align:right;">
                         <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; DCRM</a>
                     </span>
                 </div>

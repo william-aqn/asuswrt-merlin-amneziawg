@@ -849,11 +849,7 @@ en: {
     BTN_CLOSE: "Close",
     MODAL_DIAG_TITLE: "Diagnostic data",
     BTN_COPY_DIAG: "Copy diagnostic data",
-    DIAG_COPY_NOTE: "Copied together with the log, wrapped for pasting into Telegram.",
-    DONATE_LABEL: "Support the project",
-    DONATE_COPY_TITLE: "Click to copy the address",
-    DONATE_COPIED: "Copied!",
-    DONATE_COPY_FAILED: "Copy failed"
+    DIAG_COPY_NOTE: "Copied together with the log, wrapped for pasting into Telegram."
 },
 ru: {
     // ---- status / badge ----
@@ -1279,11 +1275,7 @@ ru: {
     BTN_CLOSE: "Закрыть",
     MODAL_DIAG_TITLE: "Диагностические данные",
     BTN_COPY_DIAG: "Скопировать диагностические данные",
-    DIAG_COPY_NOTE: "Копируется вместе с журналом, обёрнуто для вставки в Telegram.",
-    DONATE_LABEL: "Поддержать проект",
-    DONATE_COPY_TITLE: "Нажмите, чтобы скопировать адрес",
-    DONATE_COPIED: "Скопировано!",
-    DONATE_COPY_FAILED: "Не удалось"
+    DIAG_COPY_NOTE: "Копируется вместе с журналом, обёрнуто для вставки в Telegram."
 }
 };
 // T(key, ...args): current-lang -> en -> key. {0},{1}.. are positional args.
@@ -3224,16 +3216,6 @@ function awgCopyText(text, done){
     } else {
         awgCopyFallback(text, done);
     }
-}
-// Footer donation: click the USDT (TRC-20) address to copy it (a 34-char address is
-// awkward to select by hand). Briefly swaps the text for feedback, then restores it.
-function awgCopyAddr(addr, el){
-    awgCopyText(addr, function(ok){
-        if(!el) return;
-        if(el._addr == null) el._addr = el.textContent;
-        el.textContent = ok ? T('DONATE_COPIED') : T('DONATE_COPY_FAILED');
-        setTimeout(function(){ if(el._addr != null){ el.textContent = el._addr; el._addr = null; } }, 1200);
-    });
 }
 // Diagnostics: the "Get diagnostic data" button triggers the backend diag dump (to a SEPARATE
 // file — it does NOT touch the on-page log), waits for [DIAG_DONE], and shows the result in a
@@ -5514,11 +5496,7 @@ function initAutocompleteIp(){
                 </div>
                 <div id="awg_log" class="awg-log" data-i18n="LOG_WAITING">Waiting for data…</div>
                 <div style="display:flex; align-items:center; flex-wrap:wrap; gap:2px 10px; font-size:11px; opacity:0.55; margin-top:4px;">
-                    <span style="margin-right:auto;">
-                        <span data-i18n="DONATE_LABEL" style="color:#ffd24a; font-weight:bold;">Support the project</span>&nbsp;&middot;&nbsp;USDT (TRC-20):
-                        <code onclick="awgCopyAddr('TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr', this);" title="Click to copy the address" data-i18n-title="DONATE_COPY_TITLE" style="cursor:pointer; padding:1px 4px; border:1px solid #555; border-radius:3px; font-size:11px;">TC9MSnePyR6MBfSGU6WRCNEmCa5iyzmWUr</code>
-                    </span>
-                    <span style="text-align:right;">
+                    <span style="margin-left:auto; text-align:right;">
                         <a href="https://github.com/r0otx/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; r0otx</a>
                         &nbsp;&middot;&nbsp;
                         <a href="https://github.com/william-aqn/asuswrt-merlin-amneziawg" target="_blank" style="text-decoration:none;">&copy; DCRM</a>
