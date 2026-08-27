@@ -246,7 +246,10 @@ srv_generate_config(){
         _ic=$((_ic + 1))
     done
     if [ -n "$initdata" ]; then
-        decoded=$(echo "$initdata" | base64 -d 2>/dev/null)
+        if ! decoded=$(printf '%s' "$initdata" | awg_base64_decode 2>/dev/null); then
+            log_msg "ERROR: I1-I5 initdata is not valid base64"
+            return 1
+        fi
         i1=$(echo "$decoded" | awk '/^I1 /{sub(/^[^=]+=[ ]?/,"");print;exit}')
         i2=$(echo "$decoded" | awk '/^I2 /{sub(/^[^=]+=[ ]?/,"");print;exit}')
         i3=$(echo "$decoded" | awk '/^I3 /{sub(/^[^=]+=[ ]?/,"");print;exit}')

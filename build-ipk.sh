@@ -51,6 +51,7 @@ Package: ${PKG_NAME}
 Version: ${PKG_VERSION}
 Section: net
 Architecture: ${arch}
+Depends: coreutils-base64
 Maintainer: amneziawg-merlin
 Source: https://github.com/william-aqn/asuswrt-merlin-amneziawg
 Description: AmneziaWG VPN for Asuswrt-Merlin
@@ -153,6 +154,7 @@ PRERMEOF
     cp "$go_bin"                     "$DATA_DIR/opt/amneziawg/amneziawg-go"
     cp "$awg_bin"                    "$DATA_DIR/opt/amneziawg/awg"
     cp addon/amneziawg.sh            "$DATA_DIR/jffs/addons/amneziawg/amneziawg.sh"
+    cp addon/awg_base64.sh            "$DATA_DIR/jffs/addons/amneziawg/awg_base64.sh"
     cp addon/amneziawg_page.asp      "$DATA_DIR/jffs/addons/amneziawg/amneziawg_page.asp"
     cp addon/amneziawg_widget.js     "$DATA_DIR/jffs/addons/amneziawg/amneziawg_widget.js"
     cp addon/amneziawg_server.sh     "$DATA_DIR/jffs/addons/amneziawg/amneziawg_server.sh"
@@ -162,6 +164,7 @@ PRERMEOF
     chmod 755 "$DATA_DIR/opt/amneziawg/amneziawg-go"
     chmod 755 "$DATA_DIR/opt/amneziawg/awg"
     chmod 755 "$DATA_DIR/jffs/addons/amneziawg/amneziawg.sh"
+    chmod 644 "$DATA_DIR/jffs/addons/amneziawg/awg_base64.sh"
     chmod 755 "$DATA_DIR/jffs/addons/amneziawg/amneziawg_server.sh"
     chmod 644 "$DATA_DIR/jffs/addons/amneziawg/amneziawg_page.asp"
     chmod 644 "$DATA_DIR/jffs/addons/amneziawg/amneziawg_server_page.asp"

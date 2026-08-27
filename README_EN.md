@@ -133,10 +133,10 @@ opkg install /tmp/amneziawg_1.0.0-1_aarch64-3.10.ipk
 
 The project is fully **userspace**: the `amneziawg-go` daemon + the `awg` tool, no custom kernel module (only the stock `tun` is needed). For a clean install the easiest path is to build the `.ipk` (`./build-ipk.sh`) and install it via `opkg` (see "From an .ipk package") — the package lays out the binaries in `/opt/amneziawg`, the addon in `/jffs/addons/amneziawg`, creates the `S99amneziawg` init script and registers the pages.
 
-To quickly update **only the addon** (backend scripts and web pages) without rebuilding binaries — copy the files straight into `/jffs/addons/amneziawg/` and restart:
+To quickly update **only the addon** (backend scripts and web pages) without rebuilding binaries, first ensure that the package's declared decoder dependency is installed (`opkg install coreutils-base64`), then copy the files straight into `/jffs/addons/amneziawg/` and restart:
 
 ```shell
-scp addon/amneziawg.sh addon/amneziawg_page.asp addon/amneziawg_widget.js \
+scp addon/awg_base64.sh addon/amneziawg.sh addon/amneziawg_page.asp addon/amneziawg_widget.js \
     addon/amneziawg_server.sh addon/amneziawg_server_page.asp addon/awg_qr.js \
     admin@<router-ip>:/jffs/addons/amneziawg/
 ssh admin@<router-ip>
@@ -392,6 +392,7 @@ Phone/laptop (peer) --> WAN UDP:51821 --> awgs0 (server) --> br0 (home network)
 | **amneziawg-go** | Userspace WireGuard daemon with AmneziaWG extensions (the client tunnel `awg0`) |
 | **awgs-go** | The same daemon under its own process name — the server tunnel `awgs0` (a hardlink, so the two roles' lifecycles never touch each other) |
 | **awg** | CLI tool for managing the tunnels |
+| **awg_base64.sh** | Shared fail-closed settings decoder for the client and server backends |
 | **amneziawg.sh** | Client backend: lifecycle, firewall, routing, geo lists, DNS interception; the shared helper library for both roles |
 | **amneziawg_server.sh** | Server backend: peers, inbound firewall, peer DNS, per-peer policy (reuses `amneziawg.sh` helpers) |
 | **amneziawg_page.asp** | Client web UI (**VPN > AmneziaWG**) |
