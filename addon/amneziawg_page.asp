@@ -382,6 +382,20 @@ textarea.awg-geo-ta {
 </style>
 <script>
 var custom_settings = <% get_custom_settings(); %>;
+// Save-pipeline BASE (1.5.26, see awgSave): the store exactly as the firmware's reader showed it to
+// this page, captured BEFORE any mutation below (the awg_ipk_ sweep, the legacy-key carry-forward,
+// the orphan-meta sweep). A save compares the LIVE store against it — a page-owned key that differs
+// was changed elsewhere since load (another tab, the AWG server page, the CLI) and the save is
+// refused instead of reverting it; after a save it advances only to what THIS page wrote.
+var awgCsBase = (function(){
+    var b = {};
+    for(var k in custom_settings){ if(custom_settings.hasOwnProperty(k)) b[k] = custom_settings[k]; }
+    return b;
+})();
+// Set when another writer stored the settings at the same moment as one of our saves (result
+// 'unknown') or a verified save read back different page-owned values: the base can no longer be
+// trusted, so every later normal save is a conflict until the page is reloaded.
+var awgCsStale = false;
 // One-shot keys of the retired browser .ipk upload (1.1.52-1.5.23): never meant to persist, and
 // every byte left in the store counts against the firmware's shared 8 KB cap — drop any leftover
 // so the next save sweeps it out (the page's saves are full-replace).
@@ -684,10 +698,47 @@ en: {
     HINT_PF_BAR: "The form below edits the highlighted profile; «Apply» saves it. «Switch to» saves everything AND restarts the tunnel on that profile.",
     HINT_PF_FAILOVER: "Auto-switch: if the started tunnel fails the ~60s connectivity check, the next profile is tried in a circle (see the journal). A reboot or a manual switch returns to your chosen profile.",
     MSG_PF_SWITCH_CONFIRM: "Apply settings and switch to profile \"{0}\"? The tunnel will be restarted.",
-    MSG_PF_DELETE_CONFIRM: "Delete profile \"{0}\"? Its saved fields are removed after you press «Apply».",
+    MSG_PF_DELETE_CONFIRM: "Delete profile \"{0}\"? It is deleted right away (the tunnel is not restarted); unsaved profile names and failover checkboxes in this list are saved together with the deletion.",
     MSG_PF_DEL_ACTIVE: "Can't delete the active profile — switch to another one first.",
+    MSG_PF_DEL_PRIMARY: "This is your primary profile, and a backup one is running right now (auto-switch). Switch to another profile first.",
+    MSG_PF_DISCARD_NEW: "Discard the unsaved profile \"{0}\"?",
+    MSG_PF_WAIT_TRANSITION: "Wait until the tunnel finishes connecting or stopping, then try again.",
+    MSG_PF_SWITCH_BUSY: "The router is busy (the tunnel is connecting or stopping, or lists are downloading) — try again in a few seconds.",
+    MSG_PF_SWITCH_EMPTY: "Can't switch to profile \"{0}\": its form below is empty. Fill it in (or import a .conf) or pick another profile; to delete this one, use the ✕ button in its row. Nothing was saved.",
+    MSG_PF_DEL_PENDING_OVER: "The profile is deleted on this page, but the settings still don't fit the firmware's limit: {0} of {1} bytes. Delete another profile or shorten the lists, then press «Apply».",
+    MSG_PF_DEL_PENDING_KEY: "The profile is deleted on this page but not saved yet: one of the fields doesn't fit the firmware's store. Fix it and press «Apply» (reloading the page before that brings the profile back).",
+    LBL_PF_DELETING: "Deleting…",
+    LBL_PF_DELETED: "Profile deleted ✓",
+    HINT_PF_UNSAVED: "Profile changes are not saved — press «Apply»",
+    MSG_SWITCH_SKIPPED: "The router was busy and skipped the profile switch: the profile is saved, but the tunnel was not restarted on it.",
+    BTN_SWITCH_RETRY: "Retry the switch",
+    MSG_SWITCH_FAILED: "The profile switch did not complete — see the journal below for the reason.",
     MSG_PF_UNSAVED: "Profile \"{0}\" has unsaved edits in the form — discard them?",
     MSG_PF_FULL: "All {0} profile slots are in use.",
+    // ---- settings save pipeline (live-store check + verification, 1.5.26) ----
+    BTN_CHECKING: "Checking…",
+    MSG_WAIT_SAVE: "Please wait — settings are being saved",
+    ACK_SAVED_BUSY: "Saved; the router was busy — the action may not have run, check the journal",
+    MSG_CS_CONFLICT: "The settings changed after this page was loaded (another tab, the AWG server page or SSH). To avoid overwriting those changes, the save was cancelled. Reload the page now? Unsaved edits on this page will be lost.",
+    MSG_ROUTER_BUSY: "The router is not responding (the tunnel is restarting or lists are downloading) — try again in a few seconds.",
+    MSG_SESSION_EXPIRED: "Your router login session has expired — log in again in another tab and retry; the edits on this page are kept.",
+    MSG_SAVE_DISCARDED: "The router did not store the settings (the firmware rejected the save). Reload the page to see the current state.",
+    TAIL_SWITCH: "The switch was not performed.",
+    TAIL_FORCEAPPLY: "The tunnel was restarted with the previous settings.",
+    TAIL_GEO: "The previously saved lists are being downloaded.",
+    TAIL_DELETE: "The profile was not deleted.",
+    TAIL_ANALYZE: "The capture was stopped.",
+    MSG_CS_UNKNOWN: "Another page stored the settings at the same moment as this save — the result is unknown. Reload the page.",
+    MSG_STORE_TRUNCATED: "The router stored the settings only partially (/jffs is probably full). Don't reload the page: free some space and press «Apply» again.",
+    MSG_UPDATE_PIN_LOST: "The router did not store the chosen version (the firmware rejected the save) — it installs the latest release instead.",
+    OVF_BREAKDOWN: "What takes the space (bytes of the saved settings):",
+    OVF_PROFILE: "Profile #{0} «{1}»: {2} bytes (I1–I5: {3} of them)",
+    OVF_GEO: "Geo policy «{0}»: {1} bytes",
+    OVF_CLIENTS: "Device list: {0} bytes",
+    OVF_AWG_OTHER: "Other AmneziaWG settings: {0} bytes",
+    OVF_SERVER: "AWG server (awgs_*): {0} bytes",
+    OVF_OTHER_ADDONS: "Other addons: {0} bytes — can only be freed in their own settings",
+    OVF_LIVE_OVER: "The router's store ALONE is already over the limit ({0} of {1} bytes): no addon page can save anything until it shrinks.",
     MSG_SETTINGS_TOO_BIG: "Settings don't fit the firmware's store: {0} of {1} bytes. Asuswrt-Merlin does not save a larger set at all (the whole save is discarded), and this budget is shared with every other addon. Shorten I1-I5 junk data, delete an unused profile, or trim the GeoCustom lists.",
     MSG_SETTING_TOO_LONG: "«{0}» is too long for the firmware's store: {1} of {2} characters (the firmware silently cuts longer values). Shorten it.",
     SEC_CONFIG: "Configuration",
@@ -1099,10 +1150,47 @@ ru: {
     HINT_PF_BAR: "Форма ниже редактирует подсвеченный профиль; «Применить» сохраняет его. «Переключиться» сохраняет всё И перезапускает туннель на выбранном профиле.",
     HINT_PF_FAILOVER: "Автопереключение: если запущенный туннель не проходит ~60-сек проверку связности, по кругу пробуется следующий профиль (см. журнал). Перезагрузка или ручное переключение возвращают выбранный вами профиль.",
     MSG_PF_SWITCH_CONFIRM: "Применить настройки и переключиться на профиль «{0}»? Туннель будет перезапущен.",
-    MSG_PF_DELETE_CONFIRM: "Удалить профиль «{0}»? Его сохранённые поля будут удалены после «Применить».",
+    MSG_PF_DELETE_CONFIRM: "Удалить профиль «{0}»? Он удаляется сразу (туннель не перезапускается); несохранённые названия профилей и флажки автопереключения в этом списке сохранятся вместе с удалением.",
     MSG_PF_DEL_ACTIVE: "Нельзя удалить активный профиль — сначала переключитесь на другой.",
+    MSG_PF_DEL_PRIMARY: "Это ваш основной профиль, а сейчас работает резервный (автопереключение). Сначала переключитесь на другой профиль.",
+    MSG_PF_DISCARD_NEW: "Убрать несохранённый профиль «{0}»?",
+    MSG_PF_WAIT_TRANSITION: "Дождитесь окончания подключения или остановки туннеля и повторите.",
+    MSG_PF_SWITCH_BUSY: "Роутер занят (идёт подключение или остановка туннеля либо загрузка списков) — повторите через несколько секунд.",
+    MSG_PF_SWITCH_EMPTY: "Нельзя переключиться на профиль «{0}»: его форма ниже пуста. Заполните её (или импортируйте .conf) либо выберите другой профиль; чтобы удалить этот профиль, нажмите ✕ в его строке. Ничего не сохранено.",
+    MSG_PF_DEL_PENDING_OVER: "Профиль удалён на странице, но настройки всё ещё не помещаются в лимит прошивки: {0} из {1} байт. Удалите ещё профиль или сократите списки и нажмите «Применить».",
+    MSG_PF_DEL_PENDING_KEY: "Профиль удалён на странице, но ещё не сохранён: одно из полей не помещается в хранилище прошивки. Исправьте его и нажмите «Применить» (до этого перезагрузка страницы вернёт профиль).",
+    LBL_PF_DELETING: "Удаление…",
+    LBL_PF_DELETED: "Профиль удалён ✓",
+    HINT_PF_UNSAVED: "Изменения профилей не сохранены — нажмите «Применить»",
+    MSG_SWITCH_SKIPPED: "Роутер был занят и пропустил переключение профиля: профиль сохранён, но туннель на нём не перезапущен.",
+    BTN_SWITCH_RETRY: "Повторить переключение",
+    MSG_SWITCH_FAILED: "Переключение профиля не завершилось — причина в журнале ниже.",
     MSG_PF_UNSAVED: "У профиля «{0}» есть несохранённые правки в форме — отбросить их?",
     MSG_PF_FULL: "Все {0} слотов профилей заняты.",
+    // ---- конвейер сохранения настроек (проверка живого хранилища + подтверждение, 1.5.26) ----
+    BTN_CHECKING: "Проверка…",
+    MSG_WAIT_SAVE: "Подождите — идёт сохранение настроек",
+    ACK_SAVED_BUSY: "Сохранено; роутер был занят — действие могло не выполниться, проверьте журнал",
+    MSG_CS_CONFLICT: "Настройки изменились после загрузки этой страницы (другая вкладка, страница сервера AWG или SSH). Чтобы не перезаписать эти изменения, сохранение отменено. Обновить страницу сейчас? Несохранённые правки на этой странице будут потеряны.",
+    MSG_ROUTER_BUSY: "Роутер не отвечает (идёт перезапуск туннеля или загрузка списков) — повторите через несколько секунд",
+    MSG_SESSION_EXPIRED: "Сеанс входа в роутер истёк — войдите в другой вкладке и повторите; правки на этой странице сохранены",
+    MSG_SAVE_DISCARDED: "Роутер не записал настройки (прошивка отклонила сохранение). Обновите страницу, чтобы увидеть текущее состояние.",
+    TAIL_SWITCH: "Переключение не выполнено.",
+    TAIL_FORCEAPPLY: "Туннель перезапущен с прежними настройками.",
+    TAIL_GEO: "Загружаются ранее сохранённые списки.",
+    TAIL_DELETE: "Профиль не удалён.",
+    TAIL_ANALYZE: "Захват остановлен.",
+    MSG_CS_UNKNOWN: "Одновременно с этим сохранением настройки записала другая страница — результат неизвестен. Обновите страницу.",
+    MSG_STORE_TRUNCATED: "Роутер записал настройки не полностью (вероятно, заполнен /jffs). Не перезагружайте страницу: освободите место и нажмите «Применить» ещё раз",
+    MSG_UPDATE_PIN_LOST: "Роутер не записал выбранную версию (прошивка отклонила сохранение) — будет установлена последняя версия.",
+    OVF_BREAKDOWN: "Что занимает место (байты сохраняемых настроек):",
+    OVF_PROFILE: "Профиль #{0} «{1}»: {2} байт (из них I1–I5: {3})",
+    OVF_GEO: "Гео-политика «{0}»: {1} байт",
+    OVF_CLIENTS: "Список устройств: {0} байт",
+    OVF_AWG_OTHER: "Прочие настройки AmneziaWG: {0} байт",
+    OVF_SERVER: "Сервер AWG (awgs_*): {0} байт",
+    OVF_OTHER_ADDONS: "Другие аддоны: {0} байт — можно освободить только в их настройках",
+    OVF_LIVE_OVER: "Хранилище роутера УЖЕ само превышает лимит ({0} из {1} байт): ни одна страница аддонов не сможет сохранить настройки, пока оно не уменьшится.",
     MSG_SETTINGS_TOO_BIG: "Настройки не помещаются в хранилище прошивки: {0} из {1} байт. Больший набор Asuswrt-Merlin не сохраняет вообще (сохранение отбрасывается целиком), а этот лимит общий для всех аддонов. Сократите I1-I5, удалите неиспользуемый профиль или уменьшите списки GeoCustom.",
     MSG_SETTING_TOO_LONG: "«{0}» не помещается в хранилище прошивки: {1} из {2} символов (длиннее прошивка молча обрезает). Сократите.",
     SEC_CONFIG: "Конфигурация",
@@ -1536,44 +1624,79 @@ function syncViaVpnToggles(){
 }
 
 function doUpdate(version, latest){
-    // Pre-flight, before any UI change: fold in what this POST carries (via-VPN toggles + the pin),
-    // then check the firmware's WHOLE-store cap only — every value in the object is a firmware
-    // read-back or passed Apply's own check. Over the cap the firmware would drop the POST whole:
-    // a user-chosen version is refused (returns false — the caller keeps the modal open); "latest"
-    // is posted with NO settings, which the backend resolves by itself.
-    var snapU = awgSettingsSnapshot();
-    syncViaVpnToggles();
-    if(version) custom_settings.awg_update_version = String(version);
-    var ovfU = awgSettingsOverflow(custom_settings, true);
-    if(version) delete custom_settings.awg_update_version;
-    if(ovfU && version && !latest){ awgSettingsRestore(snapU); alert(awgOverflowMsg(ovfU)); return false; }
+    // Synchronous pre-flight, before any UI change (the caller keeps the modal open on false).
+    if(awgFormBusy()){ awgFormBusyRefuse(); return false; }
+    // What this POST carries — ONLY these keys, on top of the LIVE store (awgSave 'onlyExtra'):
+    // the current "download via VPN" choice (even without a prior Apply) and the version pin.
+    // Pin an explicit version (one-shot) so the router installs exactly it — no backend jsDelivr
+    // resolution, no crawl lag; the backend clears it after use. No version = an explicit null,
+    // i.e. DELETE the key: a pin left behind by an earlier update whose event the router dropped
+    // must never be re-posted from the live store (the router would install that stale version).
+    var pinned = !!(version && !latest);
+    var extra = { awg_update_version: version ? String(version) : null };
+    var gv = document.getElementById('awg_geo_via_awg'), uv = document.getElementById('awg_update_via_awg');
+    if(gv) extra.awg_geo_via_awg = gv.checked ? '1' : '0';
+    if(uv) extra.awg_update_via_awg = uv.checked ? '1' : '0';
+    // Local estimate of the firmware's WHOLE-store cap (the model approximates the live store):
+    // over it the firmware would drop the POST whole — a user-chosen version is refused here;
+    // "latest" is posted with NO settings, which the backend resolves by itself (see done()).
+    var est = awgSettingsSnapshot();
+    for(var ek in extra){ if(extra.hasOwnProperty(ek)){ if(extra[ek] === null) delete est[ek]; else est[ek] = extra[ek]; } }
+    var ovfU = awgSettingsOverflow(est, true);
+    if(ovfU && pinned){ ovfU.obj = est; alert(awgOverflowMsg(ovfU)); return false; }
+    var started = awgSave({
+        mode: 'onlyExtra', check: 'total', extra: extra, action: 'start_awgdoupdate',
+        busyUI: awgUpdateCheckUI,
+        onSubmit: awgUpdateUI,
+        done: function(res, info){
+            if(res === 'verified-late'){ awgShowAck(T('ACK_SAVED_BUSY'), true); return; }
+            if(res === 'verified' || res === 'unverified') return;
+            if(res === 'overflow'){
+                // The final object (live store + these keys) is over the cap: a pinned version can't
+                // be carried — refuse (the pre-submit UI is already restored); "latest" needs no
+                // settings — fall back to the empty post exactly as before 1.5.26.
+                if(pinned){ alert(awgOverflowMsg(info.ovf)); return; }
+                if(awgPostSettings('start_awgdoupdate', false, null, function(){}) !== false) awgUpdateUI();
+                return;
+            }
+            // The event fired in all three cases below — the update runs: keep its UI + reload poll.
+            if(res === 'discarded'){ if(pinned) alert(T('MSG_UPDATE_PIN_LOST')); return; }
+            if(res === 'unknown' || res === 'truncated'){ awgSaveNotify(res, info); return; }
+            awgSaveNotify(res, info);   // busy / login: nothing was posted, the page is back as it was
+        }
+    });
+    if(!started){ awgFormBusyRefuse(); return false; }
+    return true;
+}
+// doUpdate's busy label while awgSave reads the live store (the modal has already closed): the
+// badge says «Checking…» and the steady poll is paused so it can't repaint it; 'idle' = the save
+// ended before anything was posted — resume the poll ('submit' hands over to awgUpdateUI).
+function awgUpdateCheckUI(phase){
+    var badge = document.getElementById('awg_badge');
+    if(phase === 'check'){
+        if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
+        if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; ' + escHtml(T('BTN_CHECKING')); }
+    } else if(phase === 'idle'){
+        if(!statusTimer && !awgTransitionActive) statusTimer = setInterval(awgRefreshStatus, 5000);
+        awgRefreshStatus();
+    }
+}
+// The update is on its way: «Updating» badge, poll handed over to the reload watcher below.
+function awgUpdateUI(){
     var badge = document.getElementById('awg_badge');
     if(badge){ badge.className = 'awg-status connecting'; badge.innerHTML = '&#9679; ' + escHtml(T('STAT_UPDATING')); }
     awgConnUp = false;
     awgTickUptime();
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
     // Supersede any status read still in flight so it can't repaint over the «Updating» badge
-    // (same generation guard as awgAction; see awgActionGen).
+    // (same generation guard as awgAction; see awgActionGen). That also abandons a running
+    // transition poll — stop it here and drop the transition flag with it.
     awgActionGen++;
+    if(awgPoll){ clearInterval(awgPoll); awgPoll = null; }
+    awgTransitionActive = false;
     // The modal just closed — scroll to the log so the user can watch the update progress.
     var _lb = document.getElementById('awg_log');
     if(_lb){ try { _lb.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(e){ try { _lb.scrollIntoView(); } catch(e2){} } }
-
-    // Carry the current "download via VPN" choice even without a prior Apply.
-    syncViaVpnToggles();
-    // Pin an explicit version (one-shot) so the router installs exactly it — no backend
-    // jsDelivr resolution, no crawl lag. Sent via custom_settings, then removed from
-    // memory so a later "Apply" can't re-pin it (the backend also clears it after use).
-    // NB this path DOES carry settings (see just above), so it must post the object. It
-    // therefore still writes a page-load snapshot of everything ELSE — a known limitation of the
-    // firmware's whole-object custom_settings API; only paths with no settings intent can clear.
-    if(version) custom_settings.awg_update_version = String(version);
-    // Over the firmware's store limit (see AWG_CS_*) the POST would be dropped whole anyway: send
-    // no settings then — "latest" needs none (a pinned version was refused above).
-    document.getElementById('amng_custom').value = ovfU ? '' : JSON.stringify(custom_settings);
-    if(version) delete custom_settings.awg_update_version;
-    document.form.action_script.value = "start_awgdoupdate";
-    awgSubmitForm();
 
     // Wait for update to finish (VPN stopped, new version installed), then reload
     var attempts = 0;
@@ -1732,8 +1855,11 @@ function awgSettingsOverflow(obj, totalOnly){
     return total > AWG_CS_TOTAL_MAX ? { key: '', total: total } : null;
 }
 // A human message for awgSettingsOverflow's result, naming the field (and geo tab) when possible.
+// A total-size refusal carries the object that was measured (o.obj — awgSave's FINAL object, which
+// is what the firmware would receive) and the live store (o.live): the breakdown says where the
+// bytes are, so the user knows what to shorten.
 function awgOverflowMsg(o){
-    if(!o.key) return T('MSG_SETTINGS_TOO_BIG', o.total, AWG_CS_TOTAL_MAX);
+    if(!o.key) return T('MSG_SETTINGS_TOO_BIG', o.total, AWG_CS_TOTAL_MAX) + (o.obj ? awgOverflowBreakdown(o.obj, o.live) : '');
     var m = /^awg_geo_(?:(\d+)_)?(v2fly|v2fly_ip|custom_domains|custom_ips|custom_files|custom_urls|exc_domains|exc_ips|exc_files|exc_urls)$/.exec(o.key), label = o.key;
     var cap = o.cap || AWG_CS_VALUE_MAX;
     if(m){
@@ -1756,6 +1882,55 @@ function awgOverflowMsg(o){
     }
     return T('MSG_SETTING_TOO_LONG', label, o.len, cap);
 }
+// Where the bytes of a too-big settings object go. Each key is charged its JSON contribution —
+// `"k":"v"` plus the comma after it — and the object's braces go to "other AmneziaWG settings", so
+// the lines add up to exactly the total the firmware measures. Largest group first.
+function awgOverflowBreakdown(obj, live){
+    var groups = {}, order = [], sum = 0, k, m;
+    function add(id, n, i5){
+        if(!groups[id]){ groups[id] = { n: 0, i5: 0 }; order.push(id); }
+        groups[id].n += n; groups[id].i5 += (i5 || 0);
+    }
+    // Slot numbers of the profiles the object configures, for the "#k" ordinals (C5).
+    var cfgSlots = [];
+    for(var s = 1; s <= AWG_PF_MAX; s++){ if(pfConfiguredIn(obj, s)) cfgSlots.push(s); }
+    for(k in obj){
+        if(!obj.hasOwnProperty(k)) continue;
+        var n = awgUtf8Len(JSON.stringify(k) + ':' + JSON.stringify(obj[k])) + 1;
+        sum += n;
+        var slot = pfSlotOfKey(k);
+        if(slot && cfgSlots.indexOf(slot) !== -1){ add('pf' + slot, n, /initdata\d*$/.test(k) ? n : 0); continue; }
+        if((m = /^awg_geo_(?:(\d+)_)?(?:v2fly|v2fly_ip|custom_domains|custom_ips|custom_files|custom_urls|mode|exc_domains|exc_ips|exc_files|exc_urls)$/.exec(k)) ||
+           (m = /^awg_antifilter(?:_(\d+))?_lists$/.exec(k))){ add('geo' + (m[1] ? parseInt(m[1], 10) : 1), n); continue; }
+        if(k === 'awg_clients'){ add('clients', n); continue; }
+        if(k.indexOf('awg_') === 0){ add('awg', n); continue; }
+        if(k.indexOf('awgs_') === 0){ add('srv', n); continue; }
+        add('other', n);
+    }
+    var total = awgUtf8Len(JSON.stringify(obj));
+    add('awg', total - sum);
+    order.sort(function(a, b){ return groups[b].n - groups[a].n; });
+    var lines = [];
+    for(var i = 0; i < order.length; i++){
+        var id = order[i], g = groups[id];
+        if(g.n <= 0) continue;
+        if(id.indexOf('pf') === 0){
+            var sl = parseInt(id.slice(2), 10), ord = cfgSlots.indexOf(sl) + 1;
+            var nm = pfNameDec(obj[pfKey(sl, 'name')] || '') || T('PF_UNNAMED', ord);
+            lines.push(T('OVF_PROFILE', ord, nm, g.n, g.i5));
+        } else if(id.indexOf('geo') === 0){
+            var gi = geoPolicyIndexById(parseInt(id.slice(3), 10));
+            lines.push(T('OVF_GEO', gi !== -1 ? geoDecodeName(geoPolicies[gi].name) : id.slice(3), g.n));
+        } else if(id === 'clients') lines.push(T('OVF_CLIENTS', g.n));
+        else if(id === 'awg') lines.push(T('OVF_AWG_OTHER', g.n));
+        else if(id === 'srv') lines.push(T('OVF_SERVER', g.n));
+        else lines.push(T('OVF_OTHER_ADDONS', g.n));
+    }
+    var out = '\n\n' + T('OVF_BREAKDOWN') + '\n• ' + lines.join('\n• ');
+    var liveTotal = live ? awgUtf8Len(JSON.stringify(live)) : 0;
+    if(liveTotal > AWG_CS_TOTAL_MAX) out += '\n\n' + T('OVF_LIVE_OVER', liveTotal, AWG_CS_TOTAL_MAX);
+    return out;
+}
 // Deep-enough copy of custom_settings (flat string map) to roll back a refused save: applyConfig
 // and updateGeoLists write their values into the object BEFORE the store-limit check, and a
 // refused value left behind would ride along on the next path that posts the object.
@@ -1770,9 +1945,14 @@ function awgSettingsRestore(snap){
     for(k in snap){ if(snap.hasOwnProperty(k)) custom_settings[k] = snap[k]; }
 }
 
-// Submit the shared form (-> hidden_frame, proven auth path) with the current settings
-// plus optional one-shot keys in `extra`. cb() fires when the POST has been processed.
+// Submit the shared form (-> hidden_frame, proven auth path) for an action with NO settings
+// intent: amng_custom is posted EMPTY, so the firmware writes nothing (re-posting the page-load
+// snapshot would revert changes made elsewhere since, and an over-limit object would be discarded
+// anyway). See awgAction. Every settings-carrying POST goes through awgSave instead (1.5.26) —
+// `extra` must be false. cb() fires when the POST has been processed. Returns false (and posts
+// nothing) while a settings save holds the form (awgFormBusy): callers check that first.
 function awgPostSettings(actionScript, extra, waitVal, cb){
+    if(awgFormBusy()) return false;
     var fr = document.getElementById('hidden_frame');
     var done = false;
     var to = setTimeout(function(){ if(!done){ done = true; cleanup(); cb(false); } }, 12000);
@@ -1780,18 +1960,8 @@ function awgPostSettings(actionScript, extra, waitVal, cb){
     function onl(){ if(done) return; done = true; cleanup(); cb(true); }
     fr.addEventListener('load', onl);
 
-    // extra === false: an action with no settings intent — post an EMPTY amng_custom, so the
-    // firmware writes nothing (re-posting the page-load snapshot would revert changes made
-    // elsewhere since, and an over-limit object would be discarded anyway). See awgAction.
     var ac = document.getElementById('amng_custom');
-    if(extra === false){
-        if(ac) ac.value = '';
-    } else {
-        var merged = {};
-        for(var k in custom_settings){ if(custom_settings.hasOwnProperty(k)) merged[k] = custom_settings[k]; }
-        if(extra){ for(var k2 in extra){ if(extra.hasOwnProperty(k2)) merged[k2] = extra[k2]; } }
-        if(ac) ac.value = JSON.stringify(merged);
-    }
+    if(ac) ac.value = '';
 
     var aw = document.form.action_wait;
     var oldwait = aw ? aw.value : null;
@@ -1799,6 +1969,437 @@ function awgPostSettings(actionScript, extra, waitVal, cb){
     document.form.action_script.value = actionScript;
     awgSubmitForm();
     if(aw && oldwait != null) aw.value = oldwait;   // submit() snapshots fields synchronously
+    return true;
+}
+
+// ==================== Settings save pipeline (1.5.26) ====================
+// The firmware's settings API is a FULL REPLACE of /jffs/addons/custom_settings.txt with whatever
+// JSON the page posts, shared by every addon AND by this addon's server page — and it reports
+// nothing: an over-limit POST is discarded whole while the event still fires, a POST that lands
+// while rc runs one of our long handlers is written but its event dropped (~15 s notify_rc block),
+// a full /jffs cuts the file short. So every settings-carrying POST goes through awgSave:
+//   pre-fetch the LIVE store  →  refuse if a page-owned key changed elsewhere since load (conflict)
+//   →  post live's not-owned keys + this page's own keys, the save token LAST  →  read the store
+//   back and classify: verified / verified-late / unverified / discarded / unknown / truncated.
+// Ownership, not merging: this page owns every awg_* key except the two below; everything else
+// (awgs_* = the server page, other addons) is taken from the live store as-is.
+var AWG_CS_NOT_OWNED = {
+    awg_save_tok: 1,         // the save token — rewritten by every save of either page
+    awg_update_version: 1    // one-shot update pin, cleared by the backend's do_update
+};
+function awgCsOwned(k){ return k.indexOf('awg_') === 0 && !AWG_CS_NOT_OWNED.hasOwnProperty(k); }
+// A value as the firmware's reader will show it back — ej_get_custom_settings() parses each line
+// with sscanf("%29s%*[ ]%2999s"): the separating spaces and any further leading C-whitespace are
+// skipped, the value ends at its first C-whitespace and at 2999 bytes, an empty value is not
+// emitted at all. undefined = absent. Every comparison of page state against the store uses this.
+function awgCsNorm(v){
+    if(v === undefined || v === null) return undefined;
+    var s = String(v).replace(/^[ \t\v\f\r]+/, '');
+    if(s === '' || s.charAt(0) === '\n') return undefined;
+    s = s.replace(/[ \t\n\v\f\r][\s\S]*$/, '');
+    if(awgUtf8Len(s) > 2999) s = awgUtf8Cut(s, 2999);
+    return s === '' ? undefined : s;
+}
+// The reader view of obj[k]: keys over 29 chars are invisible to %29s.
+function awgCsView(obj, k){ return (k.length > 29) ? undefined : awgCsNorm(obj[k]); }
+// Cut a string to at most `max` UTF-8 bytes on a character boundary.
+function awgUtf8Cut(s, max){
+    var out = '', n = 0;
+    for(var i = 0; i < s.length; i++){
+        var c = s.charCodeAt(i), ch = s.charAt(i), w;
+        if(c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length){ ch = s.substr(i, 2); w = 4; i++; }
+        else w = (c < 0x80) ? 1 : (c < 0x800 ? 2 : 3);
+        if(n + w > max) break;
+        out += ch; n += w;
+    }
+    return out;
+}
+function awgCsCopy(o){
+    var c = {};
+    for(var k in o){ if(o.hasOwnProperty(k)) c[k] = o[k]; }
+    return c;
+}
+// Every live-store GET carries a globally unique cache buster (never a per-load counter, never the
+// save token): 3006.102+/master serve .htm files with an ETag of the FILE, which never changes
+// while its output does, so a repeated URL may be answered 304 from the browser's cache.
+var awgCsReqSeq = 0, awgCsTokSeq = 0;
+function awgCsUnique(){ return Date.now() + '_' + (++awgCsReqSeq); }
+// The save token: base36 time + a counter, [0-9a-z] and at most 12 chars.
+function awgCsNewToken(){ return (Date.now().toString(36) + (++awgCsTokSeq).toString(36)).slice(0, 12); }
+function awgCsPlainObj(txt){
+    try {
+        var o = JSON.parse(txt);
+        return (o && typeof o === 'object' && !(o instanceof Array)) ? o : null;
+    } catch(e){ return null; }
+}
+// The rendered-page fallback: the settings object of this very page, as the firmware renders it
+// into the custom_settings line of the first script. The needle is built by concatenation and
+// must be followed by '{' or "new Object()", so this function's own source text (also part of
+// the rendered page) can never match; the brace scan is string- and escape-aware.
+function awgCsExtractPage(body){
+    var needle = 'var custom' + '_settings =', from = 0, i;
+    while((i = body.indexOf(needle, from)) !== -1){
+        var j = i + needle.length;
+        while(j < body.length && /\s/.test(body.charAt(j))) j++;
+        if(body.substr(j, 12) === 'new Object()') return {};
+        if(body.charAt(j) === '{'){
+            var depth = 0, inStr = false, esc = false;
+            for(var e = j; e < body.length; e++){
+                var c = body.charAt(e);
+                if(inStr){
+                    if(esc) esc = false;
+                    else if(c === '\\') esc = true;
+                    else if(c === '"') inStr = false;
+                    continue;
+                }
+                if(c === '"') inStr = true;
+                else if(c === '{') depth++;
+                else if(c === '}'){ if(--depth === 0) return awgCsPlainObj(body.slice(j, e + 1)); }
+            }
+            return null;
+        }
+        from = j;
+    }
+    return null;
+}
+// httpd's answer to ANY request of an expired session: a tiny page that navigates the whole tab to
+// the login form. The file name is split so no addon page ever contains it contiguously (a
+// rendered page is itself a fallback response and must never read as a login page).
+var AWG_CS_LOGIN_RE = new RegExp('top\\.location\\.href\\s*=\\s*[\'"]\\/Main_' + 'Login\\.asp');
+// Classify a response body, in this fixed order: the AWGCS-framed endpoint → the rendered page →
+// the login page (short bodies only) → unusable.
+function awgCsParseBody(body){
+    var b = String(body == null ? '' : body).replace(/^\s+|\s+$/g, '');
+    if(b.length >= 10 && b.slice(0, 5) === 'AWGCS' && b.slice(-5) === 'AWGCS'){
+        var mid = b.slice(5, -5).replace(/^\s+|\s+$/g, '');
+        if(mid === 'new Object()') return { kind: 'store', obj: {} };   // no settings file at all
+        var o = awgCsPlainObj(mid);
+        return o ? { kind: 'store', obj: o } : { kind: 'unusable' };
+    }
+    var po = awgCsExtractPage(b);
+    if(po) return { kind: 'store', obj: po };
+    if(b.length < 512 && AWG_CS_LOGIN_RE.test(b)) return { kind: 'login' };
+    return { kind: 'unusable' };
+}
+// One GET. cb(kind, body): 'ok' (2xx), 'transient' (timeout / status 0 / 5xx — worth a retry),
+// 'missing' (404 and other definitive answers).
+function awgCsGet(url, ms, cb){
+    var x = new XMLHttpRequest(), fin = false;
+    function end(kind){ if(fin) return; fin = true; cb(kind, kind === 'ok' ? String(x.responseText || '') : ''); }
+    try { x.open('GET', url, true); } catch(e){ setTimeout(function(){ end('transient'); }, 0); return; }
+    x.timeout = ms;
+    x.onload = function(){
+        var st = x.status;
+        end((st >= 200 && st < 300) ? 'ok' : ((st === 0 || st >= 500) ? 'transient' : 'missing'));
+    };
+    x.onerror = function(){ end('transient'); };
+    x.ontimeout = function(){ end('transient'); };
+    try { x.send(); } catch(e2){ end('transient'); }
+}
+// Read the LIVE store: /user/awg_cs.htm (the backend writes it next to the page: an AWGCS-framed
+// get_custom_settings), falling back to a fresh GET of this page when the endpoint is unusable.
+// o = { budget: ms (pre-fetch) | tries: n (verify), perTry: ms, gap: ms, page: start on the page }.
+// cb(r): r.kind = 'store' (r.obj, r.page) | 'login' | 'legacy' (both definitively unusable —
+// NOT a timeout) | 'busy' (the budget / the tries ran out on timeouts).
+function awgCsFetch(o, cb){
+    var t0 = Date.now(), tries = 0, page = !!o.page;
+    function next(){
+        var left = o.budget ? (o.budget - (Date.now() - t0)) : o.perTry;
+        if(o.budget ? (left <= 0) : (tries >= o.tries)){ cb({ kind: 'busy' }); return; }
+        tries++;
+        var url = page ? (location.pathname + '?_=' + awgCsUnique()) : ('/user/awg_cs.htm?_=' + awgCsUnique());
+        awgCsGet(url, Math.max(1000, Math.min(o.perTry, left)), function(kind, body){
+            if(kind === 'transient'){ setTimeout(next, o.gap); return; }
+            var r = (kind === 'ok') ? awgCsParseBody(body) : { kind: 'unusable' };
+            if(r.kind === 'store'){ cb({ kind: 'store', obj: r.obj, page: page }); return; }
+            if(r.kind === 'login'){ cb({ kind: 'login' }); return; }
+            if(!page){ page = true; tries--; next(); return; }   // switching to the fallback costs no try
+            cb({ kind: 'legacy' });
+        });
+    }
+    next();
+}
+// Did a page-owned key change in the live store since this page's base? (keys of either side)
+function awgCsConflict(live){
+    var k;
+    for(k in live){ if(live.hasOwnProperty(k) && awgCsOwned(k) && awgCsNorm(live[k]) !== awgCsNorm(awgCsBase[k])) return k; }
+    for(k in awgCsBase){ if(awgCsBase.hasOwnProperty(k) && awgCsOwned(k) && awgCsNorm(live[k]) !== awgCsNorm(awgCsBase[k])) return k; }
+    return '';
+}
+// The object to post, without the token (appended LAST by awgSave). Normal: every NOT-owned key
+// from live, every owned key from `mine`, in live's key order first (the file keeps its layout),
+// then this page's new keys. onlyExtra: a copy of live. No live store (LEGACY): a copy of mine.
+// Then owned values are trimmed and '' dropped (the reader never returns an empty value — every
+// byte counts against the shared 8 KB), name/fo meta of unconfigured profile slots dropped, and
+// the extras applied (null = delete the key).
+function awgCsBuildFinal(mine, live, onlyExtra, extra){
+    var f = {}, k;
+    if(!live){
+        for(k in mine){ if(mine.hasOwnProperty(k)) f[k] = mine[k]; }
+        // A LEGACY save can't see the store; don't let it revert a profile switch made elsewhere
+        // (CLI / another tab): an untouched pointer follows the backend's last report of it. A
+        // pointer the page only REPAIRED (pfUserFix, K13 — awgPfPtrAuto) is untouched too: else the
+        // repair reads as an edit and reverts a CLI switch made after the load. A page «Switch to»
+        // is never overridden here — applyConfig posts its target as an extra, applied below.
+        var mp = awgCsNorm(mine.awg_profile_active);
+        if(!onlyExtra && (mp === awgCsNorm(awgCsBase.awg_profile_active) || (awgPfPtrAuto !== null && mp === awgPfPtrAuto)) &&
+           awgPfStatus && awgPfStatus.user >= 1 && awgLastStatus && !awgLastStatus.starting && !awgLastStatus.stopping)
+            f.awg_profile_active = String(awgPfStatus.user);
+    } else if(onlyExtra){
+        for(k in live){ if(live.hasOwnProperty(k)) f[k] = live[k]; }
+    } else {
+        for(k in live){
+            if(!live.hasOwnProperty(k)) continue;
+            if(!awgCsOwned(k)) f[k] = live[k];
+            else if(mine.hasOwnProperty(k)) f[k] = mine[k];
+        }
+        for(k in mine){ if(mine.hasOwnProperty(k) && awgCsOwned(k) && !f.hasOwnProperty(k)) f[k] = mine[k]; }
+    }
+    if(!onlyExtra || !live){
+        for(k in f){
+            if(!f.hasOwnProperty(k) || !awgCsOwned(k)) continue;
+            if(typeof f[k] === 'string') f[k] = f[k].replace(/^[ \t\n\v\f\r]+|[ \t\n\v\f\r]+$/g, '');
+            if(f[k] === '' || f[k] === undefined || f[k] === null) delete f[k];
+        }
+        for(var n = 1; n <= AWG_PF_MAX; n++){
+            if(!pfConfiguredIn(f, n)){ delete f[pfKey(n, 'name')]; delete f[pfKey(n, 'fo')]; }
+        }
+    }
+    for(k in extra){
+        if(!extra.hasOwnProperty(k)) continue;
+        if(extra[k] === null) delete f[k]; else f[k] = String(extra[k]);
+    }
+    delete f.awg_save_tok;
+    return f;
+}
+// The file keeps the posted order, so a store the firmware cut short (full /jffs) reads back as a
+// strict in-order PREFIX of what the reader would show of the posted object.
+function awgCsIsPrefix(live2, fobj){
+    var fk = [], k;
+    for(k in fobj){ if(fobj.hasOwnProperty(k) && awgCsView(fobj, k) !== undefined) fk.push(k); }
+    var lk = [];
+    for(k in live2){ if(live2.hasOwnProperty(k)) lk.push(k); }
+    if(lk.length >= fk.length) return false;
+    for(var i = 0; i < lk.length; i++){ if(lk[i] !== fk[i]) return false; }
+    return true;
+}
+function awgCsSameStore(a, b){
+    var ka = [], kb = [], k, i;
+    for(k in a){ if(a.hasOwnProperty(k)) ka.push(k); }
+    for(k in b){ if(b.hasOwnProperty(k)) kb.push(k); }
+    if(ka.length !== kb.length) return false;
+    for(i = 0; i < ka.length; i++){ if(ka[i] !== kb[i] || String(a[ka[i]]) !== String(b[kb[i]])) return false; }
+    return true;
+}
+// What the read-back says about OUR POST (tok = its token, live = the pre-fetch).
+function awgCsClassify(live2, fobj, live, tok, late){
+    var t2 = live2.awg_save_tok, t1 = live ? live.awg_save_tok : undefined;
+    if(t2 === tok) return late ? 'verified-late' : 'verified';
+    if(t2 !== undefined) return (t1 !== undefined && t2 === t1) ? 'discarded' : 'unknown';
+    // No token in the store: unchanged → the firmware dropped the POST; our keys cut short → a
+    // partial write; anything else → another (older, token-less) writer.
+    if(t1 === undefined && live && awgCsSameStore(live2, live)) return 'discarded';
+    return awgCsIsPrefix(live2, fobj) ? 'truncated' : 'unknown';
+}
+// A verified store whose page-owned values differ from what we posted: a writer that keeps the
+// token line (the CLI's set_setting) changed something between our write and the read-back.
+function awgCsDrift(live2, fobj){
+    var k;
+    for(k in fobj){ if(fobj.hasOwnProperty(k) && awgCsOwned(k) && awgCsNorm(live2[k]) !== awgCsView(fobj, k)) return true; }
+    for(k in live2){ if(live2.hasOwnProperty(k) && awgCsOwned(k) && awgCsNorm(live2[k]) !== awgCsView(fobj, k)) return true; }
+    return false;
+}
+
+// The form lock: one settings save at a time, and no other submitter of the shared form (which
+// has ONE hidden iframe) while it runs — their POST would cancel ours mid-flight.
+var awgCsSaving = false;
+var awgCsTruncLive = null;   // the pre-fetch live store kept after a 'truncated' save (see below)
+var awgCsAfterSave = [];     // deferred actions queued while the form was locked (awgAfterSave)
+function awgFormBusy(){ return awgCsSaving; }
+// The short "please wait" reply of every refused submitter: the ack next to the Apply buttons for
+// those buttons (nearAck), an alert for every other control (the ack would be off-screen or behind
+// a modal).
+function awgFormBusyRefuse(nearAck){
+    if(nearAck) awgShowAck(T('MSG_WAIT_SAVE'), false);
+    else alert(T('MSG_WAIT_SAVE'));
+}
+// Run fn once the current save has finished (now, when none is running).
+function awgAfterSave(fn){ if(awgCsSaving) awgCsAfterSave.push(fn); else fn(); }
+
+// awgSave(opts) — the one path for every settings-carrying POST. Returns false (nothing done) when
+// another save holds the form. opts:
+//   mode      'normal' (the page's own keys win) | 'onlyExtra' (post the live store + opts.extra —
+//             for actions that carry a key or two and must not act as a settings save)
+//   extra     keys to set on the final object (null = delete)
+//   check     'full' (awgSettingsOverflow on the final object) | 'total' (the 8 KB total only)
+//   action    the action_script, or function(final) returning it
+//   fixFinal  function(final) — last adjustment before the size check (pfDelete)
+//   abort     function() → true: give up before posting (result 'aborted')
+//   busyUI    function(phase): 'check' at entry (label the caller's button), 'submit' right
+//             before onSubmit, 'idle' when the save ends before anything was posted
+//   onSubmit  function(final) — the caller's "in progress" UI, run right before the POST
+//   done      function(result, info) — MUST handle every result (the lock is already released):
+//             'verified' | 'verified-late' (the router was busy: written, but the action may have
+//             been skipped) | 'unverified' (posted, the read-back failed) | 'overflow' (info.ovf)
+//             | 'conflict' | 'busy' | 'login' | 'discarded' (the event still fired) | 'unknown'
+//             (another writer at the same moment) | 'truncated' (a partial write) | 'aborted'
+function awgSave(opts){
+    if(awgCsSaving) return false;
+    awgCsSaving = true;
+    // Frozen at entry: a model change made while the pre-fetch runs must not leak into this POST.
+    var mine = awgCsCopy(custom_settings);
+    var extra = opts.extra || {};
+    var ui = opts.busyUI || null;
+    var tok = awgCsNewToken(), submitted = false, fin = false;
+    if(ui) ui('check');
+    pfBarLock(true);
+    function done(res, info){
+        if(fin) return;
+        fin = true;
+        awgCsSaving = false;
+        if(!submitted && ui) ui('idle');
+        pfBarLock(false);
+        try { opts.done(res, info || {}); }
+        finally {
+            var q = awgCsAfterSave; awgCsAfterSave = [];
+            for(var i = 0; i < q.length; i++){ try { q[i](); } catch(e){} }
+        }
+    }
+    awgCsFetch({ budget: 25000, perTry: 6000, gap: 1000 }, function(r){
+        if(r.kind === 'login'){ done('login'); return; }
+        if(r.kind === 'busy'){ done('busy'); return; }
+        var live = (r.kind === 'store') ? r.obj : null;       // null = LEGACY (no live store readable)
+        // After a partial write the next save rewrites EVERYTHING from the complete pre-fetch copy
+        // kept then (the store now lacks other addons' keys too), once, without a conflict check.
+        var retained = live ? awgCsTruncLive : null;
+        // "full" = this POST writes the page's own keys (a normal save, that rewrite, or LEGACY,
+        // where the page's model is all there is); onlyExtra only adds its extras to live.
+        var full = (opts.mode !== 'onlyExtra') || !!retained || !live;
+        if(live && full && !retained){
+            if(awgCsStale){ done('conflict', { stale: true }); return; }
+            var ck = awgCsConflict(live);
+            if(ck){ done('conflict', { key: ck }); return; }
+        }
+        var fobj = awgCsBuildFinal(mine, retained || live, !full, extra);
+        // Keys the caller forces in the final (fixFinal) are not the model's value: the model keeps
+        // its own (pending) one — they are left out of the post-save model sync.
+        var forced = {};
+        if(opts.fixFinal){
+            var pre = awgCsCopy(fobj);
+            opts.fixFinal(fobj);
+            for(var fk in pre){ if(pre.hasOwnProperty(fk) && pre[fk] !== fobj[fk]) forced[fk] = 1; }
+            for(fk in fobj){ if(fobj.hasOwnProperty(fk) && pre[fk] !== fobj[fk]) forced[fk] = 1; }
+        }
+        delete fobj.awg_save_tok;
+        fobj.awg_save_tok = tok;   // LAST: a file cut short loses it and can't read as saved
+        var ovf = awgSettingsOverflow(fobj, opts.check !== 'full');
+        if(ovf){ ovf.obj = fobj; ovf.live = live; done('overflow', { ovf: ovf, fobj: fobj, live: live }); return; }
+        if(opts.abort && opts.abort()){ done('aborted'); return; }
+
+        var act = (typeof opts.action === 'function') ? opts.action(fobj) : opts.action;
+        var ac = document.getElementById('amng_custom');
+        if(ac) ac.value = JSON.stringify(fobj);
+        document.form.action_script.value = act;
+        submitted = true;
+        if(retained) awgCsTruncLive = null;
+        if(ui) ui('submit');
+        if(opts.onSubmit) opts.onSubmit(fobj);
+        // The load listener and the 20 s no-load fallback belong to THIS submit only (a new submit
+        // into the same iframe cancels the previous navigation). A load ≥10 s after submit is the
+        // notify_rc signature: the store was written, then rc blocked ~15 s on one of our
+        // foreground handlers and DROPPED this event.
+        var fr = document.getElementById('hidden_frame'), landed = false, tm = null, t0 = 0;
+        function onl(){ arrived(false); }
+        function arrived(viaTimer){
+            if(landed) return;
+            landed = true;
+            if(tm) clearTimeout(tm);
+            try { fr.removeEventListener('load', onl); } catch(e){}
+            var late = viaTimer || (Date.now() - t0 >= 10000);
+            if(!live){ finish('unverified', null); return; }   // LEGACY: nothing to read back
+            awgCsFetch({ tries: 3, perTry: 20000, gap: 1500, page: r.page }, function(v){
+                if(v.kind !== 'store'){ finish('unverified', null); return; }
+                finish(awgCsClassify(v.obj, fobj, live, tok, late), v.obj);
+            });
+        }
+        function finish(res, live2){
+            var ok = (res === 'verified' || res === 'verified-late' || res === 'unverified' || res === 'truncated');
+            var k, v;
+            if(ok){
+                // The base advances ONLY to what this page wrote: a change another writer made
+                // in the meantime must still surface as a conflict on the next save.
+                if(full){
+                    var ks = awgCsCopy(awgCsBase);
+                    for(k in fobj){ if(fobj.hasOwnProperty(k)) ks[k] = 1; }
+                    for(k in ks){
+                        if(!ks.hasOwnProperty(k) || !awgCsOwned(k)) continue;
+                        v = awgCsView(fobj, k);
+                        if(v === undefined) delete awgCsBase[k]; else awgCsBase[k] = v;
+                    }
+                    if((res === 'verified' || res === 'verified-late') && awgCsDrift(live2, fobj)) awgCsStale = true;
+                    awgCsSyncModel(mine, fobj, forced);
+                } else {
+                    for(k in extra){
+                        if(!extra.hasOwnProperty(k) || !awgCsOwned(k)) continue;
+                        v = (extra[k] === null) ? undefined : awgCsNorm(extra[k]);
+                        if(v === undefined) delete awgCsBase[k]; else awgCsBase[k] = v;
+                    }
+                }
+                // Extras that are page-owned keys (analyzer device, via-VPN toggles) are now
+                // part of the saved model.
+                for(k in extra){
+                    if(!extra.hasOwnProperty(k) || !awgCsOwned(k)) continue;
+                    if(extra[k] === null) delete custom_settings[k]; else custom_settings[k] = String(extra[k]);
+                }
+            }
+            if(res === 'truncated') awgCsTruncLive = retained || live;
+            if(res === 'unknown') awgCsStale = true;
+            done(res, { fobj: fobj, live: live, live2: live2 });
+        }
+        if(fr) fr.addEventListener('load', onl);
+        tm = setTimeout(function(){ arrived(true); }, 20000);
+        t0 = Date.now();
+        awgSubmitForm();
+    });
+    return true;
+}
+// After a normal save the model must equal what was written: drop the page-owned keys the final
+// object left out ('' values, meta of unconfigured slots) and take its trimmed values. Only keys
+// still holding the value frozen at entry are touched; the meta of the slot the form is editing
+// is kept (a name typed for a profile that isn't saved yet — it rides the Apply that saves it), and
+// so are the keys the caller forced in the final (`forced`, see awgSave's fixFinal).
+function awgCsSyncModel(mine, fobj, forced){
+    var keep = pfConfigured(awgPfSel) ? {} : pfMetaKeys(awgPfSel);
+    for(var k in mine){
+        if(!mine.hasOwnProperty(k) || !awgCsOwned(k) || custom_settings[k] !== mine[k]) continue;
+        if(forced && forced.hasOwnProperty(k)) continue;
+        if(!fobj.hasOwnProperty(k)){ if(!keep.hasOwnProperty(k)) delete custom_settings[k]; }
+        else if(fobj[k] !== mine[k]) custom_settings[k] = fobj[k];
+    }
+}
+// The user-facing message of a save outcome that means the same for every caller (tail = the
+// action-specific consequence of a discarded save).
+function awgSaveNotify(res, info, tail){
+    info = info || {};
+    if(res === 'overflow') alert(awgOverflowMsg(info.ovf));
+    else if(res === 'conflict'){ if(confirm(T('MSG_CS_CONFLICT'))) awgReloadFresh(); }
+    else if(res === 'busy') alert(T('MSG_ROUTER_BUSY'));
+    else if(res === 'login') alert(T('MSG_SESSION_EXPIRED'));
+    else if(res === 'discarded') alert(T('MSG_SAVE_DISCARDED') + (tail ? '\n' + tail : ''));
+    else if(res === 'unknown') alert(T('MSG_CS_UNKNOWN'));
+    else if(res === 'truncated') alert(T('MSG_STORE_TRUNCATED'));
+}
+// Reload for a conflict: a plain cache-busted GET (no scroll-to-log flag, unlike awgReload).
+function awgReloadFresh(){ window.location.href = window.location.pathname + '?_=' + (new Date()).getTime(); }
+// busyUI for a single button: «Checking…» + disabled while the live store is read, the button's
+// own label/state back at submit (the caller's onSubmit then takes over) or when nothing was posted.
+function awgBtnBusyUI(btn){
+    var lbl = null, dis = false;
+    return function(phase){
+        if(!btn) return;
+        if(phase === 'check'){ lbl = btn.value; dis = btn.disabled; btn._awgChk = true; btn.value = T('BTN_CHECKING'); btn.disabled = true; }
+        else if(lbl !== null){ btn.value = lbl; btn.disabled = dis; btn._awgChk = false; lbl = null; }
+    };
 }
 
 // Load the changelog straight from the repo, fetched by the frontend. Use the
@@ -1901,12 +2502,45 @@ var AWG_CONF_KEY_CANON = (function(){
 var awgPfSel = 1;         // slot the form currently edits
 var awgPfSnapshot = '';   // form state at load — detects unsaved edits on slot change
 var awgPfStatus = null;   // last status.profile from the backend (active/user/auto)
-var awgPfSwitchTo = 0;    // pending target of a «Switch to» submit (select it once posted)
+var awgPfPtrAuto = null;  // the pointer value pfUserFix last wrote (a K13 repair, not a user choice)
+var awgLastStatus = null; // the last status object read (transition guards, switch bookkeeping)
 var awgPfRenderKey = '';  // active|auto of the last bar render (skip needless re-renders)
+var awgPfBarMsg = '';     // the bar's own status line («Deleting…» / «Profile deleted ✓»)
+var awgPfBarMsgTimer = null;
+var awgPfBarBusyRender = false;   // the bar was re-rendered (disabled) while a save held the form
+var awgPfBarLocked = [];          // bar controls disabled by pfBarLock, with their prior state
+var awgPfRenderSeq = 0;           // bumps on every bar draw (a postponed render skips if one happened)
+var awgPfRenderPending = false;   // a harvesting render asked for during a save waits for its end
 
 function pfKey(slot, field){
     if(field === 'name' || field === 'fo') return 'awg_pf' + slot + '_' + field;
     return (slot == 1) ? ('awg_' + field) : ('awg_pf' + slot + '_' + field);
+}
+function pfMetaKeys(slot){
+    var o = {};
+    o[pfKey(slot, 'name')] = 1;
+    o[pfKey(slot, 'fo')] = 1;
+    return o;
+}
+// The profile slot a settings key belongs to (0 = none): awg_pf<N>_* (meta of slot 1 included),
+// or one of slot 1's legacy unsuffixed data keys.
+function pfSlotOfKey(k){
+    var m = /^awg_pf(\d+)_/.exec(k);
+    if(m){ var s = parseInt(m[1], 10); return (s >= 1 && s <= AWG_PF_MAX) ? s : 0; }
+    if(/^awg_initdata\d*$/.test(k)) return 1;
+    return (k.indexOf('awg_') === 0 && AWG_PF_FIELDS.indexOf(k.slice(4)) !== -1) ? 1 : 0;
+}
+// Profile names (C4). The store is whitespace-hostile — the firmware's reader cuts a value at its
+// first space, so «My Phone» came back as «My» and the next save persisted the cut. Names are
+// sanitized (whitespace, the store's | and ; delimiters and < > become one space, 32 chars) and
+// stored with '%' → %25 and ' ' → %20; decoding is one pass over exactly those two escapes, so a
+// legacy raw name (stored before 1.5.26) decodes to itself.
+function pfNameSan(s){
+    return String(s == null ? '' : s).replace(/[\s|;<>]+/g, ' ').replace(/^ +| +$/g, '').slice(0, 32).replace(/[\uD800-\uDBFF]$/, '').replace(/ +$/, '');
+}
+function pfNameEnc(s){ return pfNameSan(s).replace(/%/g, '%25').replace(/ /g, '%20'); }
+function pfNameDec(s){
+    return String(s == null ? '' : s).replace(/%(20|25)/g, function(m, c){ return c === '20' ? ' ' : '%'; });
 }
 function pfUser(){
     var p = parseInt(custom_settings.awg_profile_active, 10);
@@ -1917,21 +2551,45 @@ function pfUser(){
 function pfActiveNow(){
     return (awgPfStatus && awgPfStatus.active >= 1) ? awgPfStatus.active : pfUser();
 }
-function pfConfigured(slot){
-    return !!(custom_settings[pfKey(slot, 'iface_p1')]) && !!(custom_settings[pfKey(slot, 'peer_endpoint')]);
+function pfConfiguredIn(obj, slot){
+    return !!(obj[pfKey(slot, 'iface_p1')]) && !!(obj[pfKey(slot, 'peer_endpoint')]);
+}
+function pfConfigured(slot){ return pfConfiguredIn(custom_settings, slot); }
+// K13 on the page: when the pointer names an EMPTY slot (a ≤1.5.25 delete could leave that), the
+// backend's profile_user runs the lowest configured slot. Normalize the MODEL's pointer the same
+// way — not just the getter — so pfUser() and the status' user agree: the form opens on the profile
+// that really runs, the new row's trash reaches the discard path instead of the primary refusal,
+// and «Add profile» appends a real backup rather than filling the pointed slot (an import there
+// would silently make it the primary). The base keeps the old value, so the next save persists the
+// repair as an ordinary page edit. No configured slot at all (a fresh install) = nothing to fix.
+// The value written is remembered (awgPfPtrAuto): a LEGACY save must still treat the repaired
+// pointer as untouched and follow the backend's user (awgCsBuildFinal).
+function pfUserFix(){
+    if(pfConfigured(pfUser())) return;
+    for(var s = 1; s <= AWG_PF_MAX; s++){
+        if(pfConfigured(s)){ custom_settings.awg_profile_active = awgPfPtrAuto = String(s); return; }
+    }
+}
+// Every profile number the user sees is an ORDINAL (C5): the 1-based position among the
+// configured slots in slot order — stored slot numbers stay stable and are never renumbered, so
+// slots {1,3} read as #1 and #2 (never «3/2»). An unconfigured slot (the unsaved new row) is N+1.
+function pfOrdinal(slot){
+    var k = 0;
+    for(var n = 1; n <= AWG_PF_MAX; n++){ if(pfConfigured(n)){ k++; if(n === slot) return k; } }
+    return k + 1;
 }
 function pfName(slot){
-    var nm = custom_settings[pfKey(slot, 'name')];
-    return nm ? String(nm) : T('PF_UNNAMED', slot);
+    var nm = pfNameDec(custom_settings[pfKey(slot, 'name')] || '');
+    return nm ? nm : T('PF_UNNAMED', pfOrdinal(slot));
 }
 // Derive a default profile name from an imported .conf filename — providers usually name the
 // file after the country/location (Netherlands.conf, nl-amsterdam.conf). Strips any path and
-// the trailing extension, then applies the same sanitation as the name inputs (the store's
-// | and ; delimiters out, whitespace collapsed, capped at 32). Unicode names (Германия.conf)
-// pass through. Empty result (e.g. a dotfile) → caller keeps the "Profile N" fallback.
+// the trailing extension, then applies the same sanitation as the name inputs (pfNameSan).
+// Unicode names (Германия.conf) pass through. Returns the DISPLAY form (the caller encodes it);
+// empty result (e.g. a dotfile) → caller keeps the "Profile N" fallback.
 function pfCleanFileName(fname){
     var base = String(fname || '').replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '');
-    return base.replace(/[|;]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 32);
+    return pfNameSan(base);
 }
 function pfInitB64(slot){
     var b64 = custom_settings[pfKey(slot, 'initdata')] || '';
@@ -1988,9 +2646,16 @@ function pfWipeSlot(slot){
     delete custom_settings[pfKey(slot, 'fo')];
 }
 
+// The form reads as a DELETE of its slot: no private key, no peer key, no endpoint.
+function pfFormEmpty(){
+    var ids = ['awg_iface_p1', 'awg_peer_p1', 'awg_peer_endpoint'];
+    for(var i = 0; i < ids.length; i++){ if((document.getElementById(ids[i]) || {}).value) return false; }
+    return true;
+}
+
 // Serialize the config form into the slot's keys. Returns false when validation blocks the
-// save (field flagged). A fully-empty form is allowed for a NON-active slot — it wipes the
-// slot (that's how a delete gets persisted) — but the active slot must stay complete.
+// save (field flagged). A fully-empty form (pfFormEmpty) is allowed for a NON-active slot — it
+// wipes the slot (that's how a delete gets persisted) — but the active slot must stay complete.
 function pfStoreForm(slot){
     var vals = {};
     for(var i = 0; i < AWG_PF_FIELDS.length; i++){
@@ -2003,12 +2668,29 @@ function pfStoreForm(slot){
         vals[AWG_PF_FIELDS[i]] = v;
     }
     var pk = vals.iface_p1 || '', pubk = vals.peer_p1 || '', ep = vals.peer_endpoint || '';
-    if(!pk && !pubk && !ep){
+    if(pfFormEmpty()){
         if(slot == pfActiveNow()){
             awgFlagField('awg_iface_p1', T('MSG_REQUIRED_FIELDS'));
             return false;
         }
+        // D6 on this second delete path, the same rule as pfDelete: under a failover override the
+        // USER's primary is not the running slot, yet wiping it would leave the pointer on an empty
+        // slot. An already-empty slot is exempt — wiping it deletes nothing, and a pointer an older
+        // version left on an empty slot must not block every Apply. (pfConfigured still reads the
+        // stored keys here: this function writes only after validation.)
+        if(pfConfigured(slot) && (slot == pfUser() || (awgPfStatus && slot == awgPfStatus.user))){
+            awgFlagField('awg_iface_p1', T('MSG_PF_DEL_PRIMARY'));
+            return false;
+        }
         pfWipeSlot(slot);
+        // Clear the slot's name in the bar too — else applyConfig's harvest right after this
+        // would write the typed name back and resurrect an orphan awg_pfN_name (D3) — and put its
+        // failover box back to the default (on): the harvest keeps an untick of the edited slot,
+        // which a profile imported into the emptied slot later would inherit.
+        var bne = document.getElementById('awg_pf_name_' + slot);
+        if(bne) bne.value = '';
+        var bfe = document.getElementById('awg_pf_fo_' + slot);
+        if(bfe) bfe.checked = true;
         awgPfSnapshot = pfFormSerialize();
         return true;
     }
@@ -2074,40 +2756,73 @@ function pfStoreForm(slot){
 
 // Pull the bar's editable state (names, per-slot failover flags, the global toggle) into the
 // local model. Runs before every bar re-render and on Apply, so typed-but-unsaved values
-// survive a re-render and always ride the next POST.
+// survive a re-render and always ride the next POST. Never while a save holds the form: its
+// rollback / model sync own the model then.
 function pfHarvestBar(){
+    if(awgFormBusy()) return;
     for(var n = 1; n <= AWG_PF_MAX; n++){
+        var nk = pfKey(n, 'name'), fk = pfKey(n, 'fo');
+        // Meta of a slot that is neither configured nor the one being edited is an orphan (a
+        // deleted profile's leftover, D3): never keep it, whatever an input may still show.
+        if(!pfConfigured(n) && n !== awgPfSel){ delete custom_settings[nk]; delete custom_settings[fk]; continue; }
         var ne = document.getElementById('awg_pf_name_' + n);
         if(ne){
-            var v = ne.value.replace(/[|;]/g, ' ').trim().slice(0, 32);
-            if(v) custom_settings[pfKey(n, 'name')] = v; else delete custom_settings[pfKey(n, 'name')];
+            var v = pfNameEnc(ne.value);
+            if(v) custom_settings[nk] = v; else delete custom_settings[nk];
         }
         var fe = document.getElementById('awg_pf_fo_' + n);
         if(fe){
-            // Only configured slots carry a persisted flag — else an empty-form "delete"
-            // followed by this harvest would resurrect an orphan awg_pfN_fo key.
-            if(pfConfigured(n)) custom_settings[pfKey(n, 'fo')] = fe.checked ? '1' : '0';
-            else delete custom_settings[pfKey(n, 'fo')];
+            // A configured slot carries an explicit flag. The EDITED unsaved slot keeps an untick
+            // too (absent = on, as the reader and the backend read it), like its typed name: every
+            // redraw draws the box from the model — a refused Apply's rollback, a re-import, a
+            // status-driven render — so a flag dropped here came back ticked, and the Apply that
+            // saved the profile stored fo=1 against the user's choice. awgCsBuildFinal drops the
+            // meta of unconfigured slots from every POST; the empty-form wipe resets the box.
+            if(pfConfigured(n)) custom_settings[fk] = fe.checked ? '1' : '0';
+            else if(!fe.checked) custom_settings[fk] = '0';
+            else delete custom_settings[fk];
         }
     }
     var fw = document.getElementById('awg_failover');
     if(fw) custom_settings.awg_failover = fw.checked ? '1' : '0';
 }
 
-function pfRenderBar(){
+// noHarvest: render the model as it is (after a save / a rollback the model is the truth and the
+// inputs may still show what was just posted or refused). While a save holds the form only such a
+// render draws (disabled); a harvesting one can't harvest then (pfHarvestBar), and drawing from a
+// model that never saw what is typed into the bar reset it: a save that doesn't harvest the bar
+// (geo update, analyzer start, update) keeps its unapplied names / failover ticks ONLY in the
+// inputs — a status-driven render after a failover hop wiped them, then pfBarLock(false)'s redraw
+// made it final. It waits for the save's end instead and harvests first — unless the bar has been
+// drawn since (the caller's own redraw after a save that harvested on entry: the model is the truth).
+function pfRenderBar(noHarvest){
     var bar = document.getElementById('awg_pf_bar');
     if(!bar) return;
-    pfHarvestBar();
+    var busy = awgFormBusy();
+    if(busy && !noHarvest){
+        if(!awgPfRenderPending){
+            awgPfRenderPending = true;
+            var seq = awgPfRenderSeq;
+            awgAfterSave(function(){ awgPfRenderPending = false; if(awgPfRenderSeq === seq) pfRenderBar(); });
+        }
+        return;
+    }
+    if(!noHarvest) pfHarvestBar();
     var active = pfActiveNow();
     var auto = !!(awgPfStatus && awgPfStatus.auto);
     awgPfRenderKey = active + '|' + (auto ? 1 : 0);
     var trash = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg>';
+    var dis = busy ? ' disabled' : '';
+    // Configured slots in slot order, numbered by ordinal (C5); the unsaved new row (the form
+    // edits an unconfigured slot) comes LAST as N+1, whatever its slot number.
+    var rows = [], n;
+    for(n = 1; n <= AWG_PF_MAX; n++){ if(pfConfigured(n)) rows.push(n); }
+    var used = rows.length;
+    if(!pfConfigured(awgPfSel)) rows.push(awgPfSel);
     var html = '';
-    var used = 0;
-    for(var n = 1; n <= AWG_PF_MAX; n++){
-        var cfg = pfConfigured(n);
-        if(cfg) used++;
-        if(!cfg && n !== awgPfSel) continue;   // show configured slots + the one being edited
+    for(var ri = 0; ri < rows.length; ri++){
+        n = rows[ri];
+        var cfg = (ri < used);
         // The edited slot shows the LIVE form endpoint (a just-imported .conf is visible
         // before Apply); other slots show their stored value.
         var ep = (n === awgPfSel)
@@ -2115,29 +2830,86 @@ function pfRenderBar(){
             : (custom_settings[pfKey(n, 'peer_endpoint')] || '');
         var foChecked = (custom_settings[pfKey(n, 'fo')] != '0') ? ' checked' : '';
         html += '<div class="awg-pf-row' + (n === awgPfSel ? ' sel' : '') + '" onclick="pfSelect(' + n + ');" title="' + escHtml(T('TITLE_PF_EDIT')) + '">' +
-            '<b style="min-width:14px; text-align:center;">' + n + '</b>' +
-            '<input type="text" class="input_25_table" style="width:150px;" id="awg_pf_name_' + n + '" maxlength="32" value="' + escHtml(custom_settings[pfKey(n, 'name')] || '') + '" placeholder="' + escHtml(T('PF_UNNAMED', n)) + '" onclick="event.stopPropagation();">' +
+            '<b style="min-width:14px; text-align:center;">' + (ri + 1) + '</b>' +
+            '<input type="text" class="input_25_table" style="width:150px;" id="awg_pf_name_' + n + '" maxlength="32" value="' + escHtml(pfNameDec(custom_settings[pfKey(n, 'name')] || '')) + '" placeholder="' + escHtml(T('PF_UNNAMED', ri + 1)) + '" onclick="event.stopPropagation();" oninput="pfUpdateDirtyHint();"' + dis + '>' +
             '<span class="awg-pf-ep">' + (ep ? escHtml(ep) : '<i>' + escHtml(T('LBL_PF_EMPTY')) + '</i>') + '</span>' +
             '<span style="margin-left:auto; display:flex; align-items:center; gap:10px;" onclick="event.stopPropagation();">' +
-                '<label style="font-size:11px; color:#b6bdc7; white-space:nowrap; cursor:pointer;" title="' + escHtml(T('TITLE_PF_FO')) + '"><input type="checkbox" id="awg_pf_fo_' + n + '"' + foChecked + '> ' + escHtml(T('LBL_PF_FO')) + '</label>' +
+                '<label style="font-size:11px; color:#b6bdc7; white-space:nowrap; cursor:pointer;" title="' + escHtml(T('TITLE_PF_FO')) + '"><input type="checkbox" id="awg_pf_fo_' + n + '"' + foChecked + ' onchange="pfUpdateDirtyHint();"' + dis + '> ' + escHtml(T('LBL_PF_FO')) + '</label>' +
                 (n === active
                     ? '<span class="awg-pf-badge' + (auto ? ' auto' : '') + '">' + escHtml(T('LBL_PF_ACTIVE')) + (auto ? ' · ' + escHtml(T('LBL_PF_AUTO')) : '') + '</span>'
-                    : (cfg ? '<input type="button" class="button_gen" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;" value="' + escHtml(T('BTN_PF_SWITCH')) + '" onclick="pfSwitch(' + n + ');">' : '')) +
-                '<button type="button" class="awg-remove-btn" aria-label="' + escHtml(T('TITLE_PF_DELETE')) + '" title="' + escHtml(T('TITLE_PF_DELETE')) + '" onclick="pfDelete(' + n + ');">' + trash + '</button>' +
+                    : (cfg ? '<input type="button" class="button_gen" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;" value="' + escHtml(T('BTN_PF_SWITCH')) + '" onclick="pfSwitch(' + n + ');"' + dis + '>' : '')) +
+                '<button type="button" class="awg-remove-btn" aria-label="' + escHtml(T('TITLE_PF_DELETE')) + '" title="' + escHtml(T('TITLE_PF_DELETE')) + '" onclick="pfDelete(' + n + ');"' + dis + '>' + trash + '</button>' +
             '</span>' +
         '</div>';
     }
     var fwChecked = (custom_settings.awg_failover == '1') ? ' checked' : '';
     html += '<div style="display:flex; align-items:center; flex-wrap:wrap; gap:14px; margin-top:5px;">' +
-        '<input type="button" class="button_gen" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;" value="' + escHtml(T('BTN_PF_ADD')) + '" onclick="pfAdd();"' + (used >= AWG_PF_MAX ? ' disabled' : '') + '>' +
-        '<label style="font-size:12px; cursor:pointer;"><input type="checkbox" id="awg_failover"' + fwChecked + '> <span style="color:#FFCC00;">' + escHtml(T('LBL_PF_FAILOVER')) + '</span></label>' +
+        '<input type="button" class="button_gen" style="font-size:11px; padding:2px 10px; font-weight:normal; text-transform:none; letter-spacing:0;" value="' + escHtml(T('BTN_PF_ADD')) + '" onclick="pfAdd();"' + ((used >= AWG_PF_MAX || busy) ? ' disabled' : '') + '>' +
+        '<label style="font-size:12px; cursor:pointer;"><input type="checkbox" id="awg_failover"' + fwChecked + ' onchange="pfUpdateDirtyHint();"' + dis + '> <span style="color:#FFCC00;">' + escHtml(T('LBL_PF_FAILOVER')) + '</span></label>' +
         '</div>' +
+        '<div id="awg_pf_msg" class="awg-hint" style="color:#5cb85c;' + (awgPfBarMsg ? '' : ' display:none;') + '">' + escHtml(awgPfBarMsg) + '</div>' +
+        '<div id="awg_pf_dirty" class="awg-hint" style="color:#FFCC00; display:none;">' + escHtml(T('HINT_PF_UNSAVED')) + '</div>' +
         '<div class="awg-hint">' + escHtml(T('HINT_PF_BAR')) + ' ' + escHtml(T('HINT_PF_FAILOVER')) + '</div>';
     bar.innerHTML = html;
+    awgPfRenderSeq++;
+    awgPfBarBusyRender = busy;
+    pfUpdateDirtyHint();
+}
+// Disable the bar's controls while a save holds the form, and give them back afterwards. A bar
+// re-rendered during the save (noHarvest only — pfDelete's own) was already drawn disabled
+// (pfRenderBar) — it is simply redrawn.
+function pfBarLock(on){
+    var bar = document.getElementById('awg_pf_bar'), i;
+    if(on){
+        awgPfBarLocked = [];
+        awgPfBarBusyRender = false;
+        if(!bar || !bar.querySelectorAll) return;
+        var els = bar.querySelectorAll('input, button');
+        for(i = 0; i < els.length; i++){ awgPfBarLocked.push([els[i], els[i].disabled]); els[i].disabled = true; }
+        return;
+    }
+    var list = awgPfBarLocked;
+    awgPfBarLocked = [];
+    if(awgPfBarBusyRender){ awgPfBarBusyRender = false; pfRenderBar(true); return; }
+    for(i = 0; i < list.length; i++) list[i][0].disabled = list[i][1];
+}
+// The bar's own status line; a success note clears itself after a few seconds.
+function pfSetBarMsg(msg){
+    awgPfBarMsg = msg || '';
+    if(awgPfBarMsgTimer){ clearTimeout(awgPfBarMsgTimer); awgPfBarMsgTimer = null; }
+    var el = document.getElementById('awg_pf_msg');
+    if(el){ el.textContent = awgPfBarMsg; el.style.display = awgPfBarMsg ? '' : 'none'; }
+    if(awgPfBarMsg && awgPfBarMsg === T('LBL_PF_DELETED'))
+        awgPfBarMsgTimer = setTimeout(function(){ pfSetBarMsg(''); }, 5000);
+}
+// P9: are there profile-list edits — names, per-slot failover flags, the global toggle, a pending
+// delete — that the store doesn't hold yet? Compared SEMANTICALLY with the base, as the firmware's
+// reader shows it (an absent fo = on, an absent global toggle = off, a name decoded + sanitized),
+// so an untouched page over a store that never had those keys stays quiet.
+function pfBarDirty(){
+    for(var n = 1; n <= AWG_PF_MAX; n++){
+        var cb = pfConfiguredIn(awgCsBase, n), cm = pfConfigured(n);
+        if(cb !== cm) return true;          // a pending delete (or a profile the store lacks)
+        if(!cb) continue;                   // unconfigured on both sides: its meta is noise
+        var ne = document.getElementById('awg_pf_name_' + n);
+        var nm = pfNameSan(ne ? ne.value : pfNameDec(awgCsNorm(custom_settings[pfKey(n, 'name')]) || ''));
+        if(nm !== pfNameSan(pfNameDec(awgCsNorm(awgCsBase[pfKey(n, 'name')]) || ''))) return true;
+        var fe = document.getElementById('awg_pf_fo_' + n);
+        var fo = fe ? !!fe.checked : (awgCsNorm(custom_settings[pfKey(n, 'fo')]) !== '0');
+        if(fo !== (awgCsNorm(awgCsBase[pfKey(n, 'fo')]) !== '0')) return true;
+    }
+    var fw = document.getElementById('awg_failover');
+    var fv = fw ? !!fw.checked : (awgCsNorm(custom_settings.awg_failover) === '1');
+    return fv !== (awgCsNorm(awgCsBase.awg_failover) === '1');
+}
+function pfUpdateDirtyHint(){
+    var el = document.getElementById('awg_pf_dirty');
+    if(el) el.style.display = pfBarDirty() ? '' : 'none';
 }
 
 // Re-render only when the backend-reported active/auto pair changed — a blind re-render on
-// every 5s status poll would eat the user's in-progress typing in the name inputs.
+// every 5s status poll would eat the user's in-progress typing in the name inputs. During a save
+// the render waits for the save's end (pfRenderBar), and the key stays old until it draws.
 function pfRenderBarIfChanged(){
     var active = pfActiveNow();
     var auto = !!(awgPfStatus && awgPfStatus.auto);
@@ -2145,49 +2917,115 @@ function pfRenderBarIfChanged(){
 }
 
 function pfSelect(n){
-    if(n === awgPfSel) return;
+    if(n === awgPfSel || awgFormBusy()) return;
     if(pfFormSerialize() !== awgPfSnapshot && !confirm(T('MSG_PF_UNSAVED', pfName(awgPfSel)))) return;
     awgPfSel = n;
     pfLoadForm(n);
 }
 
 function pfAdd(){
-    var free = 0;
-    for(var n = 1; n <= AWG_PF_MAX; n++){ if(!pfConfigured(n)){ free = n; break; } }
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
+    // Append (C5): the first free slot AFTER the highest configured one, so the new profile is
+    // numbered last and no existing #k shifts; the lowest free slot only when the tail is full.
+    var hi = 0, free = 0, n;
+    for(n = 1; n <= AWG_PF_MAX; n++){ if(pfConfigured(n)) hi = n; }
+    if(hi < AWG_PF_MAX) free = hi + 1;
+    else { for(n = 1; n <= AWG_PF_MAX; n++){ if(!pfConfigured(n)){ free = n; break; } } }
     if(!free){ alert(T('MSG_PF_FULL', AWG_PF_MAX)); return; }
+    // An unconfigured slot holds nothing worth keeping — but a pre-1.5.26 store may still carry a
+    // deleted profile's name/fo there, which the new profile would silently inherit (D3).
+    if(free !== awgPfSel) pfWipeSlot(free);
     pfSelect(free);
     if(awgPfSel === free) importConfig();   // selection may have been cancelled (unsaved edits)
 }
 
+// Delete = IMMEDIATE (1.5.26): its own settings save (event awgpfsave — the backend only logs it,
+// the tunnel is not restarted), so a delete can't sit unnoticed until some later Apply, and a
+// reload can't bring the profile back. Pending per-slot names / failover flags ride along; the
+// global failover toggle and every other unapplied edit do not.
 function pfDelete(n){
-    if(n === pfActiveNow()){ alert(T('MSG_PF_DEL_ACTIVE')); return; }
-    if(!confirm(T('MSG_PF_DELETE_CONFIRM', pfName(n)))) return;
-    pfHarvestBar();
-    pfWipeSlot(n);
-    if(n === awgPfSel){
-        awgPfSel = pfActiveNow();
-        pfLoadForm(awgPfSel);
-    } else {
-        pfRenderBar();
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
+    var ls = awgLastStatus;
+    if(awgTransitionActive || (ls && (ls.starting || ls.stopping))){ alert(T('MSG_PF_WAIT_TRANSITION')); return; }
+    var act = pfActiveNow();
+    if(n === act){ alert(T('MSG_PF_DEL_ACTIVE')); return; }
+    // Under a failover override the USER's primary is not the running slot, yet deleting it
+    // would leave the pointer on an empty slot (D6). Only a profile that exists (here or in the
+    // store) can be the primary — the unsaved new row must always reach its discard below.
+    if((pfConfigured(n) || pfConfiguredIn(awgCsBase, n)) &&
+       ((n === pfUser() && pfUser() !== act) || (awgPfStatus && n === awgPfStatus.user && awgPfStatus.user !== act))){
+        alert(T('MSG_PF_DEL_PRIMARY'));
+        return;
     }
+    // The unsaved new row: nothing of it is on the router — just drop it here.
+    if(!pfConfigured(n) && !pfConfiguredIn(awgCsBase, n)){
+        if(!confirm(T('MSG_PF_DISCARD_NEW', pfName(n)))) return;
+        pfWipeSlot(n);
+        if(n === awgPfSel){ awgPfSel = act; pfLoadForm(awgPfSel); } else pfRenderBar();
+        return;
+    }
+    if(!confirm(T('MSG_PF_DELETE_CONFIRM', pfName(n)))) return;
+    // Everything typed in the bar goes into the model (the global toggle stays PENDING there —
+    // fixFinal below keeps it out of this POST, and the redraw after the save keeps showing it).
+    pfHarvestBar();
+    var snap = awgSettingsSnapshot();
+    var wasSel = (n === awgPfSel);
+    pfWipeSlot(n);
+    var started = awgSave({
+        mode: 'normal', check: 'full', action: 'start_awgpfsave',
+        // The global failover toggle is NOT part of a delete: post the stored value (the model
+        // keeps the pending one for the next Apply).
+        fixFinal: function(f){
+            if(awgCsBase.hasOwnProperty('awg_failover')) f.awg_failover = awgCsBase.awg_failover;
+            else delete f.awg_failover;
+        },
+        done: function(res, info){
+            var stands = (res === 'verified' || res === 'verified-late' || res === 'unverified' ||
+                          res === 'unknown' || res === 'truncated' || res === 'overflow');
+            if(!stands){
+                awgSettingsRestore(snap);
+                pfSetBarMsg('');
+                pfRenderBar(true);
+                awgSaveNotify(res, info, T('TAIL_DELETE'));
+                return;
+            }
+            // The deletion stands — saved, or (overflow) PENDING in the model for the next Apply,
+            // which the P9 hint keeps visible. The pointer must still name a configured slot (K13,
+            // as at load — the guards above keep this a no-op). A deleted edited slot hands the form
+            // to the running profile, so the next Apply can't store the deleted fields back.
+            pfUserFix();
+            if(wasSel){ awgPfSel = pfActiveNow(); pfLoadForm(awgPfSel); }
+            var ok = (res === 'verified' || res === 'verified-late' || res === 'unverified');
+            pfSetBarMsg(ok ? T('LBL_PF_DELETED') : '');
+            pfRenderBar(true);
+            updateFirstRun();
+            if(res === 'overflow'){
+                var o = info.ovf;
+                // One value too long (o.key) or the whole object over 8 KB: either way the row is gone
+                // here while the router still holds the profile — say so before the field's own text
+                // (MSG_PF_DEL_PENDING_OVER's {0}/{1} are TOTAL bytes, so it can't carry a per-value cut).
+                alert(o.key ? (T('MSG_PF_DEL_PENDING_KEY') + '\n\n' + awgOverflowMsg(o))
+                            : (T('MSG_PF_DEL_PENDING_OVER', o.total, AWG_CS_TOTAL_MAX) + awgOverflowBreakdown(o.obj, o.live)));
+            } else if(!ok) awgSaveNotify(res, info);
+        }
+    });
+    if(!started){ awgSettingsRestore(snap); awgFormBusyRefuse(); return; }
+    pfSetBarMsg(T('LBL_PF_DELETING'));
+    pfRenderBar(true);   // the row is gone; drawn disabled while the save runs
 }
 
 // «Switch to» = one submit that persists everything (incl. the form's pending edits) with
-// the new awg_profile_active and fires start_awgswitch → the backend restarts the tunnel on
-// the target slot. The restart-style transition is driven from applyConfig.
+// the new awg_profile_active and fires start_awgswitch<SLOT> → the backend restarts the tunnel on
+// that slot (the slot rides the event, so a save the firmware discarded or another writer
+// overwrote can't restart the CURRENT profile instead). applyConfig sets the pointer inside its
+// own snapshot, so any refusal rolls it back; the transition starts only once the save landed.
 function pfSwitch(n){
     if(!pfConfigured(n)) return;
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
+    var ls = awgLastStatus;
+    if(awgTransitionActive || (ls && (ls.starting || ls.stopping || ls.geo_busy))){ alert(T('MSG_PF_SWITCH_BUSY')); return; }
     if(!confirm(T('MSG_PF_SWITCH_CONFIRM', pfName(n)))) return;
-    // Flip the local pointer only for the duration of the submit attempt: a validation
-    // failure inside applyConfig must NOT leave it flipped, or the next plain «Apply»
-    // would silently re-point the backend's config at the other slot without a restart.
-    var prev = custom_settings.awg_profile_active;
-    custom_settings.awg_profile_active = String(n);
-    awgPfSwitchTo = n;
-    if(!applyConfig('start_awgswitch')){
-        if(prev === undefined) delete custom_settings.awg_profile_active; else custom_settings.awg_profile_active = prev;
-    }
-    awgPfSwitchTo = 0;
+    applyConfig('start_awgswitch', { switchTo: n });
 }
 
 function loadSettings(){
@@ -2201,6 +3039,16 @@ function loadSettings(){
             custom_settings[lk] = custom_settings[ok];
         delete custom_settings[ok];
     }
+    // Orphan meta (D3): a ≤1.5.25 delete could leave a slot's name/fo behind, and a profile added
+    // to that slot later inherited the old name. Drop it from the MODEL (right after the legacy
+    // carry-forward above, which can make slot 1 configured) — the base keeps it, so the next save
+    // removes it from the store without reading as a conflict.
+    for(var on = 1; on <= AWG_PF_MAX; on++){
+        if(!pfConfigured(on)){ delete custom_settings[pfKey(on, 'name')]; delete custom_settings[pfKey(on, 'fo')]; }
+    }
+    // A pointer at an empty slot follows the backend's K13 fallback (after the carry-forward and
+    // the sweep above, which decide what is configured; before the form picks its slot from it).
+    pfUserFix();
     // Config form = the user's chosen profile slot (I1-I5 reassembly from the slot's chunked
     // initdata happens inside pfLoadForm; the profile bar renders there too).
     awgPfSel = pfUser();
@@ -2231,13 +3079,22 @@ function forceApply(){
 function awgApplyBtns(){
     return document.querySelectorAll('input[onclick^="saveSettings"], input[onclick^="forceApply"]');
 }
-function awgSetApplyBusy(busy){
+// Idempotent: the button's own label is remembered only on the first busy call, so «Checking…»
+// (the live-store read) followed by «Applying…» (the POST) still restores «Apply» at the end.
+function awgSetApplyBusy(busy, label){
     var b = awgApplyBtns();
     for(var i = 0; i < b.length; i++){
         b[i].disabled = busy;
-        if(busy){ b[i]._lbl = b[i].value; b[i].value = T('BTN_APPLYING'); }
-        else if(b[i]._lbl){ b[i].value = b[i]._lbl; }
+        if(busy){
+            if(!b[i]._awgBusy){ b[i]._lbl = b[i].value; b[i]._awgBusy = true; }
+            b[i].value = label || T('BTN_APPLYING');
+        } else if(b[i]._awgBusy){ b[i].value = b[i]._lbl; b[i]._awgBusy = false; }
     }
+}
+// awgSave busyUI for the Apply family (Apply / Save and restart / Switch to).
+function awgApplyBusyUI(phase){
+    if(phase === 'check') awgSetApplyBusy(true, T('BTN_CHECKING'));
+    else if(phase === 'idle') awgSetApplyBusy(false);
 }
 function awgShowAck(msg, ok){
     var ids = ['awg_ack_top', 'awg_ack_bottom'];
@@ -2278,13 +3135,38 @@ function updateFirstRun(){
     if(sb){ sb.disabled = !activeOk; sb.title = !activeOk ? T('TITLE_IMPORT_FIRST') : ''; }
 }
 
-function applyConfig(actionScript){
+// o.switchTo: «Switch to» that slot (the pointer is set inside the snapshot, so every refusal
+// rolls it back; the action becomes start_awgswitch<slot>).
+function applyConfig(actionScript, o){
+    o = o || {};
+    if(awgFormBusy()){ awgFormBusyRefuse(true); return false; }
+    var sw = o.switchTo || 0;
+    // The bar's typed values go into the model first — exactly what any bar re-render does — so
+    // a refused save rolls back to a model that still holds them (the bar is redrawn from it).
+    pfHarvestBar();
     // Every refusal below rolls custom_settings back to this snapshot (awgSettingsSnapshot).
-    var snap = awgSettingsSnapshot(), pfSnap = awgPfSnapshot;
+    var snap = awgSettingsSnapshot(), pfSnap = awgPfSnapshot, ptrAuto = awgPfPtrAuto;
+    var wdEl = document.getElementById('awg_wd_hint');
+    var wdPrev = (wdEl && wdEl.style.display !== 'none') ? (wdEl.textContent || '') : '';
+    // Every restore also redraws the bar FROM the restored model (noHarvest): pfStoreForm's
+    // empty-form wipe clears that slot's name input, and a refusal that left the blank input on
+    // screen let the next harvesting render delete the name the rollback had just brought back.
+    // The model was harvested before the snapshot, so typed bar values survive this redraw. The
+    // pointer's provenance goes back with the pointer (pfUserFix below may have repaired it).
+    function rollback(){ awgSettingsRestore(snap); awgPfSnapshot = pfSnap; awgPfPtrAuto = ptrAuto; pfRenderBar(true); updateFirstRun(); }
+    // «Switch to» the row whose form was just emptied: its row still looks configured, but
+    // pfStoreForm would read the empty form as a delete — the click would wipe the profile and
+    // point the store at an empty slot. Refused before anything is touched (the target must be a
+    // profile that exists: pfSwitch checked the model, and only the edited slot can be wiped).
+    if(sw && sw === awgPfSel && pfFormEmpty()){
+        awgFlagField('awg_iface_p1', T('MSG_PF_SWITCH_EMPTY', pfName(sw)));
+        return false;
+    }
     // Serialize the config form into the profile slot it edits (field validation + the
     // per-slot chunked I1-I5 initdata live inside; a blocked save also blocks the submit).
-    if(!pfStoreForm(awgPfSel)){ awgSettingsRestore(snap); awgPfSnapshot = pfSnap; return false; }
-    // Profile bar state (names, per-slot failover flags, the global toggle) rides along.
+    if(!pfStoreForm(awgPfSel)){ rollback(); return false; }
+    // Profile bar state (names, per-slot failover flags, the global toggle) rides along; again
+    // after pfStoreForm, whose empty-form wipe clears that slot's name input.
     pfHarvestBar();
 
     // Save default policy and clients
@@ -2295,7 +3177,7 @@ function applyConfig(actionScript){
     // legacy unsuffixed keys (id 1) / id-suffixed keys (id>=2), plus the awg_geo_policies
     // registry. geoSerializePolicies captures the visible tab first and validates the files
     // budget; bail (no submit) if it's exceeded.
-    if(!geoSerializePolicies()){ awgSettingsRestore(snap); awgPfSnapshot = pfSnap; return false; }
+    if(!geoSerializePolicies()){ rollback(); return false; }
     custom_settings.awg_geo_autoupdate = document.getElementById('geo_autoupdate').checked ? '1' : '0';
     custom_settings.awg_block_ipv6_dns = document.getElementById('awg_block_ipv6_dns').checked ? '1' : '0';
     custom_settings.awg_no_dns_intercept = document.getElementById('awg_no_dns_intercept').checked ? '1' : '0';
@@ -2323,39 +3205,69 @@ function applyConfig(actionScript){
     custom_settings.awg_update_via_awg = document.getElementById('awg_update_via_awg').checked ? '1' : '0';
     // (Antifilter lists are saved per-policy by geoSerializePolicies above.)
     // (Per-field validation of the config form ran inside pfStoreForm above.)
+    // Not a switch: the pointer must still name a configured slot (K13 — an empty-form wipe may
+    // have emptied the one it names; inside the snapshot, so a refusal rolls this back too).
+    if(sw) custom_settings.awg_profile_active = String(sw);
+    else pfUserFix();
 
-    // Store-limit guard (see AWG_CS_*): the page POSTs the ENTIRE custom_settings object, and
-    // the firmware silently cuts any value over ~3000 bytes (gluing the next key onto it) and
-    // discards the WHOLE save when the JSON is over 8192 bytes — while the page used to show
-    // «Saved». Refuse with a named cause instead.
-    var ovf = awgSettingsOverflow(custom_settings);
-    if(ovf){
-        awgSettingsRestore(snap);
-        awgPfSnapshot = pfSnap;   // the edits are still unsaved: keep the switch-away prompt armed
-        alert(awgOverflowMsg(ovf));
-        return false;
-    }
-
-    // Submit via the shared helper so we get a completion callback for the ack, and disable
-    // the Apply buttons meanwhile so an impatient second tap can't queue a redundant
-    // firewall rebuild / tunnel restart under the backend lock.
-    awgWdHint('');   // the "press Apply to save" note is fulfilled by this very submit
-    awgSetApplyBusy(true);
-    // Sync the header icon. «Применить» (awgsaveconf) only rebuilds the firewall — no tunnel
-    // cycle — so a light fast-probe suffices. «Сохранить и перезапустить» (awgforceapply) and a
-    // profile switch really do do_stop; do_start, so give them the same guarded amber transition.
-    var restartish = (actionScript === 'start_awgforceapply' || actionScript === 'start_awgswitch');
-    awgSignalWidget(restartish ? 'restart' : 'refresh');
-    awgPostSettings(actionScript, null, null, function(ok){
-        awgSetApplyBusy(false);
-        awgShowAck(ok ? T('ACK_SAVED') : T('ACK_SEND_FAILED'), ok);
+    // Post through the save pipeline (awgSave): live-store conflict check, the store-limit guard
+    // on the object the firmware would really receive (the firmware silently cuts any value over
+    // ~3000 bytes and discards the WHOLE save over 8192 bytes — see AWG_CS_*), then a read-back
+    // that says whether the save landed. The Apply buttons stay disabled meanwhile so an
+    // impatient second tap can't queue a redundant firewall rebuild / tunnel restart.
+    var isForce = (actionScript === 'start_awgforceapply');
+    var swConn;
+    var started = awgSave({
+        mode: 'normal', check: 'full',
+        // The switch target rides as an extra too: a LEGACY save lets an untouched pointer follow
+        // the backend's user (awgCsBuildFinal) — for a switch that would post the CURRENT profile
+        // and the backend would refuse start_awgswitch<N> as «did not reach the store».
+        extra: sw ? { awg_profile_active: String(sw) } : null,
+        action: sw ? ('start_awgswitch' + sw) : actionScript,
+        busyUI: awgApplyBusyUI,
+        onSubmit: function(){
+            awgSetApplyBusy(true);
+            awgWdHint('');   // the "press Apply to save" note is fulfilled by this very submit
+            // Sync the header icon. «Применить» (awgsaveconf) only rebuilds the firewall — no
+            // tunnel cycle — so a light fast-probe suffices; «Сохранить и перезапустить» really
+            // does do_stop; do_start. A switch signals only once its save has landed (done).
+            if(sw) swConn = awgLastStatus ? awgLastStatus.conn_start : undefined;
+            else awgSignalWidget(isForce ? 'restart' : 'refresh');
+        },
+        done: function(res, info){
+            awgSetApplyBusy(false);
+            var landed = (res === 'verified' || res === 'verified-late' || res === 'unverified');
+            if(!landed && res !== 'unknown' && res !== 'truncated'){
+                rollback();   // bar + first-run redrawn inside
+                if(wdPrev) awgWdHint(wdPrev);
+                awgSaveNotify(res, info, sw ? T('TAIL_SWITCH') : (isForce ? T('TAIL_FORCEAPPLY') : ''));
+                return;
+            }
+            // The model now equals what was written (awgSave): redraw the bar from it — a profile
+            // saved just now gets its «Switch to» (D8).
+            pfRenderBar(true);
+            updateFirstRun();
+            if(sw && res !== 'truncated'){
+                // The pointer is in the store: show the target in the form and follow the switch
+                // in the guarded transition (P13 — it resolves on the NEW connection only, and
+                // reports a switch the busy router skipped). The form stayed editable during the
+                // flight, and pfStoreForm froze awgPfSnapshot at entry: anything typed since is
+                // unsaved, so the reload asks first (as pfSelect does). A form already on the target
+                // shows what was just stored — nothing to reload, the late edits stay dirty-armed.
+                // Declining keeps the old slot's edits in the form; the switch itself stands.
+                if(awgPfSel !== sw &&
+                   (pfFormSerialize() === awgPfSnapshot || confirm(T('MSG_PF_UNSAVED', pfName(awgPfSel))))){
+                    awgPfSel = sw;
+                    pfLoadForm(sw);
+                }
+                awgSignalWidget('restart');
+                awgEnterTransition('restart', { n: sw, cs: swConn, t0: Date.now() });
+            }
+            if(res === 'unknown' || res === 'truncated'){ awgSaveNotify(res, info); return; }
+            awgShowAck((res === 'verified-late' && !sw) ? T('ACK_SAVED_BUSY') : T('ACK_SAVED'), true);
+        }
     });
-    if(actionScript === 'start_awgswitch'){
-        // Show the target profile in the form (its stored values just rode the POST) and
-        // drive the page into the guarded restart transition — same UX as «Перезапустить».
-        if(awgPfSwitchTo){ awgPfSel = awgPfSwitchTo; pfLoadForm(awgPfSel); }
-        awgEnterTransition('restart');
-    }
+    if(!started){ rollback(); awgFormBusyRefuse(true); return false; }
     // No full-page reload: status + log refresh live via polling. Reloading after a
     // form POST makes the browser prompt to resubmit the form ("resubmit form").
     return true;
@@ -2885,6 +3797,7 @@ function loadGeoSettings(){
 
 function updateGeoLists(){
     if(awgGeoBusy) return;
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
     var btn = document.getElementById('btn_geo_update');
     var isDownload = btn && btn.value === T('BTN_GEO_DOWNLOAD');
     var msg = isDownload
@@ -2901,19 +3814,37 @@ function updateGeoLists(){
     if(!geoSerializePolicies()){ awgSettingsRestore(snap); return; }
     // Carry the current "download via VPN" choice even without a prior Apply.
     syncViaVpnToggles();
-    // Same store-limit guard as Apply: an over-limit POST is discarded whole by the firmware, and
-    // the backend would then download the PREVIOUS matrix while the page claims the new one.
-    var ovf = awgSettingsOverflow(custom_settings);
-    if(ovf){ awgSettingsRestore(snap); alert(awgOverflowMsg(ovf)); return; }
+    // A normal settings save (awgSave): same store-limit guard and live-store check as Apply — an
+    // over-limit POST is discarded whole by the firmware, and the backend would then download the
+    // PREVIOUS matrix while the page claims the new one.
     var log = document.getElementById('awg_log');
-    if(log) log.textContent = T('MSG_GEO_LOADING_WAIT');
-    awgSetGeoBusy(true);
-    // NB this path DOES carry settings (see just above), so it must post the object. It
-    // therefore still writes a page-load snapshot of everything ELSE — a known limitation of the
-    // firmware's whole-object custom_settings API; only paths with no settings intent can clear.
-    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
-    document.form.action_script.value = "start_awgupdategeo";
-    awgSubmitForm();
+    var logPrev = log ? log.textContent : '';
+    var started = awgSave({
+        mode: 'normal', check: 'full', action: 'start_awgupdategeo',
+        busyUI: awgBtnBusyUI(btn),
+        onSubmit: function(){
+            if(log) log.textContent = T('MSG_GEO_LOADING_WAIT');
+            awgSetGeoBusy(true);
+        },
+        done: function(res, info){
+            if(res === 'verified' || res === 'unverified') return;
+            if(res === 'verified-late'){ awgShowAck(T('ACK_SAVED_BUSY'), true); return; }
+            if(res === 'unknown' || res === 'truncated'){ awgSaveNotify(res, info); return; }
+            // Not saved. The model goes back; the geo tabs keep the edits for the next Apply. No bar
+            // redraw: this path never harvested the bar, so names / failover ticks typed but not yet
+            // applied live only in its inputs — a noHarvest render would wipe them, and the restore
+            // touches no bar key (a status-driven redraw asked for during the save runs once it has
+            // ended, harvesting those inputs first — pfRenderBar).
+            awgSettingsRestore(snap);
+            // A discarded save still fired the event: the router IS downloading — the previously
+            // saved lists — so the busy UI stays (updateStatusUI ends it on geo_busy=false).
+            if(res === 'discarded'){ awgSaveNotify(res, info, T('TAIL_GEO')); return; }
+            if(awgGeoBusy) awgSetGeoBusy(false);
+            if(log && log.textContent === T('MSG_GEO_LOADING_WAIT')) log.textContent = logPrev;
+            awgSaveNotify(res, info);
+        }
+    });
+    if(!started){ awgSettingsRestore(snap); awgFormBusyRefuse(); }
     // No reload: geo progress and result show live in the log + status via polling.
 }
 
@@ -3071,12 +4002,55 @@ function awgSignalWidget(kind){
 // The immediate awgRefreshStatus() lets a router that just came back correct the UI at once.
 function awgActionRecover(pollId){
     clearInterval(pollId);
+    if(pollId === awgPoll){ awgPoll = null; awgTransitionActive = false; }
     setOfflineUI();
     if(!statusTimer) statusTimer = setInterval(awgRefreshStatus, 5000);
     awgRefreshStatus();
 }
+// True from awgEnterTransition until that transition resolves / recovers / is abandoned. The
+// guards test THIS, never awgPoll (only the next transition ever reset that).
+var awgTransitionActive = false;
+// Leave a transition: hand the UI to the steady poll with this status.
+function awgTransitionEnd(poll, s){
+    clearInterval(poll);
+    if(poll === awgPoll){ awgPoll = null; awgTransitionActive = false; }
+    updateStatusUI(s);
+    if(statusTimer) clearInterval(statusTimer);
+    statusTimer = setInterval(awgRefreshStatus, 5000);
+    document.getElementById('btn_start').disabled = false;
+    document.getElementById('btn_stop').disabled = false;
+    document.getElementById('btn_restart').disabled = false;
+}
+
+// A profile switch the router skipped or that failed (P13): a yellow note under the status, with
+// «Retry the switch» for the skipped case — an EMPTY post of start_awgswitch<slot>: the pointer is
+// already in the store, and the backend accepts the switch exactly when it is. (Never «Restart»:
+// under a failover override a plain restart brings the backup profile back, not this one.)
+var awgSwitchWarnSlot = 0, awgSwitchWarnConn = null;
+function awgSwitchWarn(kind, n, s){
+    var el = document.getElementById('awg_switch_warn');
+    awgSwitchWarnSlot = kind ? n : 0;
+    awgSwitchWarnConn = (kind && s) ? s.conn_start : null;
+    if(!el) return;
+    if(!kind){ el.style.display = 'none'; el.innerHTML = ''; return; }
+    var html = escHtml(T(kind === 'skipped' ? 'MSG_SWITCH_SKIPPED' : 'MSG_SWITCH_FAILED'));
+    if(kind === 'skipped')
+        html += '<div style="margin-top:8px;"><input type="button" class="button_gen" value="' + escHtml(T('BTN_SWITCH_RETRY')) + '" onclick="awgRetrySwitch(' + n + ');"></div>';
+    el.innerHTML = html;
+    el.style.display = '';
+}
+function awgRetrySwitch(n){
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
+    var ls = awgLastStatus;
+    if(awgTransitionActive || (ls && (ls.starting || ls.stopping))){ alert(T('MSG_PF_SWITCH_BUSY')); return; }
+    var cs = ls ? ls.conn_start : undefined;
+    if(awgPostSettings('start_awgswitch' + n, false, null, function(){}) === false) return;
+    awgSignalWidget('restart');
+    awgEnterTransition('restart', { n: n, cs: cs, t0: Date.now() });
+}
 
 function awgAction(action){
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
     // Plain actions (start/stop/restart) carry NO settings: clear the hidden amng_custom, or
     // the submit would re-post the snapshot left there by the LAST settings flow — with
     // profiles that stale snapshot could silently revert an awg_profile_active switched
@@ -3097,7 +4071,13 @@ function awgAction(action){
 // ('start'|'stop'|'restart') and poll until the backend settles. Split out of awgAction so it can
 // run WITHOUT (re)firing the action — that's how a widget-initiated start/stop flips THIS page in
 // lockstep (see window.awgPageSignal) instead of lagging up to one 5s steady poll.
-function awgEnterTransition(kind){
+// sw = { n: target slot, cs: conn_start before the switch, t0: when its save landed } turns it into
+// a SWITCH transition (P13): the old tunnel still reads running=true until the backend gets to the
+// switch — it may queue behind another lock holder for 30 s+ (switch_req says it is on its way) —
+// so it resolves only on a NEW connection of the target profile. No phase at all for 45 s and the
+// same connection = the busy router skipped it; a phase seen and then a steady non-resolved state
+// for 4 s = it failed.
+function awgEnterTransition(kind, sw){
     var badge = document.getElementById('awg_badge');
     var isStop = (kind === 'stop');
     var expect = !isStop;
@@ -3105,6 +4085,9 @@ function awgEnterTransition(kind){
     // Stop periodic refresh and any prior in-flight action poll
     if(statusTimer){ clearInterval(statusTimer); statusTimer = null; }
     if(awgPoll){ clearInterval(awgPoll); awgPoll = null; }
+    awgTransitionActive = true;
+    awgSwitchWarn('');
+    var seen = false, steadySince = 0;
     // Supersede any status read still in flight (steady refresh or a prior action poll) so its
     // pre-click result can't repaint the UI after we've shown the transitional state below.
     awgActionGen++;
@@ -3131,34 +4114,52 @@ function awgEnterTransition(kind){
         var xhr = new XMLHttpRequest();
         xhr.open('GET', '/user/awg_status.htm?_=' + Date.now(), true);
         xhr.timeout = 3000;
+        // A newer action superseded this poll — abandon it (the new action owns the UI).
+        function superseded(){
+            if(myGen === awgActionGen) return false;
+            clearInterval(poll);
+            if(poll === awgPoll){ awgPoll = null; awgTransitionActive = false; }
+            return true;
+        }
         xhr.onload = function(){
-            // A newer action superseded this poll — abandon it (the new action owns the UI).
-            if(myGen !== awgActionGen){ clearInterval(poll); return; }
+            if(superseded()) return;
             try {
                 var s = JSON.parse(xhr.responseText);
-                // Resolve only when the backend reports the expected final state AND no transition
-                // flag is still set. The !starting/!stopping guard is what makes «Перезапустить»
-                // safe: a restart is do_stop→do_start, and the pre-teardown running=true (still ===
-                // expect=true) would otherwise resolve us instantly, hand the UI to the steady poll,
-                // which then catches the brief fully-stopped moment and shows a clickable «Запустить».
-                var ready = (s.running === expect && !s.starting && !s.stopping);
-                if(ready || attempts >= 90){
-                    clearInterval(poll);
-                    updateStatusUI(s);
-                    statusTimer = setInterval(awgRefreshStatus, 5000);
-                    document.getElementById('btn_start').disabled = false;
-                    document.getElementById('btn_stop').disabled = false;
-                    document.getElementById('btn_restart').disabled = false;
+                awgLastStatus = s;
+                var ready;
+                if(sw){
+                    var phase = !!(s.starting || s.stopping || (s.switch_req > 0 && s.switch_req == sw.n));
+                    if(phase) seen = true;
+                    ready = !!(s.running && !s.starting && !s.stopping && String(s.conn_start) !== String(sw.cs) &&
+                               s.profile && s.profile.user == sw.n);
+                    if(!ready && !phase){
+                        if(!seen && String(s.conn_start) === String(sw.cs) && Date.now() - sw.t0 >= 45000){
+                            awgTransitionEnd(poll, s); awgSwitchWarn('skipped', sw.n, s); return;
+                        }
+                        if(seen){
+                            if(!steadySince) steadySince = Date.now();
+                            else if(Date.now() - steadySince >= 4000){ awgTransitionEnd(poll, s); awgSwitchWarn('failed', sw.n, s); return; }
+                        }
+                    } else steadySince = 0;
+                } else {
+                    // Resolve only when the backend reports the expected final state AND no
+                    // transition flag is still set. The !starting/!stopping guard is what makes
+                    // «Перезапустить» safe: a restart is do_stop→do_start, and the pre-teardown
+                    // running=true (still === expect=true) would otherwise resolve us instantly,
+                    // hand the UI to the steady poll, which then catches the brief fully-stopped
+                    // moment and shows a clickable «Запустить».
+                    ready = (s.running === expect && !s.starting && !s.stopping);
                 }
+                if(ready || attempts >= 90) awgTransitionEnd(poll, s);
             } catch(e){
                 if(attempts >= 90){ awgActionRecover(poll); }
             }
         };
-        xhr.onerror = function(){ if(myGen !== awgActionGen){ clearInterval(poll); return; } if(attempts >= 90){ awgActionRecover(poll); } };
+        xhr.onerror = function(){ if(superseded()) return; if(attempts >= 90){ awgActionRecover(poll); } };
         // Without an ontimeout, a router that only times out (typical while a half-started
         // tunnel is breaking routing/DNS) never reaches the attempts>=90 recovery and the
         // poll wedges forever — leaving the page stuck mid-transition. Mirror onerror.
-        xhr.ontimeout = function(){ if(myGen !== awgActionGen){ clearInterval(poll); return; } if(attempts >= 90){ awgActionRecover(poll); } };
+        xhr.ontimeout = function(){ if(superseded()) return; if(attempts >= 90){ awgActionRecover(poll); } };
         xhr.send();
     }, 2000);
     awgPoll = poll;
@@ -3188,6 +4189,7 @@ function awgCopyText(text, done){
 // current log, wrapped for Telegram — the copy happens inside the click, so it's reliable.
 var awgDiagText = '';
 function awgRunDiag(btn){
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
     if(btn){ if(btn._dlbl == null) btn._dlbl = btn.value; btn.value = T('DIAG_COLLECTING'); btn.disabled = true; }
     awgDiagText = '';
     awgOpenDiag(T('DIAG_COLLECTING_WAIT'));
@@ -3407,31 +4409,57 @@ function awgAnalyzeResumeCheck(){
 function awgAnalyzeToggle(){
     if(awgAnalyzeActive) awgAnalyzeStop(); else awgAnalyzeStart();
 }
+// Start pins the device in awg_analyze_device — and ONLY that: an 'onlyExtra' save posts the live
+// store plus this one key (never this page's unapplied edits). awgAnalyzeStarting spans the whole
+// save; closing the modal meanwhile sets awgAnalyzeCancel (see awgCloseAnalyze): before the POST
+// nothing is sent, after it the capture the router may already have started is stopped.
+var awgAnalyzeStarting = false, awgAnalyzeCancel = false;
 function awgAnalyzeStart(){
-    if(!awgAnalyzeIp) return;
-    // NB this path DOES carry settings (see just above), so it must post the object. It
-    // therefore still writes a page-load snapshot of everything ELSE — a known limitation of the
-    // firmware's whole-object custom_settings API; only paths with no settings intent can clear.
-    var prevDev = custom_settings.awg_analyze_device;
-    custom_settings.awg_analyze_device = awgAnalyzeIp;
-    var ovfA = awgSettingsOverflow(custom_settings, true);
-    if(ovfA){
-        if(prevDev === undefined) delete custom_settings.awg_analyze_device; else custom_settings.awg_analyze_device = prevDev;
-        alert(awgOverflowMsg(ovfA)); return;
-    }
-    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
-    document.form.action_script.value = 'start_awganalyzestart';
-    awgSubmitForm();
-    awgAnalyzeActive = true;
-    awgAnalyzeSetToggle(true);
-    var rows = document.getElementById('awg_analyze_rows');
-    if(rows) rows.innerHTML = '';
-    awgAnalyzeShowEmpty(T('ANALYZE_WAITING'));
-    if(awgAnalyzeTimer) clearInterval(awgAnalyzeTimer);
-    awgAnalyzeTimer = setInterval(awgAnalyzePoll, 1500);
-    setTimeout(awgAnalyzePoll, 700);
+    if(!awgAnalyzeIp || awgAnalyzeStarting) return;
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
+    var ip = awgAnalyzeIp, submitted = false;
+    awgAnalyzeCancel = false;
+    awgAnalyzeStarting = true;
+    var started = awgSave({
+        mode: 'onlyExtra', check: 'total', extra: { awg_analyze_device: ip }, action: 'start_awganalyzestart',
+        busyUI: awgBtnBusyUI(document.getElementById('awg_analyze_toggle')),
+        abort: function(){ return awgAnalyzeCancel; },
+        onSubmit: function(){
+            submitted = true;
+            awgAnalyzeActive = true;
+            awgAnalyzeSetToggle(true);
+            var rows = document.getElementById('awg_analyze_rows');
+            if(rows) rows.innerHTML = '';
+            awgAnalyzeShowEmpty(T('ANALYZE_WAITING'));
+            if(awgAnalyzeTimer) clearInterval(awgAnalyzeTimer);
+            awgAnalyzeTimer = setInterval(awgAnalyzePoll, 1500);
+            setTimeout(awgAnalyzePoll, 700);
+        },
+        done: function(res, info){
+            awgAnalyzeStarting = false;
+            // Every post-submit result means the event may have fired on the router.
+            if(awgAnalyzeCancel){ if(submitted) awgAnalyzeStopQuiet(); return; }
+            if(res === 'verified-late'){ awgAnalyzeShowAck(T('ACK_SAVED_BUSY'), false); return; }
+            if(res === 'verified' || res === 'unverified') return;
+            if(res === 'unknown' || res === 'truncated'){ awgSaveNotify(res, info); return; }
+            // A discarded save still fired the event — with the OLD stored device: stop that
+            // capture at once, and show the analyzer as stopped.
+            if(res === 'discarded') awgAnalyzeStopQuiet();
+            awgSaveNotify(res, info, T('TAIL_ANALYZE'));
+        }
+    });
+    if(!started){ awgAnalyzeStarting = false; awgFormBusyRefuse(); }
+}
+// Stop a capture the page no longer shows (an aborted / discarded start): an empty post, and the
+// analyzer UI back to «stopped».
+function awgAnalyzeStopQuiet(){
+    awgPostSettings('start_awganalyzestop', false, null, function(){});
+    awgAnalyzeActive = false;
+    awgAnalyzeSetToggle(false);
+    if(awgAnalyzeTimer){ clearInterval(awgAnalyzeTimer); awgAnalyzeTimer = null; }
 }
 function awgAnalyzeStop(){
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
     // Stop carries no settings (unlike Start, which pins awg_analyze_device) — clear, don't
     // re-post the page-load snapshot. See awgAction / awgRunDiag (1.5.13).
     var aca = document.getElementById('amng_custom');
@@ -3747,7 +4775,14 @@ function awgAsnLsSave(){
     } catch(e){}
 }
 function awgCloseAnalyze(){
-    if(awgAnalyzeActive) awgAnalyzeStop();
+    // A start still in its save: cancel it (awgAnalyzeStart's done stops what it may have
+    // started). A running capture while another save holds the form: stop it once that ends —
+    // closing must never leave a hidden capture (+ dnsmasq query logging) running.
+    if(awgAnalyzeStarting) awgAnalyzeCancel = true;
+    else if(awgAnalyzeActive){
+        if(awgFormBusy()) awgAfterSave(function(){ if(awgAnalyzeActive) awgAnalyzeStop(); });
+        else awgAnalyzeStop();
+    }
     if(awgAnalyzeTimer){ clearInterval(awgAnalyzeTimer); awgAnalyzeTimer = null; }
     var m = document.getElementById('awg_analyze_modal');
     if(m) m.style.display = 'none';
@@ -4050,24 +5085,31 @@ function updateStatusUI(s){
     awgConnUptime = parseInt(s.conn_uptime, 10) || 0;
     awgTickUptime();
 
-    // Config profiles: sync the local pointer, render the status row + refresh the bar.
+    awgLastStatus = s;
+    // Config profiles: render the status row + refresh the bar. The status never writes the
+    // model's pointer any more (D9): the status file can lag the store, and a pointer changed
+    // elsewhere is exactly what the save pipeline's conflict check must see (awgSave).
     if(s.profile && s.profile.active >= 1){
         awgPfStatus = s.profile;
-        // Keep the local copy of the user's persisted choice fresh, so a tab opened before a
-        // switch made elsewhere (CLI, another tab) can't silently revert the pointer with its
-        // next full-object Apply POST. Skipped mid-transition: the backend may not have
-        // processed the in-flight switch settings yet.
-        if(!s.starting && !s.stopping && s.profile.user >= 1)
-            custom_settings.awg_profile_active = String(s.profile.user);
+        pfRecoverLegacyNames(s.profile);
         var pfRow = document.getElementById('awg_profile_row');
         var pfCell = document.getElementById('awg_profile_cell');
         if(pfRow && pfCell){
-            var pfCfgCount = 0;
-            if(s.profile.list){
-                for(var pfi = 0; pfi < s.profile.list.length; pfi++){ if(s.profile.list[pfi].cfg) pfCfgCount++; }
+            // «name (k/N)» with ORDINALS over the configured slots (C5) — never a slot number;
+            // the name comes from the active slot's list entry (the backend sends it decoded,
+            // empty when unnamed).
+            var pfCfg = [], pfActName = '', pfl = s.profile.list || [];
+            for(var pfi = 0; pfi < pfl.length; pfi++){
+                var pfe = pfl[pfi] || {}, pfs = pfe.n || (pfi + 1);
+                if(!pfe.cfg) continue;
+                pfCfg.push(pfs);
+                if(pfs == s.profile.active) pfActName = String(pfe.name || '');
             }
-            if(pfCfgCount > 1 || s.profile.auto){
-                var ptxt = escHtml(s.profile.name || ('#' + s.profile.active)) + ' <span style="color:#b6bdc7;">(' + s.profile.active + '/' + pfCfgCount + ')</span>';
+            var pfK = 0;
+            for(var pfj = 0; pfj < pfCfg.length; pfj++){ if(pfCfg[pfj] == s.profile.active){ pfK = pfj + 1; break; } }
+            if(pfCfg.length > 1 || s.profile.auto){
+                var ptxt = escHtml(pfActName || T('PF_UNNAMED', pfK || '?'));
+                if(pfK) ptxt += ' <span style="color:#b6bdc7;">(' + pfK + '/' + pfCfg.length + ')</span>';
                 if(s.profile.auto) ptxt += ' <span style="color:#f0ad4e;">&middot; ' + escHtml(T('LBL_PF_AUTO')) + '</span>';
                 pfCell.innerHTML = ptxt;
                 pfRow.style.display = '';
@@ -4075,6 +5117,11 @@ function updateStatusUI(s){
                 pfRow.style.display = 'none';
             }
         }
+        // A skipped/failed switch note goes once the switch happened after all, or the user's
+        // choice moved on.
+        if(awgSwitchWarnSlot && (s.profile.user != awgSwitchWarnSlot ||
+           (s.running && !s.starting && !s.stopping && s.profile.active == awgSwitchWarnSlot && String(s.conn_start) !== String(awgSwitchWarnConn))))
+            awgSwitchWarn('');
         pfRenderBarIfChanged();
     }
 
@@ -4156,7 +5203,7 @@ function updateStatusUI(s){
         else if(awgGeoBusySeen && s.geo_busy === false) awgSetGeoBusy(false);
     }
     var geoBtn = document.getElementById('btn_geo_update');
-    if(geoBtn && !awgGeoBusy){
+    if(geoBtn && !awgGeoBusy && !geoBtn._awgChk){   // (_awgChk: awgSave is reading the store for it)
         geoBtn.disabled = false;
         if(s.geo_downloaded){
             geoBtn.value = T('BTN_GEO_UPDATE_NOW');
@@ -4188,6 +5235,29 @@ function updateStatusUI(s){
     renderGeoMatchallWarning(s);
     renderNoHandshakeWarning(s);
     renderConfPendingWarning(s);
+}
+
+// Legacy spaced names (D2): a name stored raw before 1.5.26 («My Phone») reached this page cut at
+// its first space («My»), while the backend still reads the whole line and reports it decoded in
+// status. Where the model holds exactly that first word and the stored value is not in the new
+// encoded form (no '%'), put the full name back into the model (and the input, unless the user is
+// typing in it) — the unsaved-changes hint then shows it, and the next save stores it encoded.
+function pfRecoverLegacyNames(p){
+    if(awgFormBusy() || !p || !p.list) return;
+    for(var i = 0; i < p.list.length; i++){
+        var it = p.list[i] || {}, sl = it.n || (i + 1);
+        if(!it.cfg || typeof it.name !== 'string' || it.name.indexOf(' ') === -1) continue;
+        if(sl < 1 || sl > AWG_PF_MAX || !pfConfigured(sl)) continue;
+        var key = pfKey(sl, 'name'), bv = awgCsBase[key];
+        if(bv != null && String(bv).indexOf('%') !== -1) continue;
+        if(pfNameDec(custom_settings[key] || '') !== it.name.split(' ')[0]) continue;
+        var enc = pfNameEnc(it.name);
+        if(!enc || enc === custom_settings[key]) continue;
+        custom_settings[key] = enc;
+        var ne = document.getElementById('awg_pf_name_' + sl);
+        if(ne && document.activeElement !== ne) ne.value = pfNameDec(enc);
+        pfUpdateDirtyHint();
+    }
 }
 
 // Warn when a co-resident proxy/DPI tool (Xray/XRAYUI, zapret, ...) is running AND the
@@ -4275,6 +5345,7 @@ function renderCtfBlockWarning(s){
 // down; the page reconnects after it's back (CTF then off, banner gone, tunnel startable).
 function awgDisableCtf(btn){
     if(awgCtfDisabling) return;
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
     if(!confirm(T('CTF_DISABLE_CONFIRM'))) return;
     awgCtfDisabling = true;
     if(btn){ btn.disabled = true; btn.value = T('CTF_DISABLING'); }
@@ -4395,6 +5466,7 @@ function renderNoHandshakeWarning(s){
 
 function awgStopXray(btn){
     if(awgXrayStopping) return;
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
     if(!confirm(T('XRAY_STOP_CONFIRM'))) return;
     awgXrayStopping = true;
     if(btn){ btn.disabled = true; btn.value = T('XRAY_STOPPING'); }
@@ -4422,6 +5494,7 @@ function setOfflineUI(){
 }
 
 function importConfig(){
+    if(awgFormBusy()){ awgFormBusyRefuse(); return; }
     var fileInput = document.getElementById('awg_config_file');
     if(!fileInput){
         fileInput = document.createElement('input');
@@ -4584,13 +5657,16 @@ function parseConfig(text, fileName){
     var gotEp = !!((document.getElementById('awg_peer_endpoint') || {}).value);
     var recognized = gotPk || gotPub || gotEp;
     // Default the edited slot's name from the filename (providers name files by country), but
-    // ONLY when it has no name yet — never clobber one the user typed. Set the row's name input
-    // (if the row is rendered) AND the stored key, so it survives the pfRenderBar() harvest.
+    // ONLY when it has no name yet — never clobber one the user typed. Harvest the bar FIRST: a
+    // name typed into the row but not yet harvested lives only in the input (D11). Set the row's
+    // name input (if the row is rendered) AND the stored (encoded) key, so it survives the
+    // pfRenderBar() harvest.
     if(recognized && fileName){
+        pfHarvestBar();
         var nm = pfCleanFileName(fileName);
         var nameKey = pfKey(awgPfSel, 'name');
         if(nm && !custom_settings[nameKey]){
-            custom_settings[nameKey] = nm;
+            custom_settings[nameKey] = pfNameEnc(nm);
             var ne = document.getElementById('awg_pf_name_' + awgPfSel);
             if(ne) ne.value = nm;
         }
@@ -5056,6 +6132,8 @@ function initAutocompleteIp(){
                 <div id="awg_dnsgeo_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_nohs_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_confpend_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
+                <!-- Skipped / failed profile switch (awgSwitchWarn) -->
+                <div id="awg_switch_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
 
                 <!-- Peers Table -->
                 <div class="awg-section" data-i18n="SEC_CONNECTED_PEERS">Connected peers</div>

@@ -1042,7 +1042,10 @@ srv_update_status(){
     [ "$xray_capture" = "true" ] && ! srv_xray_covers_peers && xray_uncov=true
 
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
-    cat > "${STATUS_FILE}.$$" << STATUSEOF
+    # '<' leaves as its JSON unicode escape, like the client's status: this .htm goes through the
+    # firmware's ASP evaluator and carries user text (peer names, syslog), where a stray
+    # tag opener would livelock httpd.
+    sed 's/</\\u003c/g' > "${STATUS_FILE}.$$" << STATUSEOF
 {"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","port":"${port}","subnet":"${subnet}","router_ip":"${router_ip}","public_key":"${pubkey}","endpoint_hint":"${ep_hint}","wan_private":$([ "$wan_priv" = "1" ] && echo true || echo false),"port_conflict":$([ "$port_conf" = "1" ] && echo true || echo false),"nat_lan":${nat_lan},"autostart":${autostart},"awg3":$(awg3_supported && echo true || echo false),"awg31":$(awg31_supported && echo true || echo false),"client_running":${client_running},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"xray_peers_uncovered":${xray_uncov},"peers":${peers_json},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
@@ -1096,12 +1099,23 @@ do_srv_service_event(){
             do_srv_apply
             ;;
         awgsrvdiag)
-            do_srv_diag > "$DIAG_FILE" 2>&1
+            # Filtered as a stream at this, its one web-served writer (see the client's awgdiag):
+            # an ASP-tag opener in a /www/user .htm livelocks httpd.
+            do_srv_diag 2>&1 | sed 's/<\([%#]\)/< \1/g' > "$DIAG_FILE"
             echo "[DIAG_DONE]" >> "$DIAG_FILE"
             ;;
         awgsrvstatus)  srv_update_status ;;
     esac
 }
+
+# Whitespace in a stored peer name cuts the WHOLE peer store on the pages' settings read-back,
+# and a chunk a pre-1.5.26 page sized by characters reads back cut — rescue both (shared helper,
+# see migrate_server_peers; a one-awk no-op once clean). The same pass also encodes raw spaced
+# CLIENT profile names (migrate_profile_names): this page POSTs every awg_* key as the read-back
+# cut it, so a server-only box would otherwise lose the tails on its first server save. The client
+# dispatch runs it too, but a box serving peers with the client tunnel never started only gets
+# THIS script's crons.
+migrate_server_peers
 
 case "$1" in
     start)            do_srv_start ;;

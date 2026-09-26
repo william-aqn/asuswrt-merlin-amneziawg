@@ -336,7 +336,7 @@ Output:
 /opt/etc/init.d/S99amneziawg update 1.1.50
 
 # Install a local .ipk (copy it to /tmp first: WinSCP with protocol SCP, or scp -O)
-/opt/etc/init.d/S99amneziawg install_ipk /tmp/amneziawg_1.5.25-1_aarch64-3.10.ipk
+/opt/etc/init.d/S99amneziawg install_ipk /tmp/amneziawg_1.5.26-1_aarch64-3.10.ipk
 
 # Tunnel status (the client awg0 and/or the server awgs0)
 awg show

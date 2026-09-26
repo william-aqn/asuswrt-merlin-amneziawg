@@ -72,6 +72,11 @@
 </style>
 <script>
 var custom_settings = <% get_custom_settings(); %>;
+// Save baseline (1.5.26): the store exactly as THIS page loaded it, copied before anything
+// mutates the model. A save compares the LIVE store against it and refuses when a key this page
+// owns (awgs_*) changed since — another tab or SSH — instead of silently reverting that change
+// (see awgsSave). It only ever advances to what this page itself wrote.
+var awgsCsBase = awgsCopy(custom_settings);
 var statusTimer = null;
 // Last AmneziaWG 3.0 capability verdict: true / false / null while unknown. Three-state on
 // purpose — only an explicit false means "this build cannot do 3.0" (see
@@ -83,6 +88,15 @@ var awgsActionGen = 0;          // generation token: stale in-flight polls must 
 var awgsStatus = null;
 var awgsPeers = [];             // working copy of the peer store (saved on Apply)
 var awgsDirty = false;
+var awgsEditSeq = 0;            // bumped by markDirty: an edit made while a save is in flight stays unsaved
+var awgsSaveBusy = false;       // form lock: a settings save is between its pre-fetch and its read-back
+var awgsCsStale = false;        // a save's outcome was 'unknown': every later save is a conflict until reload
+var awgsCsRetained = null;      // the pre-fetched store kept after a TRUNCATED write (see awgsSave)
+var awgsPeersCut = false;       // the peer store read back cut — server saves are refused (loadPeers)
+var awgsPeersCutWhy = '';       // why: 'space' | 'oversize' (the backend repairs both) | 'lost' (the data is gone)
+var awgsPeersLost = [];         // labels of the damaged entries — a confirmed 'lost' save drops them
+var awgsPeersPending = false;   // 'space' while the file may still hold the full list: awgsPeersSettle decides
+var awgsPeersKnown = null;      // this page's view of the store ({keys, n}) for the backend comparison
 var awgsQrLibLoaded = false;
 var awgsTick = null;
 
@@ -117,7 +131,9 @@ en: {
     BTN_RESTART: "Restart",
     BTN_APPLY: "Apply",
     BTN_APPLYING: "Applying…",
+    BTN_CHECKING: "Checking…",
     ACK_SAVED: "Saved ✓",
+    ACK_SAVED_BUSY: "Saved; the router was busy — the action may not have run, check the log.",
     SEC_SETTINGS: "Server settings",
     SEC_OBFS: "Obfuscation parameters (shared by all peer configs)",
     SEC_AWG3: "AmneziaWG 3.0 — peers need a 3.0-capable client",
@@ -193,6 +209,19 @@ en: {
     MSG_GEN_CONFIRM: "Generate new obfuscation parameters? All existing peers will need to re-import their configs.",
     MSG_REGEN_KEYS: "Generate a NEW server key pair? Every existing peer config becomes invalid (clients must re-import).",
     MSG_SETTINGS_TOO_BIG: "Settings don't fit the firmware's store: {0} of {1} bytes. Asuswrt-Merlin does not save a larger set at all (the whole save is discarded), and this budget is shared with the client's profiles and every other addon. Remove a peer or shorten the I1-I5 junk data.",
+    MSG_WAIT_SAVE: "Please wait — the settings are being saved.",
+    MSG_CS_CONFLICT: "The server settings changed after this page was loaded (another tab or SSH). The save was cancelled so as not to overwrite those changes. Reload the page now? Unsaved edits on this page will be lost.",
+    MSG_ROUTER_BUSY: "The router is not responding (a tunnel restart or a list download is in progress) — try again in a few seconds.",
+    MSG_SESSION_EXPIRED: "Your router login session has expired — log in in another tab and try again; your edits on this page are kept.",
+    MSG_SAVE_DISCARDED: "The router did not write the settings (the firmware rejected the save). Reload the page to see the current state.",
+    MSG_SAVE_DISCARDED_SRV: "The server changes were not applied.",
+    MSG_CS_UNKNOWN: "Another page saved the settings at the same moment as this save — the result is unknown. Reload the page.",
+    MSG_STORE_TRUNCATED: "The router wrote the settings only partially (/jffs is probably full). Do not reload the page: free some space and press «Apply» again.",
+    MSG_PEERS_CUT: "Saving is blocked: the peer list was read back incomplete (see the red message at the top), and saving now would erase the missing peers. Reload the page in a minute.",
+    BAN_PEERS_CUT: "<b>The peer list was read back incomplete.</b> The stored list contains a peer name with a space (saved by an older version), and the firmware hands this page only the part before it. Saving the server settings is blocked so the remaining peers are not erased — the server itself keeps using the full list. The addon repairs such a name automatically: reload the page in a minute.",
+    BAN_PEERS_OVERSIZE: "<b>The peer list was read back incomplete.</b> An older version of this page split the stored list into pieces by characters, and with long non-Latin peer names a piece came out longer than the firmware hands back to this page (2999 bytes). Saving the server settings is blocked so the peers in the unread part are not erased or damaged — the server itself keeps using the stored list. The addon re-splits such a list automatically: reload the page in a minute.",
+    BAN_PEERS_LOST: "<b>Damaged peer entries in the stored list: {0}.</b> An older version of this page saved the list in pieces too long for the firmware, and the firmware cut such a piece short in the settings file itself — that data is gone, and waiting will not bring it back. The other peers are intact. «Apply» saves the settings without the damaged entries (it asks first); then re-create the affected peer and give it its new config.",
+    MSG_PEERS_LOST_CONFIRM: "These peer entries are damaged beyond repair (their data was cut off in the stored settings): {0}.\n\nSave the settings WITHOUT them? The other peers are kept. Afterwards re-create the affected peer and give it its new config.\n\n(If you saved the peers from an older version of this page a moment ago, press Cancel, wait a minute and reload the page instead.)",
     MSG_APPLY_RESTART_HINT: "Settings are applied live where possible; subnet/key changes restart the server.",
     BAN_FIRSTRUN: "<b>Server is not configured yet.</b><br>Click «Generate» for the server keys, check the port and subnet, add a peer, then press «Apply» and «Start server».",
     BAN_WAN_PRIVATE: "<b>WAN address is private/CGNAT ({0}).</b> Peers from the internet cannot reach this router directly — you need a public IP from your ISP or a port forward (UDP {1}) on the upstream router.",
@@ -223,7 +252,9 @@ ru: {
     BTN_RESTART: "Перезапустить",
     BTN_APPLY: "Применить",
     BTN_APPLYING: "Применение…",
+    BTN_CHECKING: "Проверка…",
     ACK_SAVED: "Сохранено ✓",
+    ACK_SAVED_BUSY: "Сохранено; роутер был занят — действие могло не выполниться, проверьте журнал.",
     SEC_SETTINGS: "Настройки сервера",
     SEC_OBFS: "Параметры обфускации (общие для всех конфигов пиров)",
     SEC_AWG3: "AmneziaWG 3.0 — пирам нужен клиент с поддержкой 3.0",
@@ -299,6 +330,19 @@ ru: {
     MSG_GEN_CONFIRM: "Сгенерировать новые параметры обфускации? Всем существующим пирам придётся переимпортировать конфиги.",
     MSG_REGEN_KEYS: "Сгенерировать НОВУЮ пару ключей сервера? Все существующие конфиги пиров перестанут работать (переимпорт на клиентах).",
     MSG_SETTINGS_TOO_BIG: "Настройки не помещаются в хранилище прошивки: {0} из {1} байт. Больший набор Asuswrt-Merlin не сохраняет вообще (сохранение отбрасывается целиком), а этот лимит общий с профилями клиента и всеми другими аддонами. Удалите пира или сократите мусорные данные I1-I5.",
+    MSG_WAIT_SAVE: "Подождите — идёт сохранение настроек.",
+    MSG_CS_CONFLICT: "Настройки сервера изменились после загрузки этой страницы (другая вкладка или SSH). Чтобы не перезаписать эти изменения, сохранение отменено. Обновить страницу сейчас? Несохранённые правки на этой странице будут потеряны.",
+    MSG_ROUTER_BUSY: "Роутер не отвечает (идёт перезапуск туннеля или загрузка списков) — повторите через несколько секунд.",
+    MSG_SESSION_EXPIRED: "Сеанс входа в роутер истёк — войдите в другой вкладке и повторите; правки на этой странице сохранены.",
+    MSG_SAVE_DISCARDED: "Роутер не записал настройки (прошивка отклонила сохранение). Обновите страницу, чтобы увидеть текущее состояние.",
+    MSG_SAVE_DISCARDED_SRV: "Изменения сервера не применены.",
+    MSG_CS_UNKNOWN: "Одновременно с этим сохранением настройки записала другая страница — результат неизвестен. Обновите страницу.",
+    MSG_STORE_TRUNCATED: "Роутер записал настройки не полностью (вероятно, заполнен /jffs). Не перезагружайте страницу: освободите место и нажмите «Применить» ещё раз.",
+    MSG_PEERS_CUT: "Сохранение заблокировано: список пиров прочитан не полностью (см. красное сообщение вверху), и сохранение сейчас стёрло бы недостающих пиров. Обновите страницу через минуту.",
+    BAN_PEERS_CUT: "<b>Список пиров прочитан не полностью.</b> В сохранённом списке есть имя пира с пробелом (запись старой версии), а прошивка отдаёт странице только часть до него. Сохранение настроек сервера заблокировано, чтобы не стереть остальных пиров — сам сервер при этом работает с полным списком. Такое имя аддон исправляет автоматически: обновите страницу через минуту.",
+    BAN_PEERS_OVERSIZE: "<b>Список пиров прочитан не полностью.</b> Старая версия этой страницы делила сохранённый список на части по символам, и из-за длинных имён пиров не латиницей часть получилась длиннее, чем прошивка отдаёт странице (2999 байт). Сохранение настроек сервера заблокировано, чтобы не стереть и не повредить пиров из непрочитанной части — сам сервер при этом работает с сохранённым списком. Такой список аддон переразбивает автоматически: обновите страницу через минуту.",
+    BAN_PEERS_LOST: "<b>В сохранённом списке пиров есть повреждённые записи: {0}.</b> Старая версия этой страницы сохраняла список частями длиннее, чем принимает прошивка, и прошивка обрезала такую часть прямо в файле настроек — эти данные потеряны, и ожидание их не вернёт. Остальные пиры целы. «Применить» сохранит настройки без повреждённых записей (сначала спросит); затем создайте этого пира заново и передайте ему новый конфиг.",
+    MSG_PEERS_LOST_CONFIRM: "Эти записи пиров повреждены безвозвратно (их данные обрезаны в сохранённых настройках): {0}.\n\nСохранить настройки БЕЗ них? Остальные пиры сохранятся. Затем создайте этого пира заново и передайте ему новый конфиг.\n\n(Если вы только что сохраняли пиров со старой версии этой страницы, нажмите «Отмена», подождите минуту и обновите страницу.)",
     MSG_APPLY_RESTART_HINT: "Настройки применяются на лету, где возможно; смена подсети/ключей перезапускает сервер.",
     BAN_FIRSTRUN: "<b>Сервер ещё не настроен.</b><br>Нажмите «Сгенерировать» для ключей сервера, проверьте порт и подсеть, добавьте пира, затем «Применить» и «Запустить сервер».",
     BAN_WAN_PRIVATE: "<b>WAN-адрес приватный/CGNAT ({0}).</b> Пиры из интернета не достучатся до роутера напрямую — нужен белый IP от провайдера или проброс порта (UDP {1}) на вышестоящем роутере.",
@@ -340,16 +384,20 @@ function ss(key, val){
     if (val === '' || val === undefined || val === null) delete custom_settings[key];
     else custom_settings[key] = String(val);
 }
-// chunk a long value across key, key1, key2… (<=2900 chars each — the firmware caps one
+// chunk a long value across key, key1, key2… (<=2900 bytes each — the firmware caps one
 // custom_settings value at ~3000 and silently truncates the rest; same scheme as awg_initdata)
+// The cap is in BYTES (the page reads back <=2999 bytes of a value), so chunks are cut by UTF-8
+// length since 1.5.26 (2900 CHARS before): ~17 peers with long Cyrillic names made a chunk ~3300 bytes,
+// which the page then read back cut. ASCII content (keys, base64 I1-I5) chunks exactly as before;
+// the backend just concatenates the chunks, so their boundaries are free to move.
 var CHUNK = 2900;
 function setChunked(baseKey, val, maxChunks){
     for (var i = 1; i <= maxChunks; i++) delete custom_settings[baseKey + i];
     if (!val) { delete custom_settings[baseKey]; return; }
-    if (val.length <= CHUNK) { custom_settings[baseKey] = val; return; }
-    custom_settings[baseKey] = val.substr(0, CHUNK);
-    for (var j = 1; j * CHUNK < val.length && j <= maxChunks; j++)
-        custom_settings[baseKey + j] = val.substr(j * CHUNK, CHUNK);
+    var parts = awgsSplitBytes(val, CHUNK);
+    custom_settings[baseKey] = parts[0];
+    for (var j = 1; j < parts.length && j <= maxChunks; j++)
+        custom_settings[baseKey + j] = parts[j];
 }
 function getChunked(baseKey, maxChunks){
     var v = gs(baseKey);
@@ -362,21 +410,162 @@ function getChunked(baseKey, maxChunks){
 }
 
 /* ---- peer store (name|ip|policy|mode|enabled|pubkey|privkey|psk ; entries ';'-joined) ---- */
+// Inner whitespace becomes '_' (1.5.26): the firmware's reader cuts a stored value at its first
+// whitespace, and the whole peer list is ONE value — a peer named «My Phone» made this page read
+// back just "My", show no peers at all, and the next save of either page persisted that cut,
+// erasing every peer. (The backend migrates names already stored with spaces.)
 function sanitizeName(n){
-    return String(n || '').replace(/[|;,"\\<>&]/g, '').replace(/^\s+|\s+$/g, '').substr(0, 24);
+    return String(n || '').replace(/[|;,"\\<>&]/g, '').replace(/^\s+|\s+$/g, '').replace(/\s+/g, '_').substr(0, 24);
 }
 function loadPeers(){
     awgsPeers = [];
+    awgsPeersCut = false; awgsPeersCutWhy = ''; awgsPeersLost = []; awgsPeersPending = false;
+    awgsPeersKnown = { keys: {}, n: 0 };
     var raw = getChunked('awgs_peers', 10);
     if (!raw) return;
-    var entries = raw.split(';');
-    for (var i = 0; i < entries.length; i++) {
-        var f = entries[i].split('|');
-        if (f.length < 8) continue;
+    // Chunk boundaries. The 1.5.25 writer ended every non-last chunk at exactly 2900 CHARS; this
+    // one (and the backend's re-split) cuts by bytes and ends a chunk short of 2900 bytes ONLY
+    // where the next character would not fit (cb + w > 2900). Anything else is a cut, and the
+    // reassembled list glues two pieces together at that junction without failing the field
+    // count below (a 2897-2899-byte ASCII chunk is a cut too: its next char would have fit):
+    //  - over 2900 bytes: an old char-sized chunk the reader capped at 2999 bytes ('oversize' —
+    //    the backend re-splits the list by bytes). The LAST chunk counts too once it reads back
+    //    capped (2999-3001 bytes: 2999, plus a U+FFFD for a character cut in half) — the hidden
+    //    part is then the end of the final entry, usually inside its psk: 8 fields, no alarm;
+    //  - shorter: the value ended at a whitespace in a legacy peer name ('space' — the backend
+    //    rewrites it to '_'), or a page already re-saved that cut view (then it is lost: see
+    //    awgsPeersSettle).
+    // A chunk that ends the way a byte splitter ends one is only PROBABLY that (sigs): a
+    // whitespace cut of an old 2900-CHAR chunk can leave exactly 2897-2900 bytes too, when the
+    // names before the space are multi-byte (an ASCII kept part is always under 2900 bytes and
+    // the rule above catches it). The entry across such a junction decides it, below.
+    var oversize = false, space = false, byteSplit = false, cuts = [], sigs = [], off = 0, c, i, j, f;
+    for (c = 0; c <= 10; c++) {
+        var ck = gs('awgs_peers' + (c ? c : '')), nx = (c < 10) ? gs('awgs_peers' + (c + 1)) : '';
+        if (!ck) break;
+        var cb = awgsUtf8Len(ck);
+        off += ck.length;
+        if (!nx) { if (cb >= 2999 && ck.length < CHUNK) oversize = true; break; }
+        if (ck.length === CHUNK) continue;
+        var w = awgsUtf8Len(/^[\uD800-\uDBFF][\uDC00-\uDFFF]/.test(nx) ? nx.substr(0, 2) : nx.charAt(0));
+        if (cb <= CHUNK && cb + w > CHUNK) { byteSplit = true; sigs.push(off); continue; }   // a byte splitter's end — probably (sigs)
+        if (cb > CHUNK) oversize = true; else space = true;
+        cuts.push(off);
+    }
+    var entries = raw.split(';'), bad = [], last = -1, pos, e;
+    for (i = entries.length - 1; i >= 0 && last < 0; i--) if (entries[i] !== '') last = i;
+    for (i = 0, pos = 0; i < entries.length; pos += entries[i].length + 1, i++) {
+        e = entries[i];
+        if (e === '') continue;
+        f = e.split('|');
+        // What the backend can see of this entry too (its status lists every 6+-field entry).
+        if (f.length >= 6) { awgsPeersKnown.n++; if (f[5]) awgsPeersKnown.keys[awgsPeerKey(f[5], f[0])] = 1; }
+        // Fewer than 8 fields = a value that was cut, and an entry across a cut junction is glued
+        // from two pieces whatever its field count: flag them rather than show them, so
+        // saveSettings never persists a peer list that lost its tail without asking.
+        var jn = -1;
+        for (j = 0; jn < 0 && j < cuts.length; j++) if (cuts[j] > pos && cuts[j] < pos + e.length) jn = cuts[j];
+        // A byte splitter's junction lies inside whole entries only. One whose entry does not
+        // parse whole (the page's own shape: 8+ fields, a dotted-quad IP, a 0/1 flag) was a
+        // whitespace cut after all: glued, and 'space' — pending, awgsPeersSettle decides from the
+        // backend's view — never 'lost' at once, which offered to delete a peer the file holds
+        // whole. Such a glued entry begins before the junction (a legacy name is trimmed: its
+        // first whitespace is never its first character) and may END at it (the old boundary
+        // sat right before a ';'). Where the old boundary fell sets its shape: past the IP gives
+        // fewer than 8 fields; inside the IP of a 9-field record gives 8 SHIFTED ones (policy as
+        // the IP, the private key as the pubkey) — shown as a peer, and a plain Apply saved them.
+        // Exempt: the backend's cut-down stubs "name|IP" and "name|" (a head whose IP did not
+        // survive) — its re-split store has these junctions too. A glued entry's 2nd field is an
+        // IP only when it kept 8+ fields, and it is never empty (every record ends with a flag or
+        // a psk), so a 2-field entry of either shape is a stub, lost at once as before.
+        for (j = 0; jn < 0 && j < sigs.length; j++)
+            if (sigs[j] > pos && sigs[j] <= pos + e.length && !awgsPeerWhole(f) && !(f.length === 2 && (f[1] === '' || AWGS_IP4.test(f[1])))) {
+                jn = sigs[j]; space = true;
+            }
+        if (f.length < 8 || jn >= 0) {
+            bad.push({ f: f, tail: i === last });
+            // Named from the HEAD alone — the characters before the junction. What follows it
+            // belongs to another place in the list (often inside a key: the private one too), so
+            // it names nothing and must never reach the banner or the confirm. The IP only when
+            // the head holds it whole (its closing '|').
+            var hf = (jn >= 0) ? raw.substring(pos, jn).split('|') : f;
+            awgsPeersLost.push(awgsPeerLabel((jn >= 0 && hf.length < 3) ? [hf[0]] : hf, jn >= 0 && hf.length === 1));
+            continue;
+        }
         // 9th field (xbypass) is optional — old 8-field records default it to false.
         awgsPeers.push({ name: f[0], ip: f[1], policy: f[2] || 'direct', mode: f[3] || 'full',
                          enabled: f[4] === '1', pub: f[5], priv: f[6], psk: f[7], xbypass: f[8] === '1' });
     }
+    if (oversize) awgsPeersCutWhy = 'oversize';
+    else if (space) awgsPeersCutWhy = 'space';
+    else if (bad.length) {
+        // A reader cut at a legacy name's whitespace ends the value INSIDE that name, which leaves
+        // exactly one field, in the list's final entry (such a cut in an earlier chunk shows up
+        // above as a short chunk). Every other damaged entry — 2-7 fields, or one in the middle
+        // of the list — was cut by the pre-1.5.26 WRITER: it stored chunks by characters and the
+        // firmware cut a record over 3039 bytes in the file itself (the backend's re-split only
+        // moves that damage off the old boundary). Nothing can restore it. A one-field final
+        // entry can be either — unless a byte splitter wrote the store, which never holds a space.
+        var t = bad[bad.length - 1];
+        awgsPeersCutWhy = (t.tail && t.f.length === 1 && !byteSplit) ? 'space' : 'lost';
+    }
+    awgsPeersPending = (awgsPeersCutWhy === 'space');
+    awgsPeersCut = (awgsPeersCutWhy !== '');
+}
+// A damaged entry as the banner and the confirm name it: its (partial) name, plus the tunnel IP
+// when that field survived. `cut`: the name is a fragment (an entry glued across a junction
+// that falls inside its name) — marked with '…' like a long one.
+var AWGS_IP4 = /^\d+\.\d+\.\d+\.\d+$/;
+function awgsPeerLabel(f, cut){
+    var nm = f[0] || '?';
+    if (nm.length > 24) { nm = nm.substr(0, 24); cut = true; }
+    return '«' + nm + (cut ? '…' : '') + '»' + (AWGS_IP4.test(f[1] || '') ? ' (' + f[1] + ')' : '');
+}
+// The entry parses whole in the page's own shape (serializePeers: the IP from nextFreeIp, the
+// enabled flag as 0/1) — only judged at a junction a byte splitter may have made (loadPeers).
+function awgsPeerWhole(f){
+    return f.length >= 8 && AWGS_IP4.test(f[1]) && /^[01]$/.test(f[4]);
+}
+// A 'space' cut is only a PENDING repair while the file still holds the whitespace: a page that
+// saved the cut view since (the client page or another addon re-posts what it read back) made
+// it permanent, and the backend's migration has nothing left to fix. The BACKEND's own view tells
+// them apart: the status lists every stored entry with 6+ fields as srv_peers_raw reads it (whole
+// records: no whitespace cut, no 2999-byte cap). A peer there that this page's view lacks = the
+// file still holds more: keep refusing. Nothing more = the backend holds the same damaged list,
+// so waiting fixes nothing: 'lost'. Re-run on every status; a status without a peer list (the
+// synthetic "stopped" one) decides nothing.
+// "Lacks" compares pubkey AND name, never the pubkey alone: when the cut drops only the rest of a
+// spaced name (an old chunk boundary inside «Laptop Vasi», after the space), the entry glued across
+// the junction still carries that peer's real pubkey — a pubkey-only match read "nothing more",
+// settled to 'lost' and offered to delete a peer the file held whole. The glued name always lacks
+// the dropped whitespace (or, once migrated, its '_'), so it never equals the backend's record; a
+// cut some page persisted is the identical record on both sides and still settles.
+function awgsPeerKey(pub, name){
+    // the status strips '\' and '"' from a name (amneziawg_server.sh): mirror it, or a hand-edited
+    // name holding one could never match and a persisted cut would stay refused for good
+    return pub + '|' + String(name == null ? '' : name).replace(/[\\"]/g, '');
+}
+function awgsPeersSettle(st){
+    if (!awgsPeersPending || !st || Object.prototype.toString.call(st.peers) !== '[object Array]') return;
+    // Only a status srv_update_status wrote is the backend's view of the store: install_page seeds
+    // awgs_status.htm with "peers":[] after every reboot (tmpfs) until the server's first status
+    // run, and an empty list would settle a pending whitespace cut to 'lost' — the Apply confirm
+    // would then drop peers the file still holds whole. The real writer always emits "subnet".
+    if (st.subnet === undefined) return;
+    var more = st.peers.length > awgsPeersKnown.n;
+    for (var i = 0; !more && i < st.peers.length; i++)
+        more = !!(st.peers[i] && st.peers[i].pub && !awgsPeersKnown.keys[awgsPeerKey(st.peers[i].pub, st.peers[i].name)]);
+    var why = more ? 'space' : 'lost';
+    if (why !== awgsPeersCutWhy) { awgsPeersCutWhy = why; awgsPeersBanner(); }
+}
+// The red banner names the actual cause: only 'space' and 'oversize' promise the automatic repair
+// (the backend's migrate_server_peers rewrites a stored whitespace to '_' and re-splits a chunk
+// over 2900 bytes — exactly those two; a cut some page already persisted settles to 'lost');
+// 'lost' offers the save without the damaged entries instead of refusing forever.
+function awgsPeersBanner(){
+    var why = awgsPeersCutWhy;
+    showBanner('awgs_ban_peers', why !== '', why === 'lost' ? T('BAN_PEERS_LOST', escHtml(awgsPeersLost.join(', ')))
+               : T(why === 'oversize' ? 'BAN_PEERS_OVERSIZE' : 'BAN_PEERS_CUT'));
 }
 function serializePeers(){
     var parts = [];
@@ -426,7 +615,12 @@ function gv(id){ var e = document.getElementById(id); return e ? e.value.replace
 function sv(id, v){ var e = document.getElementById(id); if (e) e.value = (v === undefined || v === null) ? '' : v; }
 function gchk(id){ var e = document.getElementById(id); return e ? e.checked : false; }
 function schk(id, on){ var e = document.getElementById(id); if (e) e.checked = !!on; }
-function markDirty(){ awgsDirty = true; var b = document.getElementById('awgs_unsaved'); if (b) b.style.display = ''; }
+// A DNS server list split on whitespace AND commas, empty tokens dropped, comma-joined:
+// «1.1.1.1, 8.8.8.8» / «1.1.1.1 8.8.8.8» / « 1.1.1.1 ,, 8.8.8.8, » all give "1.1.1.1,8.8.8.8".
+function awgsDnsList(s){
+    return String(s || '').split(/[\s,]+/).filter(function(t){ return t !== ''; }).join(',');
+}
+function markDirty(){ awgsDirty = true; awgsEditSeq++; var b = document.getElementById('awgs_unsaved'); if (b) b.style.display = ''; }
 
 /* ---- load settings into the form ---- */
 function loadSettings(){
@@ -469,6 +663,8 @@ function loadSettings(){
     }
     loadPeers();
     renderPeers();
+    awgsPeersSettle(awgsStatus);
+    awgsPeersBanner();
     var firstrun = document.getElementById('awgs_firstrun');
     if (firstrun) firstrun.style.display = gs('awgs_privkey') ? 'none' : '';
 }
@@ -616,7 +812,7 @@ function renderPeers(){
     for (var i = 0; i < awgsPeers.length; i++) {
         var p = awgsPeers[i];
         html += '<tr>' +
-          '<td width="16%"><input type="text" maxlength="24" value="' + escHtml(p.name) + '" onchange="peerEdit(' + i + ',\'name\',this.value)"></td>' +
+          '<td width="16%"><input type="text" maxlength="24" value="' + escHtml(p.name) + '" onchange="peerEdit(' + i + ',\'name\',this.value,this)"></td>' +
           '<td width="12%" style="font-family:monospace; font-size:12px;">' + escHtml(p.ip) + '</td>' +
           '<td width="20%"><select onchange="peerEdit(' + i + ',\'policy\',this.value)">' + policyOptions(p.policy) + '</select>' +
               /* vpn_all ONLY (1.5.12): the bypass is a blanket mangle ACCEPT at PREROUTING
@@ -640,9 +836,12 @@ function renderPeers(){
     tb.innerHTML = html;
     paintPeerStates();
 }
-function peerEdit(i, field, val){
+function peerEdit(i, field, val, el){
     if (!awgsPeers[i]) return;
-    if (field === 'name') val = sanitizeName(val);
+    if (field === 'name') {
+        val = sanitizeName(val);
+        if (el) el.value = val;   // show the name as it will be stored («My Phone» → «My_Phone»)
+    }
     awgsPeers[i][field] = val;
     markDirty();
     // The «Bypass Xray» checkbox only shows for a VPN policy — re-render on a policy change
@@ -704,7 +903,7 @@ function buildPeerConf(p){
     var lines = ['[Interface]', 'PrivateKey = ' + p.priv, 'Address = ' + p.ip + '/32'];
     var dnsMode = document.getElementById('awgs_dnsmode_f').value;
     if (dnsMode === 'custom') {
-        var d = gv('awgs_dnscustom_f');
+        var d = awgsDnsList(gv('awgs_dnscustom_f'));   // same form as the stored list, even before «Apply»
         if (d) lines.push('DNS = ' + d);
     } else {
         lines.push('DNS = ' + routerTunnelIp());
@@ -808,6 +1007,293 @@ function dlConf(i){
     document.body.removeChild(a);
 }
 
+/* ---- live-store save pipeline (1.5.26; the client page's awgSave runs the same contract) ----
+ * The firmware keeps EVERY addon's settings in one file (custom_settings.txt), and a POST of
+ * amng_custom REPLACES that file whole, one "key value" line per JSON key in the posted order.
+ * This page used to post the object it had loaded, so a save silently reverted whatever the
+ * client page, another tab or SSH had changed since. A save now:
+ *  1. reads the LIVE store — /user/awg_cs.htm, which the backend writes as a framed copy of the
+ *     firmware's "< % get_custom_settings() % >" tag (falls back to re-reading this page);
+ *  2. refuses as a conflict when a key this page OWNS (awgs_*) changed since the page loaded;
+ *  3. posts every other key from the live store and ours from the page, plus a fresh save token
+ *     as the LAST key — a write cut short by a full /jffs loses it, so it reads as not saved;
+ *  4. reads the store back after the iframe load and reports what actually landed.
+ * The firmware says nothing itself: an over-long POST is dropped whole with the event still
+ * firing, and an expired session answers every request with a login redirect. */
+var AWGS_CS_TOTAL_MAX = 8192;   // httpd: amng_custom is CKN_STR8192, larger = the save is discarded
+var AWGS_CS_URL = '/user/awg_cs.htm';
+var awgsCsSeq = 0, awgsTokSeq = 0;
+// This page's keys. Everything else (the client's awg_*, the shared awg_save_tok, other addons)
+// is taken from the live store on every save, never from this page's load-time copy.
+function awgsOwned(k){ return /^awgs_/.test(k); }
+function awgsCopy(o){
+    var c = {}, k;
+    for (k in o) { if (o.hasOwnProperty(k)) c[k] = o[k]; }
+    return c;
+}
+function awgsUtf8Len(s){
+    s = String(s == null ? '' : s);
+    try { return unescape(encodeURIComponent(s)).length; } catch(e){ return s.length * 3; }
+}
+// Split into pieces of at most `max` UTF-8 bytes, never inside a character (surrogate pairs
+// included). Used for the byte-capped chunks and for the reader's 2999-byte cut.
+function awgsSplitBytes(s, max){
+    var out = [], start = 0, bytes = 0, i = 0, c, d, w, n;
+    s = String(s);
+    while (i < s.length) {
+        c = s.charCodeAt(i); n = 1;
+        if (c < 0x80) w = 1;
+        else if (c < 0x800) w = 2;
+        else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length &&
+                 (d = s.charCodeAt(i + 1)) >= 0xDC00 && d <= 0xDFFF) { w = 4; n = 2; }
+        else w = 3;
+        if (bytes + w > max && i > start) { out.push(s.substring(start, i)); start = i; bytes = 0; }
+        bytes += w; i += n;
+    }
+    out.push(s.substring(start));
+    return out;
+}
+// The firmware reader's view of a stored value: ej_get_custom_settings parses each line with
+// sscanf("%29s%*[ ]%2999s"), so leading blanks are skipped, the value ends at its first
+// whitespace and at 2999 bytes, and a line whose value is empty (or starts with a newline) is
+// not emitted at all. undefined = ABSENT. Every comparison against a read-back goes through
+// this, so a value the firmware itself cut never reads as "changed by somebody else".
+function awgsNorm(v){
+    if (v === undefined || v === null) return undefined;
+    var s = String(v).replace(/^[ \t\v\f\r]+/, '');
+    if (s === '' || s.charAt(0) === '\n') return undefined;
+    var m = /[ \t\n\v\f\r]/.exec(s);
+    if (m) s = s.substring(0, m.index);
+    if (awgsUtf8Len(s) > 2999) s = awgsSplitBytes(s, 2999)[0];
+    return s === '' ? undefined : s;
+}
+// Classify one response body (fixed order): the framed endpoint → a store; else this page as
+// rendered by httpd, found by its own settings line — the pattern is built by concatenation so
+// it can never match the source text of this very function; else a login redirect, only for a
+// SHORT body (the page carries the pattern too, and the literal is split for the same reason:
+// the whole page must never contain it contiguously); else unusable.
+var AWGS_CS_PAGE_RE = new RegExp('var custom' + '_settings =\\s*(\\{|new Object\\(\\))');
+var AWGS_CS_LOGIN_RE = new RegExp('top\\.location\\.href\\s*=\\s*[\'"]/Main_' + 'Login\\.asp');
+function awgsCsObj(txt){
+    var o = null;
+    try { o = JSON.parse(txt); } catch(e){}
+    if (o && typeof o === 'object' && !(o instanceof Array)) return { kind: 'store', obj: o };
+    return { kind: 'unusable' };
+}
+function awgsCsClassify(body){
+    body = String(body == null ? '' : body);
+    var t = body.replace(/^\s+|\s+$/g, ''), m, mid;
+    if (t.length >= 10 && t.substr(0, 5) === 'AWGCS' && t.substr(t.length - 5) === 'AWGCS') {
+        mid = t.substring(5, t.length - 5).replace(/^\s+|\s+$/g, '');
+        // The firmware's own "no settings file yet" answer.
+        return (mid === 'new Object()') ? { kind: 'store', obj: {} } : awgsCsObj(mid);
+    }
+    if ((m = AWGS_CS_PAGE_RE.exec(body))) {
+        if (m[1] !== '{') return { kind: 'store', obj: {} };
+        // String/escape-aware brace scan from that '{' to its matching '}'.
+        var i = m.index + m[0].length - 1, depth = 0, inStr = false, esc = false, j, c;
+        for (j = i; j < body.length; j++) {
+            c = body.charAt(j);
+            if (inStr) {
+                if (esc) esc = false;
+                else if (c === '\\') esc = true;
+                else if (c === '"') inStr = false;
+            } else if (c === '"') inStr = true;
+            else if (c === '{') depth++;
+            else if (c === '}' && --depth === 0) return awgsCsObj(body.substring(i, j + 1));
+        }
+        return { kind: 'unusable' };
+    }
+    if (body.length < 512 && AWGS_CS_LOGIN_RE.test(body)) return { kind: 'login' };
+    return { kind: 'unusable' };
+}
+// One GET → cb({kind:'store'|'login'|'unusable'|'timeout', obj}). The cache buster is unique
+// per REQUEST (never per page load, never the save token): on 3006.102+ httpd sends .htm files
+// with an ETag and no Cache-Control, so a repeated URL may be answered from the browser cache —
+// awg_cs.htm's FILE never changes, only what httpd renders from it does.
+function awgsCsGet(url, ms, cb){
+    var x, fired = false;
+    function fin(r){ if (!fired) { fired = true; cb(r); } }
+    try {
+        x = new XMLHttpRequest();
+        x.open('GET', url + (url.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now() + '_' + (++awgsCsSeq), true);
+        x.timeout = ms;
+        x.onload = function(){ fin(x.status ? awgsCsClassify(x.responseText) : { kind: 'timeout' }); };
+        x.onerror = x.ontimeout = x.onabort = function(){ fin({ kind: 'timeout' }); };
+        x.send();
+    } catch(e){ fin({ kind: 'timeout' }); }
+}
+// The pre-save read → cb(kind, live, url): 'store'; 'legacy' when neither the endpoint nor the
+// page itself yields a store (no framed endpoint on this install: save the old way, unverified);
+// 'login'; or 'busy' when only timeouts came back within 25 s — rc runs our service-event
+// handlers in the foreground for up to two minutes and httpd queues behind them.
+function awgsCsPrefetch(cb){
+    var t0 = Date.now(), urls = [AWGS_CS_URL, location.pathname], u = 0;
+    function attempt(){
+        var left = 25000 - (Date.now() - t0);
+        if (left <= 0) { cb('busy'); return; }
+        awgsCsGet(urls[u], Math.min(6000, left), function(r){
+            if (r.kind === 'store') { cb('store', r.obj, urls[u]); return; }
+            if (r.kind === 'login') { cb('login'); return; }
+            if (r.kind === 'unusable') {
+                if (++u >= urls.length) { cb('legacy'); return; }
+                attempt();
+                return;
+            }
+            setTimeout(attempt, 1000);   // timeout / status 0: the same URL again, within the budget
+        });
+    }
+    attempt();
+}
+// The read-back after the submit: up to 3 attempts of 20 s, 1.5 s apart → cb(store or null).
+function awgsCsVerify(url, cb){
+    var n = 0;
+    function attempt(){
+        awgsCsGet(url, 20000, function(r){
+            if (r.kind === 'store') { cb(r.obj); return; }
+            if (++n >= 3) { cb(null); return; }
+            setTimeout(attempt, 1500);
+        });
+    }
+    attempt();
+}
+// What gets posted: the store's own keys in the store's order (so the file barely moves) — ours
+// from the page, everyone else's from the live store — then our new keys. Our values are trimmed
+// and '' dropped: the reader never returns an empty value, and a blank would only eat budget.
+function awgsBuildFinal(src, mine){
+    var f = {}, k, v;
+    if (src) {
+        for (k in src) {
+            if (!src.hasOwnProperty(k)) continue;
+            if (!awgsOwned(k)) f[k] = src[k];
+            else if (mine.hasOwnProperty(k)) f[k] = mine[k];
+        }
+    }
+    for (k in mine) {
+        if (mine.hasOwnProperty(k) && !f.hasOwnProperty(k) && (!src || awgsOwned(k))) f[k] = mine[k];
+    }
+    for (k in f) {
+        if (!f.hasOwnProperty(k) || !awgsOwned(k)) continue;
+        v = String(f[k]).replace(/^\s+|\s+$/g, '');
+        if (v === '') delete f[k]; else f[k] = v;
+    }
+    return f;
+}
+function awgsKeysOf(){
+    var seen = {}, out = [], a, k;
+    for (a = 0; a < arguments.length; a++) {
+        for (k in arguments[a]) {
+            if (arguments[a].hasOwnProperty(k) && !seen.hasOwnProperty(k)) { seen[k] = 1; out.push(k); }
+        }
+    }
+    return out;
+}
+// Does any key we own differ between the two stores? (the reader's view on both sides)
+function awgsOwnedDiffer(a, b){
+    var ks = awgsKeysOf(a, b), i;
+    for (i = 0; i < ks.length; i++) {
+        if (awgsOwned(ks[i]) && awgsNorm(a[ks[i]]) !== awgsNorm(b[ks[i]])) return true;
+    }
+    return false;
+}
+// Classify the read-back. A store without any token whose keys are a strict in-order prefix of
+// what we posted is a write cut short (the file is written in posted order and the token is
+// last) — unless it is simply the untouched old store (the very first save, before any page set
+// a token), which is a discard. Not so for a retry after a cut write (`retried`): there the old
+// store is itself the cut one, and reading it back unchanged means /jffs is still full.
+function awgsSaveOutcome(live2, tok, live, fin, late, retried){
+    if (!live2) return 'unverified';
+    if (live2.awg_save_tok === tok) return late ? 'verified-late' : 'verified';
+    if (!live2.hasOwnProperty('awg_save_tok')) {
+        var ka = awgsKeysOf(live2), kb = awgsKeysOf(live), i, same = (ka.length === kb.length);
+        for (i = 0; same && i < ka.length; i++) same = (ka[i] === kb[i] && awgsNorm(live2[ka[i]]) === awgsNorm(live[ka[i]]));
+        if (same && !retried && !live.hasOwnProperty('awg_save_tok')) return 'discarded';
+        var vis = [], kf = awgsKeysOf(fin);
+        for (i = 0; i < kf.length; i++) {
+            if (kf[i].length <= 29 && awgsNorm(fin[kf[i]]) !== undefined) vis.push(kf[i]);
+        }
+        var prefix = (ka.length < vis.length);
+        for (i = 0; prefix && i < ka.length; i++) prefix = (ka[i] === vis[i]);
+        if (prefix) return 'truncated';
+        if (!live.hasOwnProperty('awg_save_tok')) return 'unknown';   // changed, but not by us
+    }
+    return (live2.awg_save_tok === live.awg_save_tok) ? 'discarded' : 'unknown';
+}
+// Save the page's model (custom_settings, frozen HERE) through the live store.
+// opts: action (service event), button (shows «Проверка…» while the store is read), onSubmit().
+// cb(result, info) runs after the form lock is released and MUST handle every result:
+//   verified | verified-late (the router was busy: the event may have been dropped) | unverified
+//   | unknown | truncated | discarded | conflict | busy | login | overflow (info.total).
+// Nothing is posted for conflict / busy / login / overflow.
+function awgsSave(opts, cb){
+    var mine = awgsCopy(custom_settings);
+    awgsSaveBusy = true;
+    if (opts.button) { opts.button.value = T('BTN_CHECKING'); opts.button.disabled = true; }
+    function done(res, info){ awgsSaveBusy = false; cb(res, info || {}); }
+    awgsCsPrefetch(function(kind, live, url){
+        if (kind === 'login' || kind === 'busy') { done(kind); return; }
+        var legacy = (kind === 'legacy'), retained = legacy ? null : awgsCsRetained;
+        // A write cut short last time left `retained` (the full store as it was before): take
+        // everyone else's keys from it once more instead of from the cut live store, and skip the
+        // conflict check — the cut store is expected to differ.
+        if (!legacy && !retained && (awgsCsStale || awgsOwnedDiffer(live, awgsCsBase))) { done('conflict'); return; }
+        var fin = awgsBuildFinal(legacy ? null : (retained || live), mine);
+        var tok = Date.now().toString(36) + (++awgsTokSeq).toString(36);
+        delete fin.awg_save_tok;
+        fin.awg_save_tok = tok;          // LAST: a partial write loses it
+        var json = JSON.stringify(fin), total = awgsUtf8Len(json);
+        if (total > AWGS_CS_TOTAL_MAX) { done('overflow', { total: total }); return; }
+        if (retained) awgsCsRetained = null;
+        document.getElementById('amng_custom').value = json;
+        document.form.action_script.value = opts.action;
+        if (opts.onSubmit) opts.onSubmit();
+        // The load listener and the timer belong to THIS submit only. A load 10 s or more after
+        // the submit (or none within 20 s) means httpd sat behind a busy rc: the store was
+        // written, but notify_rc waited ~15 s and may have DROPPED our event.
+        var frame = document.getElementById('hidden_frame'), t0 = Date.now(), settled = false, timer = null;
+        function onLoad(){ arrived(false); }
+        function arrived(timedOut){
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            if (frame && frame.removeEventListener) frame.removeEventListener('load', onLoad, false);
+            var late = timedOut || (Date.now() - t0) >= 10000;
+            if (legacy) { finish('unverified', null); return; }
+            awgsCsVerify(url, function(live2){ finish(awgsSaveOutcome(live2, tok, live, fin, late, !!retained), live2); });
+        }
+        function finish(res, live2){
+            var k;
+            if (res === 'verified' || res === 'verified-late' || res === 'unverified' || res === 'truncated') {
+                // The baseline advances only to what THIS page wrote (our keys).
+                for (k in awgsCsBase) { if (awgsCsBase.hasOwnProperty(k) && awgsOwned(k) && !fin.hasOwnProperty(k)) delete awgsCsBase[k]; }
+                for (k in fin) {
+                    if (!fin.hasOwnProperty(k) || !awgsOwned(k)) continue;
+                    if (awgsNorm(fin[k]) === undefined) delete awgsCsBase[k]; else awgsCsBase[k] = awgsNorm(fin[k]);
+                }
+                // Our own key reads back different from what we wrote: somebody wrote in between.
+                if (live2 && res !== 'truncated' && awgsOwnedDiffer(live2, fin)) awgsCsStale = true;
+            }
+            if (res === 'unknown') awgsCsStale = true;
+            if (res === 'truncated') awgsCsRetained = retained || live;
+            if (res !== 'discarded') {
+                // The model now equals what was posted: our trimmed values, the dropped ones gone.
+                for (k in custom_settings) { if (custom_settings.hasOwnProperty(k) && awgsOwned(k) && !fin.hasOwnProperty(k)) delete custom_settings[k]; }
+                for (k in fin) { if (fin.hasOwnProperty(k) && awgsOwned(k)) custom_settings[k] = fin[k]; }
+            }
+            done(res);
+        }
+        if (frame && frame.addEventListener) frame.addEventListener('load', onLoad, false);
+        timer = setTimeout(function(){ arrived(true); }, 20000);
+        document.form.submit();
+    });
+}
+function awgsSaveNote(txt){
+    var el = document.getElementById('awgs_save_note');
+    if (!el) return;
+    el.textContent = txt || '';
+    el.style.display = txt ? '' : 'none';
+}
+
 /* ---- save / apply ---- */
 function validateForm(){
     if (!gv('awgs_priv_f')) { alert(T('MSG_KEYS_REQUIRED')); return false; }
@@ -819,7 +1305,28 @@ function validateForm(){
     return true;
 }
 function saveSettings(){
+    if (awgsSaveBusy) return;
+    // The peer list read back cut (loadPeers), 'space' / 'oversize': the file still holds the
+    // full list and the backend repairs it within a minute, while saving now would persist the
+    // cut and erase every peer after it — so refuse; the server keeps serving the stored list.
+    if (awgsPeersCut && awgsPeersCutWhy !== 'lost') { alert(T('MSG_PEERS_CUT')); return; }
     if (!validateForm()) return;
+    // 'lost': the damaged entries' data is gone from the file too, so refusing would lock every
+    // server save forever. Saving drops them (loadPeers never put them into awgsPeers) — only
+    // on an explicit yes that names them.
+    var dropLost = awgsPeersCut;
+    if (dropLost && !confirm(T('MSG_PEERS_LOST_CONFIRM', awgsPeersLost.join(', ')))) return;
+    // The model before this save: every failure that posted nothing (or nothing that landed)
+    // puts it back, so a refused value never rides along on a later save. The form keeps the
+    // user's edits either way.
+    var snap = awgsCopy(custom_settings), editSeq = awgsEditSeq;
+    // The DNS list is normalized by TOKENS and stored comma-joined without whitespace: the
+    // firmware reader cuts a value at its first whitespace, so «1.1.1.1, 8.8.8.8» (like the
+    // placeholder) came back as "1.1.1.1," — and so did every peer config built after a reload.
+    // Whitespace is a separator like the comma: deleting it glued «1.1.1.1 8.8.8.8» into one
+    // invalid "1.1.1.18.8.8.8".
+    var dnsList = awgsDnsList(gv('awgs_dnscustom_f'));
+    sv('awgs_dnscustom_f', dnsList);
     ss('awgs_privkey', gv('awgs_priv_f'));
     ss('awgs_pubkey', gv('awgs_pub_f'));
     ss('awgs_port', gv('awgs_port_f'));
@@ -827,7 +1334,7 @@ function saveSettings(){
     ss('awgs_mtu', gv('awgs_mtu_f'));
     ss('awgs_endpoint', gv('awgs_endpoint_f'));
     ss('awgs_dns_mode', document.getElementById('awgs_dnsmode_f').value);
-    ss('awgs_dns_custom', gv('awgs_dnscustom_f'));
+    ss('awgs_dns_custom', dnsList);
     ss('awgs_nat_lan', gchk('awgs_natlan_f') ? '1' : '0');
     ss('awgs_autostart', gchk('awgs_autostart_f') ? '1' : '0');
     ss('awgs_jc', gv('awgs_jc_f')); ss('awgs_jmin', gv('awgs_jmin_f')); ss('awgs_jmax', gv('awgs_jmax_f'));
@@ -848,39 +1355,70 @@ function saveSettings(){
         var iv = gv('awgs_i' + n + '_f');
         if (iv) itxt += 'I' + n + ' = ' + iv + '\n';
     }
-    if (itxt && /[^\x00-\x7F]/.test(itxt)) { alert('I1-I5: ASCII only'); return; }
+    if (itxt && /[^\x00-\x7F]/.test(itxt)) { awgsRestoreModel(snap); alert('I1-I5: ASCII only'); return; }
     setChunked('awgs_initdata', itxt ? btoa(itxt) : '', 30);
     setChunked('awgs_peers', serializePeers(), 10);
 
-    // Whole-store size guard, same as the client page's Apply: this posts the ENTIRE
-    // custom_settings object, and httpd declares amng_custom CKN_STR8192 — a JSON over 8192
-    // bytes fails nvram_check and the WHOLE save is discarded (syslog "nvram_check fail: nvram
-    // amng_custom over length"), while the service event still fires. (The ~64 KB body cap this
-    // guard used to assume was wrong — 1.5.24.) The budget is shared with the client's profiles
-    // and every other addon; peers (pub/priv/psk each) plus chunked I1-I5 junk can reach it.
-    // Refuse with a named cause instead of a silent no-save.
-    var postLen = 0;
-    try { postLen = unescape(encodeURIComponent(JSON.stringify(custom_settings))).length; } catch (e) {}
-    if (postLen > 8192) {
-        alert(T('MSG_SETTINGS_TOO_BIG', postLen, 8192));
-        return;
-    }
-
-    document.getElementById('amng_custom').value = JSON.stringify(custom_settings);
-    document.form.action_script.value = 'start_awgsrvsave';
+    // Whole-store size guard (inside awgsSave, on the object actually posted): httpd declares
+    // amng_custom CKN_STR8192 — a JSON over 8192 bytes fails nvram_check and the WHOLE save is
+    // discarded (syslog "nvram_check fail: nvram amng_custom over length"), while the service
+    // event still fires. (The ~64 KB body cap this guard used to assume was wrong — 1.5.24.) The
+    // budget is shared with the client's profiles and every other addon; peers (pub/priv/psk
+    // each) plus chunked I1-I5 junk can reach it. Refused with a named cause, not a silent no-save.
     var btn = document.getElementById('btn_apply');
-    btn.value = T('BTN_APPLYING'); btn.disabled = true;
-    document.form.submit();
-    awgsDirty = false;
-    document.getElementById('awgs_unsaved').style.display = 'none';
-    setTimeout(function(){
-        btn.value = T('ACK_SAVED');
-        setTimeout(function(){ btn.value = T('BTN_APPLY'); btn.disabled = false; refreshStatus(); }, 1600);
-    }, 2500);
+    awgsSaveNote('');
+    awgsSave({
+        action: 'start_awgsrvsave',
+        button: btn,
+        onSubmit: function(){
+            btn.value = T('BTN_APPLYING');
+            var u = document.getElementById('awgs_unsaved');
+            if (u) u.style.display = 'none';
+        }
+    }, function(res, info){
+        var u = document.getElementById('awgs_unsaved');
+        if (res === 'verified' || res === 'verified-late' || res === 'unverified' || res === 'unknown') {
+            // Saved (or as good as we can tell). An edit made while the save was in flight was
+            // not part of it and stays marked.
+            if (awgsEditSeq === editSeq) { awgsDirty = false; if (u) u.style.display = 'none'; }
+            else if (u) u.style.display = '';
+            // The confirmed 'lost' save wrote the list without the damaged entries: nothing
+            // is cut any more.
+            if (dropLost) {
+                awgsPeersCut = false; awgsPeersCutWhy = ''; awgsPeersLost = []; awgsPeersPending = false;
+                awgsPeersBanner();
+            }
+            btn.value = T('ACK_SAVED');
+            awgsSaveNote(res === 'verified-late' ? T('ACK_SAVED_BUSY') : '');
+            setTimeout(function(){ if (!awgsSaveBusy) { btn.value = T('BTN_APPLY'); btn.disabled = false; } refreshStatus(); }, 1600);
+            if (res === 'unknown') alert(T('MSG_CS_UNKNOWN'));
+            return;
+        }
+        // Not saved. A write cut short keeps the model (the next «Apply» re-posts everything);
+        // every other outcome puts the model back as it was before this save.
+        if (res !== 'truncated') awgsRestoreModel(snap);
+        btn.value = T('BTN_APPLY'); btn.disabled = false;
+        awgsDirty = true;
+        if (u) u.style.display = '';
+        if (res === 'overflow') alert(T('MSG_SETTINGS_TOO_BIG', info.total, AWGS_CS_TOTAL_MAX));
+        else if (res === 'conflict') { if (confirm(T('MSG_CS_CONFLICT'))) location.reload(); }
+        else if (res === 'busy') alert(T('MSG_ROUTER_BUSY'));
+        else if (res === 'login') alert(T('MSG_SESSION_EXPIRED'));
+        else if (res === 'discarded') alert(T('MSG_SAVE_DISCARDED') + ' ' + T('MSG_SAVE_DISCARDED_SRV'));
+        else if (res === 'truncated') alert(T('MSG_STORE_TRUNCATED'));
+    });
+}
+function awgsRestoreModel(snap){
+    var k;
+    for (k in custom_settings) { if (custom_settings.hasOwnProperty(k)) delete custom_settings[k]; }
+    for (k in snap) { if (snap.hasOwnProperty(k)) custom_settings[k] = snap[k]; }
 }
 
 /* ---- start/stop/restart with transitional UI (no buttons during transitions) ---- */
 function srvAction(action){
+    // One shared form + iframe: submitting now would cancel the in-flight save's iframe load and
+    // race its awgsrvsave event in rc (where one of the two gets dropped).
+    if (awgsSaveBusy) { alert(T('MSG_WAIT_SAVE')); return; }
     if (awgsDirty && action === 'start_awgsrvstart') { alert(T('MSG_NEED_SAVE')); return; }
     // Start/stop/restart carry NO settings, so clear the hidden field instead of posting a
     // snapshot (1.5.13 — the client page's awgAction was fixed the same way in 1.4.0).
@@ -1013,6 +1551,7 @@ function applyAwg31CapabilitySrv(cap){
 }
 function renderStatus(st){
     awgsStatus = st;
+    awgsPeersSettle(st);
     applyAwg3CapabilitySrv(st.awg3);
     applyAwg31CapabilitySrv(st.awg31);
     var badge = document.getElementById('awgs_badge');
@@ -1104,6 +1643,7 @@ function showBanner(id, on, html){
 // which calls XRAYUI's own cleanup so the TPROXY/fwmark rules are removed, not just the process.
 var awgsXrayStopping = false;
 function stopXray(btn){
+    if (awgsSaveBusy) { alert(T('MSG_WAIT_SAVE')); return; }   // same shared form as srvAction
     if (!confirm(T('XRAY_STOP_CONFIRM'))) return;
     awgsXrayStopping = true;
     if (btn) { btn.disabled = true; btn.value = T('XRAY_STOPPING'); }
@@ -1185,6 +1725,7 @@ function initial(){
                 </div>
                 <div id="awgs_ban_wan" class="awg-banner red" style="display:none;"></div>
                 <div id="awgs_ban_port" class="awg-banner red" style="display:none;"></div>
+                <div id="awgs_ban_peers" class="awg-banner red" style="display:none;"></div>
                 <div id="awgs_ban_client" class="awg-banner yellow" style="display:none;"></div>
                 <div id="awgs_ban_xray" class="awg-banner red" style="display:none;"></div>
                 <div id="awgs_ban_xraycov" class="awg-banner yellow" style="display:none;"></div>
@@ -1379,6 +1920,7 @@ function initial(){
                 <!-- Apply -->
                 <div style="text-align:center; margin:14px 0;">
                     <input type="button" id="btn_apply" class="button_gen" value="Apply" data-i18n-val="BTN_APPLY" onclick="saveSettings();">
+                    <div id="awgs_save_note" class="awg-hint" style="display:none; color:#e8c46a;"></div>
                     <div class="awg-hint" data-i18n="MSG_APPLY_RESTART_HINT"></div>
                 </div>
 
