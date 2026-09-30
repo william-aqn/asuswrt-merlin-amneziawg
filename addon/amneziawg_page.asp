@@ -4188,28 +4188,40 @@ function awgCopyText(text, done){
 // modal. The modal's "Copy diagnostic data" copies the diagnostics PLUS the
 // current log, wrapped for Telegram — the copy happens inside the click, so it's reliable.
 var awgDiagText = '';
+var awgDiagSeq = 0;
+// Require the completion footer, not a marker quoted somewhere in the diagnostic body.
+function awgDiagMarkOf(txt){
+    var m = /(?:^|\r?\n)\[DIAG_DONE ([a-z0-9-]+)\]\r?\n\[DIAG_DONE\]\s*$/.exec(String(txt || ''));
+    return m ? m[1] : null;
+}
 function awgRunDiag(btn){
     if(awgFormBusy()){ awgFormBusyRefuse(); return; }
     if(btn){ if(btn._dlbl == null) btn._dlbl = btn.value; btn.value = T('DIAG_COLLECTING'); btn.disabled = true; }
     awgDiagText = '';
     awgOpenDiag(T('DIAG_COLLECTING_WAIT'));
+    // Carry a unique request ID in the event, never in custom_settings. A changed server
+    // token alone cannot distinguish this run from a previous slow run finishing after a retry.
+    // The sequence also separates clicks within one clock tick; randomness separates tabs.
+    var token = Date.now().toString(36) + '-' + (++awgDiagSeq).toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+    var url = '/user/awg_diag_' + token + '.htm';
     // Diag carries NO settings, so clear the hidden field rather than re-posting the page-load
     // snapshot (1.5.13). It used to do a "no-op save", which is not a no-op at all: the firmware
     // writes the whole object back, reverting anything changed since this page loaded (the
     // server page in another tab, a CLI profile switch). Same reasoning as awgAction above.
     var acd = document.getElementById('amng_custom');
     if(acd) acd.value = '';
-    document.form.action_script.value = 'start_awgdiag';
+    document.form.action_script.value = 'start_awgdiag' + token;
     awgSubmitForm();
     var t0 = Date.now();
     (function tick(){
         var x = new XMLHttpRequest();
-        x.open('GET', '/user/awg_diag.htm?_=' + Date.now(), true);
+        x.open('GET', url + '?_=' + Date.now(), true);
         x.timeout = 4000;
         x.onload = function(){
             var txt = x.responseText || '';
-            if(txt.indexOf('[DIAG_DONE]') !== -1){ awgDiagFinish(btn, txt, false); return; }
-            if(Date.now() - t0 > 45000){ awgDiagFinish(btn, txt, true); return; }
+            if(x.status === 200 && awgDiagMarkOf(txt) === token){ awgDiagFinish(btn, txt, false); return; }
+            // Missing files, HTTP errors, partial bodies and other runs never become a report.
+            if(Date.now() - t0 > 45000){ awgDiagFinish(btn, null, true); return; }
             setTimeout(tick, 1500);
         };
         x.onerror = x.ontimeout = function(){
@@ -4221,7 +4233,7 @@ function awgRunDiag(btn){
 }
 function awgDiagFinish(btn, txt, timedOut){
     if(btn){ btn.disabled = false; if(btn._dlbl != null){ btn.value = btn._dlbl; btn._dlbl = null; } }
-    var report = String(txt || '').replace(/\[DIAG_DONE\]/g, '').replace(/\s+$/, '');
+    var report = String(txt || '').replace(/\[DIAG_DONE[^\]]*\]/g, '').replace(/\s+$/, '');
     awgDiagText = report;
     var body = document.getElementById('awg_diag_body');
     if(body){
@@ -4954,7 +4966,7 @@ function awgRefreshLog(){
         if(x.status !== 200 || !x.responseText) return;
         var box = document.getElementById('awg_log');
         if(!box) return;
-        var lines = x.responseText.replace(/\[DIAG_DONE\]/g, '').replace(/\s+$/, '').split(/\r?\n/);
+        var lines = x.responseText.replace(/\[DIAG_DONE[^\]]*\]/g, '').replace(/\s+$/, '').split(/\r?\n/);
         if(lines.length > 80) lines = lines.slice(-80);
         var atBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 30;
         box.textContent = awgDecodePct(lines.join('\n'));

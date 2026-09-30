@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.27"
+AWG_VERSION="1.5.28"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -9459,6 +9459,47 @@ do_firewall_restart(){
 
 # --- Service event dispatcher ---
 
+# Publish one web diagnostic. Request IDs travel in the service-event name, not settings:
+# a stale page must never write its custom_settings snapshot just to collect a report.
+do_diag_publish(){
+    local _dtoken="$1" _dout="$DIAG_FILE" _dtmp _dold _dpid
+    if [ -n "$_dtoken" ]; then
+        # The token becomes a filename and a footer. Refuse paths, whitespace and unbounded
+        # input before touching files; the browser emits lowercase base36 with hyphens.
+        case "$_dtoken" in
+            *[!a-z0-9-]*) log_msg "ERROR: invalid diagnostic request token"; return 1 ;;
+        esac
+        [ "${#_dtoken}" -le 48 ] || { log_msg "ERROR: diagnostic request token is too long"; return 1; }
+        _dout="${DIAG_FILE%.htm}_${_dtoken}.htm"
+    else
+        # A tab left open before the update still sends bare awgdiag and polls DIAG_FILE.
+        _dtoken="legacy-$(date +%s)-$$"
+    fi
+    # Keep each request's result long enough for polling/retries, then reclaim RAM on the
+    # next collection. Distinct paths prevent a late old run from overwriting a newer one.
+    local _dbase="${DIAG_FILE##*/}"
+    find "${DIAG_FILE%/*}" -maxdepth 1 -type f -name "${_dbase%.htm}_*.htm" -mmin +10 -exec rm -f {} \; 2>/dev/null
+    # $$ belongs to this dispatcher (not a detached subshell). Never unlink a live writer's
+    # temp: a slow collection may outlive the page's 45-second timeout and a subsequent retry.
+    for _dold in "${DIAG_FILE}".[0-9]* "${DIAG_FILE%.htm}_"*.htm.[0-9]*; do
+        [ -e "$_dold" ] || continue
+        _dpid=${_dold##*.}
+        [ -d "/proc/$_dpid" ] && continue
+        rm -f "$_dold" 2>/dev/null
+    done
+    _dtmp="${_dout}.$$"
+    # Sanitize ASP openers as a stream: httpd interprets them even in /www/user .htm files.
+    # A newline before the footer also handles a probe that emitted no trailing newline.
+    if do_diag 2>&1 | sed 's/<\([%#]\)/< \1/g' > "$_dtmp" &&
+        printf '\n[DIAG_DONE %s]\n[DIAG_DONE]\n' "$_dtoken" >> "$_dtmp" &&
+        mv "$_dtmp" "$_dout" 2>/dev/null; then
+        return 0
+    fi
+    log_msg "ERROR: diag dump could not be written or published to $_dout"
+    rm -f "$_dtmp" 2>/dev/null
+    return 1
+}
+
 do_service_event(){
     local event="$2"
     # AWG-server role events (awgsrv*) are owned by amneziawg_server.sh — hand the whole
@@ -9570,15 +9611,7 @@ do_service_event(){
         awgdoupdate)
             do_update
             ;;
-        awgdiag)
-            # Diagnostic dump into a SEPARATE file — does NOT touch the on-page log. The UI
-            # shows it in a modal and can copy it together with the log. The [DIAG_DONE] marker
-            # tells the UI the (possibly multi-second) dump has finished. Filtered as a STREAM at
-            # this, its one web-served writer: the dump quotes syslog, dnsmasq output and user
-            # settings, and an ASP-tag opener in a /www/user .htm livelocks httpd (see log_msg).
-            do_diag 2>&1 | sed 's/<\([%#]\)/< \1/g' > "$DIAG_FILE"
-            echo "[DIAG_DONE]" >> "$DIAG_FILE"
-            ;;
+        awgdiag*) do_diag_publish "${event#awgdiag}" ;;
         awganalyzestart) do_analyze_start ;;
         awganalyzestop)  do_analyze_stop ;;
         awgxraystop)     do_xray_stop ;;

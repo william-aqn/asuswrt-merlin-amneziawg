@@ -107,6 +107,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Node.js for regression checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check diagnostic request handling
+        run: |
+          node --test .github/scripts/test-diag.js
+          sh -n addon/amneziawg.sh
+          sh .github/scripts/test-diag.sh
+
       - name: Set up QEMU (ARM emulation for the static-musl awg build)
         uses: docker/setup-qemu-action@v3
 
