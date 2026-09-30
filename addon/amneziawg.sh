@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.26"
+AWG_VERSION="1.5.27"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -77,6 +77,12 @@ DNSMASQ_INCLUDE="/jffs/configs/dnsmasq.conf.add"
 DNSRELOAD_SIG="/tmp/.awg_dnsmasq_sig"   # md5 of the geo conf last loaded into dnsmasq (skip needless restarts); tmpfs = reboot-volatile like dnsmasq's own state
 DNSRELOAD_DEFER="/tmp/.awg_dnsreload_defer"     # updater window: reload jobs record PENDING + exit instead of fighting a busy rc (see dnsreload_deferred)
 DNSRELOAD_PENDING="/tmp/.awg_dnsreload_pending" # >=1 reload was swallowed while DEFER was up; the updater fires exactly one at the end
+PRERSLV_STATE="/tmp/.awg_preresolve_state"      # geo pre-resolve progress "<setgen> <list-md5> <done> <total> <since>" — resume/skip across reload jobs (1.5.27)
+PRERSLV_EEX="/tmp/.awg_preresolve_eex"          # "set ip" pairs whose add hit EEXIST in the current run — their timeouts are refreshed when the run completes
+PRERSLV_RETRY="/tmp/.awg_preresolve_retry"      # "domain sets" whose lookup was refused / unanswered in the current run — retried once when the run completes
+GEOSET_GEN="/tmp/.awg_geoset_gen"               # token that changes whenever our geo sets lose their fed entries (destroyed, or created empty)
+PRERSLV_FRESH_S=86400                           # = the sets' default entry timeout: a feed older than this has aged out of the sets and is redone
+GEOSTATIC_SIG="/tmp/.awg_geostatic_sig"         # geo_static_sig of the last rebuild: a change invalidates the pre-resolve cursor (see geo_swap_window_close)
 SCRIPT_NAME="amneziawg"
 RT_TABLE=300
 AWG_CHAIN="AWG"
@@ -1151,7 +1157,9 @@ geo_union_geoip(){ local id; for id in $(geo_ids); do selected_geoip "$id"; done
 # Union of antifilter list keys across all policies.
 geo_union_antifilter(){ local id; for id in $(geo_ids); do selected_antifilter "$id"; done | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' '; }
 # Union of GeoSite categories across all policies.
-geo_union_geosite(){ local id; for id in $(geo_ids); do get_setting "$(geo_key "$id" v2fly)" | tr ',' ' '; done | tr ' ' '\n' | sed 's/[^A-Za-z0-9_.-]//g' | grep -v '^$' | sort -u | tr '\n' ' '; }
+# '!' is part of real category names (geolocation-!cn, category-ai-!cn — the page offers them):
+# stripping it (1.2.0-1.5.26) silently selected the China-only twin (geolocation-cn) or nothing.
+geo_union_geosite(){ local id; for id in $(geo_ids); do get_setting "$(geo_key "$id" v2fly)" | tr ',' ' '; done | tr ' ' '\n' | sed 's/[^A-Za-z0-9_.!-]//g' | grep -v '^$' | sort -u | tr '\n' ' '; }
 # Decoded URL list of policy <id>'s channel <kind> (inc=custom_urls, exc=exc_urls), as stored. A
 # value the firmware cut (setting_is_cut) loses its last, partial URL — fetching "https://raw.gith"
 # could only fail and then sit in the 6h back-off forever. Run b64d_init in the caller first.
@@ -1189,10 +1197,84 @@ policy_url_keys(){
 register_owned_set(){
     grep -qxF "$1" "$OWNED_SETS" 2>/dev/null || echo "$1" >> "$OWNED_SETS"
 }
+# Mark that the pre-resolve cursor no longer describes our geo sets — they were destroyed,
+# created empty, or rebuilt while a pre-resolve was feeding them — so the next reload feeds
+# from line 1 instead of skipping or resuming. A full run needs no memory of the old feed:
+# every entry it finds already present is refreshed at its end (see _prl_refresh), so its own
+# start is a true freshness clock. A plain hot Apply (staged swap + ipset_replay_dynamic) keeps
+# the fed entries and therefore keeps the token.
+geoset_gen_bump(){
+    local _g="" _x
+    { read -r _g < /proc/sys/kernel/random/uuid; } 2>/dev/null
+    [ -n "$_g" ] || { { read -r _g _x < /proc/uptime; } 2>/dev/null; _g="${_g}.$$"; }
+    echo "$_g" > "$GEOSET_GEN" 2>/dev/null
+    rm -f "$PRERSLV_STATE" "$PRERSLV_EEX" "$PRERSLV_RETRY" "$PRERSLV_RETRY.strike"
+}
+
+# Hot-Apply guard, part 1 (setup_firewall, before the first ipset_replay_dynamic). The staged
+# rebuild snapshots each live set's fed entries, loads statics for seconds (antifilter: tens of
+# seconds on armv7) and swaps; anything the pre-resolve adds to the OLD set in between dies
+# with it, while its cursor moves on. So ask a feeding pre-resolve to stop at its batch
+# boundary (it saves an exact cursor and yields; setup_firewall's own reload resumes it) and
+# wait for that — bounded, one lookup batch normally takes a second or two.
+geo_preresolve_quiesce(){
+    local _ph _x _i=0
+    while [ $_i -lt 20 ]; do
+        [ -d /tmp/.awg_dnsreload ] || return 0
+        _ph=""; { read -r _ph _x < /tmp/.awg_dnsreload/beat; } 2>/dev/null
+        [ "$_ph" = preresolve ] || return 0
+        true 2>/dev/null > /tmp/.awg_dnsreload/preempt
+        sleep 1; _i=$((_i + 1))
+    done
+}
+
+# Fingerprint of every setting that decides a geo set's STATIC content (GeoIP, antifilter,
+# custom IPs / files / URLs, both channels). A static /32 that equals a pre-resolve-fed IP
+# (antifilter's ipresolve holds exactly such /32s) gets promoted to permanent by the static
+# `restore -!`; if that static source is later removed, the next swap drops the entry — and a
+# cursor that says "fed" would keep the pre-resolve from putting it back for a day.
+geo_static_sig(){
+    local id k
+    for id in $(geo_ids); do
+        for k in v2fly_ip antifilter_lists custom_ips custom_files custom_urls exc_ips exc_files exc_urls; do
+            echo "$id $k $(get_setting "$(geo_key "$id" "$k")")"
+        done
+    done | md5sum 2>/dev/null | cut -c1-32
+}
+
+# Hot-Apply guard, part 2 (after the last swap). $1 = "<gen>|<state>" taken after the quiesce,
+# $2 = geo_static_sig taken before the rebuild. Invalidate the pre-resolve cursor (full re-feed
+# on the next reload) when the rebuild may have dropped fed entries the cursor counts as done:
+# a pre-resolve still fed during the window (a reload that took the lock meanwhile), or the
+# static sources changed. A generation that already moved (first-build rename) needs nothing.
+geo_swap_window_close(){
+    local _why="" _ph _x _old
+    [ "${1%%|*}" = "$(cat "$GEOSET_GEN" 2>/dev/null)" ] || _why="-"
+    if [ -z "$_why" ]; then
+        _ph=""; { read -r _ph _x < /tmp/.awg_dnsreload/beat; } 2>/dev/null
+        if [ "${1#*|}" != "$(cat "$PRERSLV_STATE" 2>/dev/null)" ] \
+           || { [ -d /tmp/.awg_dnsreload ] && [ "$_ph" = preresolve ]; }; then
+            _why="a geo pre-resolve was feeding while the sets were rebuilt"
+        fi
+    fi
+    _old=$(cat "$GEOSTATIC_SIG" 2>/dev/null)
+    if [ -n "$2" ] && [ "$2" != "$_old" ]; then
+        echo "$2" > "$GEOSTATIC_SIG" 2>/dev/null
+        [ -z "$_why" ] && [ -n "$_old" ] && _why="the static geo sources changed"
+    fi
+    case "$_why" in
+        ''|-) ;;
+        *) geoset_gen_bump
+           log_msg "Geo domain pre-resolve: will re-feed from the start at the next reload — $_why" ;;
+    esac
+    return 0
+}
+
 # Flush + destroy every geo set we created (incl. old names after an awg_ipset_name rename),
 # then clear the registry. Exact names only — foreign sets are untouched.
 destroy_owned_sets(){
     local s
+    geoset_gen_bump
     [ -f "$OWNED_SETS" ] || return 0
     while read -r s; do
         [ -z "$s" ] && continue
@@ -2675,18 +2757,35 @@ dns_ok(){
 # every flavor here. AAAA tokens fail the IPv4 shape test naturally; 0.0.0.0 and loopback answers
 # are dropped (AdGuard-family upstreams answer 0.0.0.0 for blocked names — routing those would
 # just add noise entries). No busybox-awk landmines: no {n,m} intervals, no gawk-isms.
+# $2 = optional nslookup option, deliberately unquoted so an empty one vanishes: the pre-resolve
+# passes "-querytype=A" once its probe proved this nslookup understands it (LEDE applet: -q +
+# skip-to-'='; Entware BIND: documented) — half the queries of the default A+AAAA. The classic
+# applet rejects any option, so the probe fails there and the call stays dual-stack. Never
+# -type=/-port=/-timeout=: LEDE's getopt reads them as -t/-p with junk arguments.
+# Prints the marker "!R" (and no address) when the resolver REFUSED the query or never answered
+# (LEDE: "Connection refused" / "no servers could be reached"; the classic applet prints one
+# "can't resolve" for every failure, NXDOMAIN included, so there every failure qualifies) — a
+# dnsmasq restart blip or a dropped query, not "this name has no IPv4": the pre-resolve retries
+# those once at the end instead of counting them as done. (stderr joins the parsed stream for that; error lines never start with
+# Name:/Address, so the address parsing is unaffected.)
 resolve_domain_v4(){
-    nslookup "$1" 127.0.0.1 2>/dev/null | awk '
+    nslookup $2 "$1" 127.0.0.1 2>&1 | awk '
+        /[Cc]onnection refused|[Nn]o servers could be reached|[Tt]imed out|can.t resolve/ { bad = 1 }
         /^Name:/ { seen = 1; next }
         seen && $1 ~ /^Address/ {
             for (i = 2; i <= NF; i++) {
                 if ($i !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) continue
                 split($i, o, ".")
                 if (o[1]+0 > 255 || o[2]+0 > 255 || o[3]+0 > 255 || o[4]+0 > 255) continue
-                if (o[1] == "127" || $i == "0.0.0.0") continue
-                print $i
+                # One address per Address line on every flavor: stop at it, so the trailing
+                # reverse name of the classic applet ("Address 1: IP PTR") is never read as a
+                # second IP when a PTR record happens to be a dotted quad. (No apostrophes or
+                # angle brackets in here: this program sits inside a single-quoted string.)
+                if (o[1] != "127" && $i != "0.0.0.0") { print $i; got = 1 }
+                break
             }
-        }'
+        }
+        END { if (bad && !got && !seen) print "!R" }'
 }
 
 setup_ipv6_block(){
@@ -2873,6 +2972,8 @@ ipset_commit_staged(){
     if ipset rename "$tmp" "$final" 2>/dev/null; then
         unregister_owned_set "$tmp"
         register_owned_set "$final"
+        # A brand-new live set holds statics only: the next pre-resolve must feed it from line 1.
+        geoset_gen_bump
         return 0
     fi
     return 1
@@ -3036,6 +3137,27 @@ cleanup_firewall(){
     log_msg "Firewall rules cleaned"
 }
 
+# Seconds since FILE ($1) was last modified — busybox `date -r` (always built), NOT `find -mmin`:
+# the firmware's busybox has neither -mmin nor -maxdepth (CONFIG_FEATURE_FIND_MMIN / _MAXDEPTH
+# are off in every Merlin config_base), so under the AWG_PATH_SANE=0 fallback PATH, or an
+# Entware without GNU findutils, every `find … -mmin` test read "not old" and the 15-min / 5-min
+# reclaims never fired. Prints nothing (rc 1) when the file is gone. A NEGATIVE age = an mtime
+# in the future (the clock stepped back): callers treat it as stale, never as fresh forever.
+file_age_s(){
+    local _m _n
+    _m=$(date -r "$1" +%s 2>/dev/null) || return 1
+    _n=$(date +%s 2>/dev/null) || return 1
+    case "$_m" in ''|*[!0-9]*) return 1 ;; esac
+    case "$_n" in ''|*[!0-9]*) return 1 ;; esac
+    echo $(( _n - _m ))
+}
+# True when FILE ($1) exists and is older than $2 seconds (or dated in the future).
+file_older_than(){
+    local _a
+    _a=$(file_age_s "$1") || return 1
+    [ "$_a" -gt "$2" ] || [ "$_a" -lt -60 ]
+}
+
 # --- Updater dnsmasq-reload coalescing ---
 # finalize_ipk_install's stop → prerm → postinst → stop chain kicks 3-4 detached reload
 # jobs while rc_service is busy with OUR OWN start_awgdoupdate service-event. None of
@@ -3050,7 +3172,7 @@ cleanup_firewall(){
 # stop landing in dnsmasq — the same class of harm as a stolen lock disabling self-heal).
 dnsreload_deferred(){
     [ -f "$DNSRELOAD_DEFER" ] || return 1
-    if [ -n "$(find "$DNSRELOAD_DEFER" -mmin +15 2>/dev/null)" ]; then
+    if file_older_than "$DNSRELOAD_DEFER" 900; then
         rm -f "$DNSRELOAD_DEFER"
         return 1
     fi
@@ -3060,6 +3182,101 @@ dnsreload_deferred(){
 dnsreload_defer_begin(){
     rm -f "$DNSRELOAD_PENDING"
     touch "$DNSRELOAD_DEFER"
+}
+
+# Remove the dnsmasq-reload lock ATOMICALLY: rename it to a tomb, then delete the tomb. Since
+# 1.5.27 queued waiters write `preempt`/`owed` INTO the lock dir every second, and a plain
+# `rm -rf` (unlink every entry, then rmdir) racing such a write fails its rmdir with ENOTEMPTY:
+# the dir survives with no pid file — a pidless lock every later reload waits 240 s behind and
+# then drops (reproduced in ~1 of 120 hand-offs under load). After the rename a late write finds
+# no dir (ENOENT). $1 = tag making the tomb name unique per remover.
+# $2 (optional, may be empty = "a pidless lock") = the holder pid the caller means to release.
+# The path is re-checked AFTER the rename: every remover decided from reads taken a moment
+# earlier, and in between the lock can change hands (the holder ended and a waiter took a fresh
+# lock; two waiters reclaimed the same dead pid). A lock that turns out to be someone else's is
+# put back instead of being deleted under its live owner.
+# The removed lock's flags are returned in DR_OWED / DR_UNL / DR_PH — read from the TOMB, after
+# the rename, so a waiter's give-up `owed` either landed before (seen here) or found no dir and
+# the waiter took the lock itself. Returns 0 = removed, 1 = nothing there / not the expected one.
+dnsreload_unlock(){
+    local _t="/tmp/.awg_dnsreload.x${1:-$$}" _p="" _x
+    DR_OWED=0; DR_UNL=0; DR_PH=""
+    rm -rf "$_t" 2>/dev/null
+    mv /tmp/.awg_dnsreload "$_t" 2>/dev/null || return 1
+    if [ $# -ge 2 ]; then
+        { read -r _p < "$_t/pid"; } 2>/dev/null
+        if [ "$_p" != "$2" ]; then
+            # Not the lock we meant: hand it back (never `mv` onto an existing path — that
+            # would nest it inside a newer lock).
+            [ -e /tmp/.awg_dnsreload ] || mv "$_t" /tmp/.awg_dnsreload 2>/dev/null
+            return 1
+        fi
+    fi
+    [ -f "$_t/owed" ] && DR_OWED=1
+    [ -f "$_t/unloaded" ] && DR_UNL=1
+    { read -r DR_PH _x < "$_t/beat"; } 2>/dev/null
+    case "$DR_PH" in *[!a-z]*) DR_PH="" ;; esac
+    rm -rf "$_t" 2>/dev/null
+    return 0
+}
+
+# Real pid of the CALLING shell, fork-free: a builtin's redirection is opened by the shell
+# itself, so /proc/self is this (sub)shell — unlike $$, which a `( ) &` job inherits from its
+# parent. Result in DR_SELF ('' if /proc is unreadable).
+dnsreload_self(){
+    local _x
+    DR_SELF=""; { read -r DR_SELF _x < /proc/self/stat; } 2>/dev/null
+    case "$DR_SELF" in ''|*[!0-9]*) DR_SELF="" ;; esac
+}
+
+# Remove a lock that is NOT the caller's own (a waiter reclaiming a dead holder; every reaper
+# branch) under a short mutex. Acquisition publishes a lock atomically and only onto a free
+# path, and a live holder releases only its own lock — so while the mutex is held, the lock a
+# remover has just re-read cannot change hands: verify-then-rename is safe, and no put-back
+# window exists. (1.5.27 round 3 renamed first and checked after, putting a foreign lock back:
+# with 3+ waiters reclaiming one dead holder in the same instant, the path sat free while a
+# live lock was in a tomb — two holders at once, or a lock deleted under its owner.)
+# $1 tomb tag, $2 expected pid ('' = pidless), $3 = dead: also require that pid to be dead.
+# Held for a few builtins and one rename; a remover killed inside it leaves it behind → broken
+# once it is over a minute old (or dated in the future), by renaming it away first so two
+# breakers cannot both delete. Returns 2 when the mutex stayed busy for 10 s (nothing done),
+# 1 when the lock was not the expected one any more (a lost race — someone else reclaimed or
+# took it), 0 when it removed it (flags in DR_OWED / DR_UNL / DR_PH).
+DNSRELOAD_MX=/tmp/.awg_dnsreload.m
+dnsreload_reclaim(){
+    local _p="" _i=0 _r=1
+    DR_OWED=0; DR_UNL=0; DR_PH=""
+    while ! mkdir "$DNSRELOAD_MX" 2>/dev/null; do
+        if file_older_than "$DNSRELOAD_MX" 60; then
+            dnsreload_self
+            if mv "$DNSRELOAD_MX" "$DNSRELOAD_MX.b${DR_SELF:-$$}" 2>/dev/null; then
+                rm -rf "$DNSRELOAD_MX.b${DR_SELF:-$$}" 2>/dev/null
+                continue
+            fi
+            # The break rename failed (never loop on it — a counted try, like a busy mutex).
+        fi
+        _i=$((_i + 1)); [ $_i -ge 10 ] && return 2
+        sleep 1
+    done
+    { read -r _p < /tmp/.awg_dnsreload/pid; } 2>/dev/null
+    if [ -d /tmp/.awg_dnsreload ] && [ "$_p" = "$2" ] \
+       && { [ "$3" != dead ] || [ -z "$2" ] || ! kill -0 "$2" 2>/dev/null; }; then
+        dnsreload_unlock "$1" "$2"; _r=$?
+    fi
+    rmdir "$DNSRELOAD_MX" 2>/dev/null
+    return $_r
+}
+
+# Would a reload job that ended at beat phase $1 (with the lock dir's flags already read into
+# $2 = owed 0/1 and $3 = unloaded 0/1) have left dnsmasq without the current conf? Past the
+# restart (dns wait, pre-resolve) the conf is loaded — unless the restart never took (unloaded)
+# or a waiter gave up behind the job (owed). A legacy (beat-less) or unknown phase counts as
+# not loaded. The pre-resolve itself resumes from its saved cursor at the next reload.
+dnsreload_needs_requeue(){
+    case "$1" in
+        preresolve|dnswait) [ "$2" = 1 ] || [ "$3" = 1 ] ;;
+        *) return 0 ;;
+    esac
 }
 
 # Close the defer window; if any reload was swallowed while it was open, fire exactly one
@@ -3091,31 +3308,181 @@ reload_dnsmasq(){
         # OWNERSHIP matters here: the old code, after 60s of waiting, BROKE OUT and ran
         # anyway — unserialized — and its EXIT trap then removed the OTHER job's lock, so
         # every later job also ran unserialized (two pre-resolve storms in the same second
-        # were seen in a field log). Now: reclaim only a DEAD holder's lock, concede (skip
-        # this reload) if a live one still holds it after the wait — the running job loads
-        # the current on-disk conf anyway, and the watchdog reconcile re-installs the :53
-        # DNAT within 5 min if this call was carrying the interception flag.
+        # were seen in a field log). Now: reclaim only a DEAD holder's lock; otherwise ask the
+        # holder to YIELD (1.5.27). The holder honors `preempt` only between pre-resolve
+        # batches — never inside settle/restart — so a queued reload normally takes over within
+        # a second or two of the holder's restart finishing, and the restart WE do then loads
+        # the current on-disk conf. Before 1.5.27 a waiter simply skipped after 240 s, although
+        # the holder, already past its restart and deep in a long pre-resolve, had loaded the
+        # OLD conf: a geo Apply / server start / analyzer toggle then never reached dnsmasq.
+        # A waiter that still gives up (holder stuck 240 s in settle/restart) leaves `owed`, and
+        # the holder re-runs the reload when it ends (_dr_done) — or the reaper re-queues it.
+        # The watchdog reconcile re-installs the :53 DNAT within 5 min if this call was
+        # carrying the interception flag.
+        # Writes into the lock dir use `true` (a REGULAR builtin), never `:` — a failed
+        # redirection on the special builtin `:` EXITS the shell, and this dir can vanish
+        # under us at any moment (holder exit, reaper).
         _w=0
-        while ! mkdir /tmp/.awg_dnsreload 2>/dev/null; do
+        # Publish the lock ATOMICALLY, with our pid already inside: build a private dir, then
+        # rename it onto the lock path. There is no pidless moment for a reclaimer to misjudge,
+        # and our pid can never land in someone else's dir. (The real pid of THIS subshell —
+        # `$$` would be the parent's, dead in seconds, and every waiter would "reclaim" our live
+        # lock; see the acquire_lock note.) busybox mv has no -T: when the path appeared
+        # meanwhile, mv moves our dir INTO that lock — the read-back then shows a foreign pid,
+        # we take our dir back out and queue.
+        dnsreload_self; _me=$DR_SELF
+        [ -n "$_me" ] || exit 0
+        _nl="/tmp/.awg_dnsreload.n$_me"
+        rm -rf "$_nl" 2>/dev/null
+        while :; do
+            # Keep a private dir holding OUR pid ready on every pass (a builtin read when it is
+            # already there). _pubok = we could build it: only then may we publish — a write that
+            # failed after the file was created (a full /tmp) would publish a pidless lock that
+            # even its creator queues behind — and only then may we ask a holder to yield below
+            # (it would throw its progress away for a job that can never take over).
+            _p=""; { read -r _p < "$_nl/pid"; } 2>/dev/null
+            if [ "$_p" != "$_me" ]; then
+                rm -rf "$_nl" 2>/dev/null
+                { mkdir "$_nl" && echo "$_me" > "$_nl/pid"; } 2>/dev/null
+                _p=""; { read -r _p < "$_nl/pid"; } 2>/dev/null
+            fi
+            if [ "$_p" = "$_me" ]; then _pubok=1; else _pubok=0; rm -rf "$_nl" 2>/dev/null; fi
+            if [ "$_pubok" = 1 ] && [ ! -e /tmp/.awg_dnsreload ]; then
+                mv "$_nl" /tmp/.awg_dnsreload 2>/dev/null
+                _p=""; { read -r _p < /tmp/.awg_dnsreload/pid; } 2>/dev/null
+                [ "$_p" = "$_me" ] && break
+                rm -rf "/tmp/.awg_dnsreload/.awg_dnsreload.n$_me" 2>/dev/null
+            fi
             _hp=$(cat /tmp/.awg_dnsreload/pid 2>/dev/null)
-            if [ -n "$_hp" ] && ! kill -0 "$_hp" 2>/dev/null; then
-                rm -rf /tmp/.awg_dnsreload 2>/dev/null
-                continue
+            # A dead holder's lock — or one carrying OUR pid that we did not publish (the dead
+            # holder's pid was reused by this very job) — is reclaimed under the mutex. Every
+            # attempt counts toward the give-up below; a mutex that stays busy costs 10 polls, so a
+            # stuck one degrades into the usual give-up + `owed` instead of an endless loop, while
+            # a race lost to another reclaimer costs one poll and a second.
+            _hgone=0
+            if [ -n "$_hp" ] && { [ "$_hp" = "$_me" ] || ! kill -0 "$_hp" 2>/dev/null; }; then
+                _hgone=1
+                if [ "$_hp" = "$_me" ]; then dnsreload_reclaim "w$_me" "$_hp"; else dnsreload_reclaim "w$_me" "$_hp" dead; fi
+                case $? in
+                    0) continue ;;
+                    2) _w=$((_w + 10)) ;;
+                    *) _w=$((_w + 1)); _hgone=0 ;;   # lost race: the lock changed hands
+                esac
+                sleep 1
+                [ $_w -lt 240 ] && continue
             fi
             # The defer window can open while we queue (update started under a running
             # job) — hand off to the updater's final reload instead of waiting it out.
-            if dnsreload_deferred; then touch "$DNSRELOAD_PENDING"; exit 0; fi
+            if dnsreload_deferred; then rm -rf "$_nl" 2>/dev/null; touch "$DNSRELOAD_PENDING"; exit 0; fi
+            # Ask the holder to yield only when we can take over: a job whose own publish keeps
+            # failing (a full /tmp) would make it throw away its progress for nobody.
+            [ "$_pubok" = 1 ] && true 2>/dev/null > /tmp/.awg_dnsreload/preempt
             _w=$((_w + 1))
             if [ $_w -ge 240 ]; then
-                log_msg "dnsmasq reload: another reload job (pid ${_hp:-?}) still running after 240s — skipping this one"
-                exit 0
+                # Give up only once `owed` is really in place: written into a dir the holder
+                # released a moment ago, it would be lost with no re-run at all. If it did not
+                # land, the lock is (being) freed — go round and take it instead (bounded, so an
+                # unwritable /tmp cannot spin us forever).
+                true 2>/dev/null > /tmp/.awg_dnsreload/owed
+                if [ -f /tmp/.awg_dnsreload/owed ] || [ $_w -ge 300 ]; then
+                    _hph=""; { read -r _hph _hpt < /tmp/.awg_dnsreload/beat; } 2>/dev/null
+                    case "$_hph" in *[!a-z]*) _hph="" ;; esac
+                    if [ ! -d /tmp/.awg_dnsreload ]; then
+                        log_msg "dnsmasq reload: could not take the reload lock for 240s (writing to /tmp keeps failing — full?) — this reload is dropped; the next Apply / reload runs it"
+                    elif [ "$_hgone" = 1 ]; then
+                        log_msg "dnsmasq reload: the reload lock's holder (pid $_hp) is gone and the lock could not be reclaimed for 240s — left \`owed\`; the watchdog clears it and re-runs this reload"
+                    elif [ -n "$_hp" ]; then
+                        log_msg "dnsmasq reload: another reload job (pid $_hp, phase ${_hph:-?}) still busy after 240s — it will re-run this reload when it finishes"
+                    else
+                        log_msg "dnsmasq reload: the reload lock has had no holder for 240s (a job died while taking it) — the watchdog clears it and re-runs this reload"
+                    fi
+                    rm -rf "$_nl" 2>/dev/null
+                    exit 0
+                fi
             fi
             sleep 1
         done
-        # Real pid of THIS reload subshell — `echo $$` here would record the parent (dead in
-        # seconds) and every waiter would "reclaim" our live lock; see the acquire_lock note.
-        sh -c 'echo $PPID' > /tmp/.awg_dnsreload/pid 2>/dev/null
-        trap 'rm -rf /tmp/.awg_dnsreload 2>/dev/null' EXIT INT TERM
+        # EXIT only releases the lock (atomically — see dnsreload_unlock); TERM must also END
+        # the job. A trap without `exit` (1.4.x-1.5.26: `trap '…' EXIT INT TERM`) ran the rm
+        # and then RESUMED the job, which went on unlocked — invisible to the reaper,
+        # unserialized against the next holder. (No INT trap: an async `( ) &` list starts
+        # with SIGINT ignored, and a signal ignored on entry cannot be trapped.)
+        trap 'dnsreload_unlock "$_me" "$_me"' EXIT
+        trap 'exit 143' TERM
+        # A lock won AFTER the updater opened its defer window (a waiter that queued before the
+        # window, handed the lock by a yielding holder): release it at once — the updater fires
+        # the one owed reload at its end. Without this check the new holder restarted dnsmasq in
+        # the middle of the update, the very storm the window exists to prevent.
+        if dnsreload_deferred; then touch "$DNSRELOAD_PENDING"; exit 0; fi
+        # Progress beat "<phase> <uptime-s>" (1.5.27). reap_stale_dnsreload judges this job by
+        # PROGRESS, not by age: 1.5.21 killed any holder older than 1200 s, and a long geo
+        # pre-resolve (tens of thousands of domains behind AdGuardHome) is legitimately older
+        # than that — it was reaped every ~25 min, blamed on nvram, re-queued, and started
+        # over from line 1, forever. Beat before every step that can block: each settle poll
+        # (the nvram read), each notify_rc, the dnsmasq tests/direct start, the DNS wait, each
+        # lookup batch and every 100 ipset adds. Written to a temp file and RENAMED into place:
+        # an in-place `echo > beat` truncates first, and the reaper's byte-at-a-time `read`
+        # landing in that window saw an empty or cut line ("preresolve 2" for 2380) and killed
+        # a healthy job. `echo`/`mv` are external applets on Merlin (no ASH_BUILTIN_ECHO) — two
+        # forks per beat, next to the forks each step makes anyway.
+        _dr_up(){
+            _ux=""; { read -r _ux _uy < /proc/uptime; } 2>/dev/null
+            _ux=${_ux%%.*}
+            case "$_ux" in ''|*[!0-9]*) _ux=0 ;; esac
+        }
+        _beat(){
+            _dr_up
+            echo "$1 $_ux" 2>/dev/null > /tmp/.awg_dnsreload/beat.t \
+                && mv -f /tmp/.awg_dnsreload/beat.t /tmp/.awg_dnsreload/beat 2>/dev/null
+        }
+        # Voluntary end of this job. A waiter that gave up while we were busy (`owed`) may carry
+        # a conf newer than the one our restart loaded: re-run the reload for it (its own md5
+        # check skips the restart if nothing changed). Release FIRST (rename to the tomb), THEN
+        # look for `owed` inside the tomb: a waiter writing it after the rename gets ENOENT and
+        # takes the lock itself, one writing before is seen here — no window where it is lost.
+        # The EXIT trap is dropped before that, so it cannot release the NEW job's lock.
+        _dr_done(){
+            trap - EXIT
+            if dnsreload_unlock "$_me" "$_me" && [ "$DR_OWED" = 1 ]; then
+                log_msg "dnsmasq reload: re-running a reload that queued behind this one and gave up"
+                reload_dnsmasq
+            fi
+            exit 0
+        }
+        _beat start
+        # Pre-1.5.27 pre-resolve scratch lived in /tmp/.awg_prerslv.<pid>.* and leaked on every
+        # SIGKILL (the trap never runs; the pre-clean only matched the same parent pid) — in the
+        # reap loop a new ~1 MB set per cycle, in RAM. Scratch now lives INSIDE the lock dir and
+        # dies with it; sweep the legacy leftovers (and any tomb a late write kept alive) once we
+        # hold the lock — no other reload job can be writing them now.
+        rm -f /tmp/.awg_prerslv.* 2>/dev/null
+        # Tombs: only under the reclaim mutex (a reclaimer holds it from its verification until
+        # it has read its tomb — sweeping that tomb from under it made the reaper resume a frozen
+        # holder that then ran without a lock), and never the tomb of a LIVE owner still reading
+        # its own flags. Not waiting for a busy mutex: the next holder sweeps.
+        if mkdir "$DNSRELOAD_MX" 2>/dev/null; then
+            for _d in /tmp/.awg_dnsreload.x*; do
+                [ -e "$_d" ] || continue
+                case "${_d##*.x}" in
+                    ''|*[!0-9]*) rm -rf "$_d" 2>/dev/null ;;
+                    *) kill -0 "${_d##*.x}" 2>/dev/null || rm -rf "$_d" 2>/dev/null ;;
+                esac
+            done
+            # A mutex breaker killed between its rename and its rm leaves .m.b<pid> behind.
+            for _d in "$DNSRELOAD_MX".b*; do
+                [ -e "$_d" ] || continue
+                case "${_d##*.b}" in
+                    ''|*[!0-9]*) rm -rf "$_d" 2>/dev/null ;;
+                    *) kill -0 "${_d##*.b}" 2>/dev/null || rm -rf "$_d" 2>/dev/null ;;
+                esac
+            done
+            rmdir "$DNSRELOAD_MX" 2>/dev/null
+        fi
+        # Private pre-publish dirs of acquirers that died before their rename.
+        for _d in /tmp/.awg_dnsreload.n*; do
+            [ -d "$_d" ] || continue
+            kill -0 "${_d##*.n}" 2>/dev/null || rm -rf "$_d" 2>/dev/null
+        done
         # Order-independent PID snapshot (sorted): dnsmasq runs as main + a --log-async child, so
         # pidof returns two PIDs — sort them so a mere change in listing order can't masquerade as
         # (or mask) a real restart in the comparison below.
@@ -3133,9 +3500,13 @@ reload_dnsmasq(){
         _rcbudget=150
         _rc_settle(){
             while [ $_rcbudget -gt 0 ]; do
+                _beat settle   # a wedged nvram read below stops the beat — that is what the reaper keys on
+                # Update began while we waited: its final reload supersedes this one. Checked
+                # BEFORE the idle test too, so no restart attempt fires inside the window — but
+                # only while dnsmasq is UP: the heal/strip loops run with it down, and walking
+                # away from them would leave the LAN without DNS/DHCP for the whole update.
+                if dnsreload_deferred && pidof dnsmasq >/dev/null 2>&1; then touch "$DNSRELOAD_PENDING"; exit 0; fi
                 [ -z "$(nvram get rc_service 2>/dev/null)" ] && return 0
-                # Update began while we waited: its final reload supersedes this one.
-                if dnsreload_deferred; then touch "$DNSRELOAD_PENDING"; exit 0; fi
                 sleep 1
                 _rcbudget=$((_rcbudget - 1))
             done
@@ -3171,6 +3542,7 @@ reload_dnsmasq(){
                 # idle — don't fire another restart over a resolver that just reloaded
                 # (a needless bounce only widens the :53 outage window).
                 if _reload_took; then _took=1; break; fi
+                _beat restart
                 service restart_dnsmasq >/dev/null 2>&1
                 sleep 2
                 if _reload_took; then _took=1; break; fi
@@ -3181,6 +3553,9 @@ reload_dnsmasq(){
                 log_msg "dnsmasq reloaded (geo rules active)"
                 [ -n "$_sig" ] && echo "${newpid}|${_sig}" > "$DNSRELOAD_SIG"
             else
+                # The conf did NOT reach dnsmasq: tell the reaper, so a job that later stalls in
+                # the DNS wait / pre-resolve is re-queued instead of logged as "already loaded".
+                true 2>/dev/null > /tmp/.awg_dnsreload/unloaded
                 log_msg "WARNING: dnsmasq reload never took (rc kept dropping restart_dnsmasq); geo domains may need a manual restart"
             fi
         fi
@@ -3201,6 +3576,7 @@ reload_dnsmasq(){
             # snippet) actually PARSE? Our snippet was already validated in isolation, so a parse
             # FAILURE here is a combination conflict and our conf is the only lever we have; a parse
             # PASS means the death is runtime (race/OOM) and our valid conf must NOT be thrown away.
+            _beat test
             if which dnsmasq >/dev/null 2>&1; then
                 _dmtest=$(dnsmasq --test --conf-file=/etc/dnsmasq.conf 2>&1); _dmrc=$?
             else
@@ -3216,6 +3592,7 @@ reload_dnsmasq(){
                 _r=0
                 while [ $_r -lt 5 ]; do
                     _rc_settle   # a dropped attempt here = more dead-LAN time; make it count
+                    _beat heal
                     service restart_dnsmasq >/dev/null 2>&1
                     sleep 2
                     if pidof dnsmasq >/dev/null 2>&1; then _recovered=1; log_msg "dnsmasq recovered WITH geo rules intact"; break; fi
@@ -3239,6 +3616,7 @@ reload_dnsmasq(){
                 _j=0
                 while [ $_j -lt 15 ]; do
                     _rc_settle
+                    _beat strip
                     service restart_dnsmasq >/dev/null 2>&1
                     sleep 2
                     pidof dnsmasq >/dev/null 2>&1 && { log_msg "dnsmasq recovered (AWG dnsmasq rules removed)"; break; }
@@ -3251,6 +3629,7 @@ reload_dnsmasq(){
                 # the firmware runs it — rc's next real restart will kill+replace this instance
                 # cleanly, so we never end up fighting it.
                 if ! pidof dnsmasq >/dev/null 2>&1 && which dnsmasq >/dev/null 2>&1; then
+                    _beat direct
                     if dnsmasq --test >/dev/null 2>&1; then
                         log_msg "EMERGENCY: rc kept skipping restart_dnsmasq — starting dnsmasq directly to restore LAN DNS/DHCP"
                         dnsmasq --log-async >/dev/null 2>&1
@@ -3263,6 +3642,7 @@ reload_dnsmasq(){
                 fi
             fi
         fi
+        _beat dnswait
         wait_for_dns 10
         # Install the LAN :53 DNAT ONLY now that dnsmasq is confirmed answering. Doing it
         # before/while the restart_dnsmasq loop above bounces the resolver would DNAT every
@@ -3273,71 +3653,430 @@ reload_dnsmasq(){
         # Only when the conf actually carries domain rules: a filter-AAAA-only conf (CIDR-only
         # geo selection, no domains) has nothing to pre-resolve.
         if [ -f "$DNSMASQ_AWG_CONF" ] && grep -q '^ipset=' "$DNSMASQ_AWG_CONF" 2>/dev/null; then
-            # SELF-FEEDING pre-resolve (1.4.3). It used to only fire queries through dnsmasq and
-            # count on dnsmasq's ipset hook to populate the sets — but that hook runs ONLY on
-            # FORWARDED (upstream) answers, never on cache hits. Every firewall rebuild destroys
-            # + re-creates the sets with STATIC content only, and when the geo conf is unchanged
-            # the restart above is rightly skipped (md5 sig) — so with a warm dnsmasq cache the
-            # wiped domain IPs could NOT return until their TTLs expired: excluded domains leaked
-            # into the VPN (exclude mode) / geo domains fell out of it (include mode) for minutes
-            # to hours after every Apply. Field case TUF-AX3000_V2 @1.4.1: the cold-cache run fed
-            # +213 entries, the warm-cache rebuild 17 min later only +42 — the other ~170 bank
-            # domains routed via VPN. (The old "a restart usually fixes it" advice worked ONLY
-            # because a restart cools the cache — it misdiagnosed the cause as an unloaded conf.)
-            # Now each answer is parsed (resolve_domain_v4) and added to the line's own target
-            # set(s) BY US, cache hit or not; dnsmasq's hook still covers live client traffic
-            # afterwards. Adds are one-by-one WITHOUT -exist/`restore -!`: the exist flag RESETS
-            # the timeout of an already-present entry, which would demote the user's permanent
-            # (timeout 0) custom IPs to expiring 24h ones — a plain add's EEXIST is swallowed
-            # instead, exactly how dnsmasq's own hook behaves. Parallel jobs append to ONE shared
-            # O_APPEND file (each echo is a single short atomic write — no interleaving, no
-            # per-job file fan that a huge domain list would turn into a giant cat glob).
-            _pre_ips=$(geo_ipset_total)
-            _prl="/tmp/.awg_prerslv.$$"
-            # Pre-clean: .out below is APPENDED to, and $$ here is the PARENT's pid (the known
-            # subshell gotcha) — a killed-mid-run predecessor from the same parent must not leak
-            # its half-written pairs into this run.
-            rm -f "${_prl}".* 2>/dev/null
+            # SELF-FEEDING pre-resolve (1.4.3). dnsmasq's ipset hook runs ONLY on FORWARDED
+            # (upstream) answers, never on cache hits, so a set that lost its fed entries could
+            # not refill from a warm dnsmasq cache until the TTLs expired — excluded domains
+            # leaked into the VPN (exclude mode) / geo domains fell out of it (include mode) for
+            # minutes to hours (field case TUF-AX3000_V2 @1.4.1: ~170 bank domains via VPN after
+            # an Apply). So each answer is parsed (resolve_domain_v4) and added to the line's own
+            # target set(s) BY US, cache hit or not; dnsmasq's hook still covers live client
+            # traffic afterwards. Adds are one-by-one WITHOUT -exist/`restore -!`: the exist flag
+            # RESETS the timeout of an already-present entry, which would demote the user's
+            # permanent (timeout 0) custom IPs to expiring 24h ones — a plain add's EEXIST is
+            # swallowed instead, exactly how dnsmasq's own hook behaves.
+            # 1.5.27 — run only when needed, feed in chunks, resume, yield:
+            #  - Since 1.4.5 the hot Apply replays fed entries through the staged swap, so the
+            #    sets keep them until they are destroyed/created empty (GEOSET_GEN changes) or
+            #    age out (24 h set timeout). A run is needed only for a new domain->set list (its
+            #    md5), a new set generation, or a feed older than PRERSLV_FRESH_S; every other
+            #    reload (device-only Apply, server start/stop, analyzer, reaper) skips it. Before,
+            #    EVERY reload re-resolved the whole list from line 1.
+            #  - Answers are fed every 50 names and the cursor is saved in PRERSLV_STATE, so an
+            #    interrupted run resumes where it stopped (1.4.3-1.5.26 fed only at the very end —
+            #    a killed run fed nothing, and the next one started from line 1 again).
+            #  - A newer reload queued behind us (preempt) or the updater's defer window makes us
+            #    stop after the current batch; the next run resumes. Scratch lives in the lock dir
+            #    and dies with it (no /tmp leak on SIGKILL).
+            #  - When AdGuardHome runs it normally owns :53 — its default ratelimit is 20 qps per
+            #    /24 with loopback NOT exempt and the excess silently dropped (each drop costs
+            #    nslookup its full timeout, and the router's own lookups share that bucket), so
+            #    batches are paced to at most one per second. The target stays 127.0.0.1:53, the
+            #    resolver the router and the clients actually use: asking dnsmasq behind AGH
+            #    directly would feed answers from a different upstream (ISP / RKN-poisoned, other
+            #    CDN edges) than the clients get whenever AGH resolves upstream itself.
+            _beat preresolve
+            if dnsreload_deferred; then
+                log_msg "Geo domain pre-resolve: postponed — an addon update is in progress (it runs after the update)"
+                touch "$DNSRELOAD_PENDING"; exit 0
+            fi
+            if [ -f /tmp/.awg_dnsreload/preempt ]; then
+                log_msg "Geo domain pre-resolve: left to a newer dnsmasq reload queued behind this one"
+                _dr_done
+            fi
+            _prl="/tmp/.awg_dnsreload/prl.$_me"
             # "domain set1,set2" pairs straight from the conf we just built ($NF = the comma-set
             # target list; domains were charset-validated at emit time, so plain read splits
             # safely — and the list file, not a pipe, keeps the loop in THIS shell so the final
-            # `wait` really covers the last sub-10 batch (the piped version orphaned it).
-            awk -F/ '/^ipset=/{for(i=2;i<NF;i++)print $i " " $NF}' "$DNSMASQ_AWG_CONF" > "${_prl}.lst"
-            bg_count=0
-            while read -r domain dsets; do
-                [ -z "$domain" ] && continue
-                (
-                    for _rip in $(resolve_domain_v4 "$domain"); do
-                        for _rst in $(echo "$dsets" | tr ',' ' '); do
-                            [ -n "$_rst" ] && echo "$_rst $_rip"
-                        done
-                    done >> "${_prl}.out"
-                ) &
-                bg_count=$((bg_count + 1))
-                [ $bg_count -ge 10 ] && { wait; bg_count=0; }
-            done < "${_prl}.lst"
-            wait
-            sort -u "${_prl}.out" 2>/dev/null > "${_prl}.add"
-            _fed=0; _tried=0
-            while read -r _rst _rip; do
-                [ -n "$_rip" ] || continue
-                _tried=$((_tried + 1))
-                ipset add "$_rst" "$_rip" 2>/dev/null && _fed=$((_fed + 1))
-            done < "${_prl}.add"
-            rm -f "${_prl}".* 2>/dev/null
-            _post_ips=$(geo_ipset_total)
-            if [ "$_tried" -gt 0 ]; then
-                # _fed = entries the add actually created; the rest of _tried already existed
-                # (EEXIST) — e.g. a second run right after a successful one legitimately logs
-                # "0 new of N". Live count ("Firewall configured: N IPs" is a build-time tally,
-                # not proof of population — THIS line is the proof).
-                log_msg "Geo domain pre-resolve: self-fed $_fed new of $_tried resolved set entries (ipset ${_pre_ips} -> ${_post_ips}) — cache-proof, domain routing active without a dnsmasq restart"
-            elif dns_ok; then
-                log_msg "Geo domain pre-resolve: resolver answers real names but returned no usable IPv4 for any geo domain (upstream blocking/empty answers?) — domains will fill on later client queries"
+            # `wait` really covers the last batch). The same awk pass counts them.
+            _total=$(awk -F/ -v out="${_prl}.lst" '/^ipset=/{for(i=2;i<NF;i++){print $i " " $NF > out; n++}} END{print n+0}' "$DNSMASQ_AWG_CONF" 2>/dev/null)
+            case "$_total" in ''|*[!0-9]*) _total=0 ;; esac
+            { [ "$_total" -gt 0 ] && [ -s "${_prl}.lst" ]; } || _dr_done
+            # Skip / resume only on a fully validated state: any failed read (md5sum missing or
+            # crashing, garbage in the file) degrades to a full run, never to a wrong skip.
+            _lsum=$(md5sum < "${_prl}.lst" 2>/dev/null); _lsum=${_lsum%% *}
+            case "$_lsum" in *[!0-9a-f]*) _lsum="" ;; esac
+            [ ${#_lsum} -eq 32 ] || _lsum=""
+            _gen=""; { read -r _gen < "$GEOSET_GEN"; } 2>/dev/null
+            case "$_gen" in ''|*[!0-9A-Za-z.-]*) _gen=0 ;; esac
+            # State: <gen> <list-md5> <done> <total> <since> — since = start of the run that fed
+            # it (extra trailing fields are ignored). Digits only and no leading zero: ash reads
+            # "08" as bad octal and an arithmetic error kills the whole job (every later reload
+            # would die on the same line).
+            _sg=""; _sm=""; _sd=""; _st=""; _ss=""
+            { read -r _sg _sm _sd _st _ss _srest < "$PRERSLV_STATE"; } 2>/dev/null
+            case "$_sd" in ''|*[!0-9]*|0?*) _sd="" ;; esac
+            case "$_ss" in ''|*[!0-9]*|0?*) _ss="" ;; esac
+            _dr_up; _t0=$_ux
+            _mode=full; _from=1; _since=$_t0
+            if [ -n "$_lsum" ] && [ "$_t0" -gt 0 ] && [ "$_sg" = "$_gen" ] && [ "$_sm" = "$_lsum" ] \
+               && [ "$_st" = "$_total" ] && [ -n "$_sd" ] && [ -n "$_ss" ] && [ "$_ss" -le "$_t0" ] \
+               && [ $((_t0 - _ss)) -lt "$PRERSLV_FRESH_S" ]; then
+                if [ "$_sd" -eq "$_total" ]; then
+                    _mode=skip
+                elif [ "$_sd" -lt "$_total" ]; then
+                    # done=0 too: a run paused before its first productive chunk (a short list
+                    # with one never-answering name) keeps its retry list and strike this way.
+                    _mode=resume; _from=$((_sd + 1)); _since=$_ss
+                fi
+            fi
+            if [ "$_mode" = skip ]; then
+                log_msg "Geo domain pre-resolve: skipped — all $_total name(s) were fed $(( (_t0 - _ss) / 60 )) min ago and the geo sets have not been rebuilt since"
+                _dr_done
+            fi
+            # A full run starts from scratch: the old cursor (a kill inside our first chunk must
+            # not leave a resumable state of ANOTHER list behind), the refresh list and the retry
+            # list all go. A resume keeps adding to both lists.
+            # The strike survives a full run that happens only because the feed went stale (same
+            # generation, list and length) — otherwise a reload more than a day apart would drop it
+            # every time and a never-answering name would keep the run pausing forever.
+            if [ "$_mode" = full ]; then
+                rm -f "$PRERSLV_STATE" "$PRERSLV_EEX" "$PRERSLV_RETRY"
+                { [ -n "$_lsum" ] && [ "$_sg" = "$_gen" ] && [ "$_sm" = "$_lsum" ] && [ "$_st" = "$_total" ]; } \
+                    || rm -f "$PRERSLV_RETRY.strike"
+            fi
+            # A-only unless this nslookup REJECTS the option (see resolve_domain_v4), and
+            # AdGuardHome-aware pacing, at most one batch START per second: A-only = 1 query per
+            # name, so 8 names/s. The only applet that rejects it is the classic one, and it
+            # costs far more than A+AAAA — it also reverse-resolves (PTR) EVERY answer address for
+            # its "Address N: <ip> <host>" lines: measured 2-18, avg ~6.7 queries per name. So one
+            # name per second there (~7 q/s), leaving the rest of AGH's default 20 qps bucket to
+            # the router itself (dns_ok, NTP, downloads share it — loopback is not exempt).
+            # Decided by REJECTION (the classic applet prints its usage and sends nothing), never
+            # by whether one lookup happened to answer: a single dropped probe used to demote a
+            # whole run to dual-stack. Stock Merlin 3004.388 / 3006.102 build the LEDE applet
+            # (CONFIG_NSLOOKUP_LEDE): A-only there; the classic one survives on older firmwares.
+            _nsq="-querytype=A"
+            case "$(nslookup -querytype=A localhost 127.0.0.1 2>&1)" in *[Uu]sage:*) _nsq="" ;; esac
+            _usl=0; which usleep >/dev/null 2>&1 && _usl=1
+            _jobs=10; _pace=0
+            if [ -n "$_nsq" ]; then _mdesc="A-only"; else _mdesc="A+AAAA+PTR"; fi
+            if agh_present; then
+                _pace=1
+                if [ -n "$_nsq" ]; then _jobs=8; else _jobs=1; fi
+                _mdesc="$_mdesc; AdGuardHome running — paced to $_jobs name(s)/s"
+            fi
+            _pre_ips=$(geo_ipset_total)
+            if [ "$_mode" = resume ]; then
+                awk -v s="$_from" 'NR >= s' "${_prl}.lst" > "${_prl}.work" 2>/dev/null
+                _work="${_prl}.work"
+                log_msg "Geo domain pre-resolve: resuming at $_from/$_total via 127.0.0.1 ($_mdesc)"
             else
+                _work="${_prl}.lst"
+                log_msg "Geo domain pre-resolve: $_total name(s) via 127.0.0.1 ($_mdesc)"
+            fi
+            if [ "$_total" -gt 20000 ]; then
+                if [ "$_pace" = 1 ]; then _eta="at least $(( (_total - _from + 1) / _jobs / 60 )) min at this pace"; else _eta="tens of minutes"; fi
+                log_msg "Geo domain pre-resolve: large list — this takes $_eta; it runs in the background, progress is logged every 5000 names and saved every 50, so an interruption resumes instead of restarting"
+            fi
+            [ -s "$_work" ] || _dr_done
+            # Save the cursor — never once the set generation moved under us (the sets were
+            # destroyed or rebuilt meanwhile: a state written now would describe sets that no
+            # longer exist). _saved = what the next job resumes after, for the logs.
+            # Only the completion block (`_state N complete`) may record the whole list: an
+            # in-loop save that reached done == total (a dry last batch) would let the next reload
+            # SKIP although the retry pass and the refresh never ran. When the generation moved,
+            # nothing is saved and the next job starts from line 1 (_saved = 0, for the logs).
+            _saved=$_ln
+            _state(){
+                _cg=""; { read -r _cg < "$GEOSET_GEN"; } 2>/dev/null
+                case "$_cg" in ''|*[!0-9A-Za-z.-]*) _cg=0 ;; esac
+                if [ "$_cg" != "$_gen" ] || [ -z "$_lsum" ]; then _saved=0; return 0; fi
+                _sc=$1
+                [ "$2" = complete ] || [ "$_sc" -lt "$_total" ] || _sc=$((_total - 1))
+                _saved=$_sc
+                echo "$_gen $_lsum $_sc $_total $_since" 2>/dev/null > "$PRERSLV_STATE"
+            }
+            # Cursor discipline: the saved cursor LAGS one chunk — it is the START of the last
+            # chunk that produced addresses (_prodfrom), never its end. The resolver can die
+            # half-way through a chunk, and a kill / yield / update pause landing before the next
+            # chunk would otherwise record that chunk's dead tail as fed. Costs at most one chunk
+            # (50 names) re-resolved per interruption.
+            _fed=0; _tried=0; _dry=0; _ln=$((_from - 1)); _lastflush=$_ln; _prodfrom=$_ln; _saved=$_ln
+            _nextlog=$(( (_ln / 5000 + 1) * 5000 ))
+            _NL='
+'
+            # Add what the finished lookups produced (called only after `wait`, so .out holds
+            # complete names only). An add that fails — nearly always EEXIST, an entry an earlier
+            # feed or dnsmasq's hook already put there — is queued in PRERSLV_EEX for
+            # _prl_refresh: a plain add never refreshes an existing entry's timeout, so without
+            # it those entries would expire on the EARLIER feed's schedule while the state claims
+            # a fresh feed. Appended in slices of 200 (printf is an external applet on Merlin: one
+            # argv holding a whole run's pairs could exceed the kernel's per-argument limit).
+            _prl_feed(){
+                _np=0; _ebuf=""; _en=0
+                if [ -s "${_prl}.out" ]; then
+                    sort -u "${_prl}.out" > "${_prl}.add" 2>/dev/null
+                    true 2>/dev/null > "${_prl}.out"
+                    if [ -f "${_prl}.add" ]; then
+                        while read -r _rst _rip; do
+                            [ -n "$_rip" ] || continue
+                            _np=$((_np + 1)); _tried=$((_tried + 1))
+                            if ipset add "$_rst" "$_rip" 2>/dev/null; then
+                                _fed=$((_fed + 1))
+                            else
+                                _ebuf="$_ebuf$_rst $_rip$_NL"; _en=$((_en + 1))
+                                if [ "$_en" -ge 200 ]; then
+                                    printf '%s' "$_ebuf" >> "$PRERSLV_EEX" 2>/dev/null
+                                    _ebuf=""; _en=0
+                                fi
+                            fi
+                            [ $((_np % 100)) -eq 0 ] && _beat preresolve
+                        done < "${_prl}.add"
+                    fi
+                fi
+                [ -n "$_ebuf" ] && printf '%s' "$_ebuf" >> "$PRERSLV_EEX" 2>/dev/null
+            }
+            _prl_flush(){
+                _chs=$_lastflush
+                _prl_feed
+                _lastflush=$_ln
+                if [ "$_np" -gt 0 ]; then
+                    _dry=0; _prodfrom=$_chs
+                else
+                    _dry=$((_dry + 1))
+                fi
+                _state "$_prodfrom"
+            }
+            # Refresh the entries whose add hit EEXIST — without demoting a static one. Per target
+            # set: one `ipset save` stream says which of them are there and which are permanent
+            # (timeout 0 — a custom IP, an antifilter /32 equal to a resolved IP: never touched,
+            # the 1.4.3 no-`-exist` rule); the rest go through that set's own `restore -!`, which
+            # resets an existing entry's timeout to the set default — PRESENT ones first (under
+            # -exist they cannot fail), then those that expired meanwhile (re-added). restore
+            # stops at its first real error ("Hash is full", a vanished set), so one restore per
+            # set and present-before-absent keep one bad line from voiding the rest. A save that
+            # fails refreshes nothing for that set (fail-safe: never guess what is permanent).
+            # The list outlives the job (a yield / kill resumes later) and is consumed only when
+            # the whole run completed, and only while the set generation is still ours.
+            _prl_refresh(){
+                [ -s "$PRERSLV_EEX" ] || return 0
+                _cg=""; { read -r _cg < "$GEOSET_GEN"; } 2>/dev/null
+                case "$_cg" in ''|*[!0-9A-Za-z.-]*) _cg=0 ;; esac
+                if [ "$_cg" != "$_gen" ]; then rm -f "$PRERSLV_EEX"; return 0; fi
+                _beat preresolve
+                for _rs in $(awk '{ print $1 }' "$PRERSLV_EEX" 2>/dev/null | sort -u); do
+                    { ipset save "$_rs" 2>/dev/null && echo "#SAVE-OK"; } | awk -v s="$_rs" '
+                        NR == FNR { if (NF == 2 && $1 == s) want[$2] = 1; next }
+                        $1 == "#SAVE-OK" { ok = 1; next }
+                        $1 == "create" && $2 == s { hdr = 1; next }
+                        $1 == "add" && $2 == s && ($3 in want) {
+                            if ($0 ~ / timeout 0( |$)/) perm[$3] = 1; else pres[$3] = 1
+                        }
+                        END {
+                            if (!ok || !hdr) exit
+                            for (k in pres) print "add " s " " k
+                            for (k in want) if (!(k in perm) && !(k in pres)) print "add " s " " k
+                        }
+                    ' "$PRERSLV_EEX" - 2>/dev/null | ipset restore -! 2>/dev/null
+                done
+                rm -f "$PRERSLV_EEX"
+            }
+            # Pacing clock, fork-free: whole seconds + centiseconds of /proc/uptime, kept apart so
+            # nothing is multiplied up (32-bit ash arithmetic on Merlin) and the fraction loses a
+            # leading zero ("08" would be bad octal). Sub-second truth matters: comparing whole
+            # seconds let two batches start 0.1 s apart whenever one crossed a second boundary.
+            _dr_cs(){
+                _css=""; _csf=""; { read -r _css _uy < /proc/uptime; } 2>/dev/null
+                case "$_css" in *.*) _csf=${_css#*.}; _css=${_css%%.*} ;; *) _csf=0 ;; esac
+                _csf=${_csf%"${_csf#??}"}; _csf=${_csf#0}
+                case "$_css$_csf" in ''|*[!0-9]*) _css=0; _csf=0 ;; esac
+                _csf=${_csf:-0}
+            }
+            _prl_stamp(){ _dr_cs; _bss=$_css; _bsf=$_csf; }
+            # Pace: at least 1.01 s from the moment the previous batch was fully spawned (stamped
+            # just before its `wait`) to the next batch — the extra centisecond absorbs the
+            # truncation of /proc/uptime. The rest of the second is slept with busybox usleep
+            # (built on Merlin); `sleep 1` otherwise.
+            _prl_pace(){
+                [ "$_pace" = 1 ] || return 0
+                _dr_cs; _el=$(( (_css - _bss) * 100 + _csf - _bsf ))
+                [ "$_el" -lt 101 ] || return 0
+                if [ "$_usl" = 1 ] && [ "$_el" -ge 0 ]; then usleep $(( (101 - _el) * 10000 )); else sleep 1; fi
+            }
+            # Stop conditions shared by the main loop and the retry pass. The update window FIRST:
+            # yielding to a waiter there would hand the lock to a job that restarts dnsmasq in the
+            # middle of the update.
+            _prl_stops(){
+                if dnsreload_deferred; then
+                    if [ "$_lastflush" -lt "$_ln" ]; then _prl_flush; else _state "$_prodfrom"; fi
+                    log_msg "Geo domain pre-resolve: paused at $_ln/$_total for an addon update (resumes from $((_saved + 1)) after it)"
+                    touch "$DNSRELOAD_PENDING"
+                    exit 0
+                fi
+                if [ -f /tmp/.awg_dnsreload/preempt ]; then
+                    if [ "$_lastflush" -lt "$_ln" ]; then _prl_flush; else _state "$_prodfrom"; fi
+                    log_msg "Geo domain pre-resolve: yielding at $_ln/$_total to a newer dnsmasq reload (it resumes from $((_saved + 1)))"
+                    _dr_done
+                fi
+            }
+            # Between batches: beat, feed every 50 names (BEFORE pacing, so its time counts toward
+            # the interval), pace, and the stop conditions.
+            _prl_batch(){
+                _beat preresolve
+                [ $((_ln - _lastflush)) -ge 50 ] && _prl_flush
+                _prl_pace
+                # Two empty chunks in a row: either those ~100 names really have no IPv4, or the
+                # resolver died under us (WAN/upstream down) — then every further lookup would
+                # just burn its timeout. Pause, keeping the cursor at the last productive chunk.
+                if [ "$_dry" -ge 2 ]; then
+                    if ! dns_ok; then
+                        _state "$_prodfrom"
+                        log_msg "Geo domain pre-resolve: the router's resolver stopped answering at $_ln/$_total — paused; it resumes from $((_saved + 1)) at the next dnsmasq reload"
+                        _dr_done
+                    fi
+                    # The resolver is fine — those names just have no IPv4: they count as done.
+                    _dry=0; _prodfrom=$_ln; _state "$_ln"
+                fi
+                _prl_stops
+                if [ "$_ln" -ge "$_nextlog" ]; then
+                    log_msg "Geo domain pre-resolve: $_ln/$_total names done, $_fed new set entries so far"
+                    _nextlog=$((_nextlog + 5000))
+                fi
+            }
+            # One name: its "set ip" pairs go to .out; a lookup the resolver REFUSED or never
+            # answered (resolve_domain_v4 prints the "!R" marker — a dnsmasq restart blip, a
+            # dropped query) goes to $1 as "<domain> <sets>" for one retry when the run completes,
+            # instead of silently counting as "no IPv4" for a day.
+            _prl_one(){
+                _ips=$(resolve_domain_v4 "$domain" "$_nsq")
+                case "$_ips" in
+                    '') return 0 ;;
+                    '!R') echo "$domain $dsets" >> "$1"; return 0 ;;
+                esac
+                # Split the comma-set list without a fork per IP (the old $(echo | tr) did).
+                _oifs=$IFS; IFS=,; set -f; set -- $dsets; IFS=$_oifs
+                for _rip in $_ips; do
+                    for _rst in "$@"; do
+                        [ -n "$_rst" ] && echo "$_rst $_rip"
+                    done
+                done >> "${_prl}.out"
+            }
+            _bg=0; _bss=0; _bsf=0
+            while read -r domain dsets; do
+                _ln=$((_ln + 1))
+                [ -z "$domain" ] && continue
+                ( _prl_one "$PRERSLV_RETRY" ) &
+                _bg=$((_bg + 1))
+                [ "$_bg" -ge "$_jobs" ] || continue
+                _prl_stamp
+                wait; _bg=0
+                _prl_batch
+            done < "$_work"
+            [ "$_bg" -gt 0 ] && _prl_stamp
+            wait
+            _prl_flush
+            # One retry of the refused / unanswered lookups (kept in PRERSLV_RETRY across yields),
+            # same pacing and the same stop conditions — a queued reload or the updater's window is
+            # honoured here too. Names that fail again go to .retry2.
+            # A resumed job re-resolves its first chunk, so the same name can be queued twice: dedupe.
+            # _rgot counts pairs the retries produced — evidence that the upstream answers names
+            # that are NOT in any cache (see the counted-as-done rule below).
+            _rgot=0; _rn=0
+            if [ -s "$PRERSLV_RETRY" ]; then
+                # Never truncate the list in place: a failed write (full /tmp) would empty it.
+                sort -u "$PRERSLV_RETRY" > "${_prl}.rs" 2>/dev/null && [ -s "${_prl}.rs" ] \
+                    && mv -f "${_prl}.rs" "$PRERSLV_RETRY" 2>/dev/null
+                _rn=$(wc -l < "$PRERSLV_RETRY" 2>/dev/null); _rn=$(( ${_rn:-0} + 0 ))
+                rm -f "${_prl}.retry2"
+                _prl_pace
+                _bg=0; _rdry=0
+                while read -r domain dsets; do
+                    [ -n "$domain" ] || continue
+                    ( _prl_one "${_prl}.retry2" ) &
+                    _bg=$((_bg + 1))
+                    [ "$_bg" -ge "$_jobs" ] || continue
+                    _prl_stamp
+                    wait; _bg=0
+                    _beat preresolve
+                    _prl_feed
+                    _rgot=$((_rgot + _np))
+                    # The resolver can die during the retries too: after ~100 names without a
+                    # single answer, ask dns_ok instead of burning every remaining timeout.
+                    if [ "$_np" -gt 0 ]; then _rdry=0; else _rdry=$((_rdry + _jobs)); fi
+                    if [ "$_rdry" -ge 100 ]; then
+                        if ! dns_ok; then
+                            _state "$_prodfrom"
+                            log_msg "Geo domain pre-resolve: the router's resolver stopped answering during the retries — paused; it resumes from $((_saved + 1)) at the next dnsmasq reload"
+                            _dr_done
+                        fi
+                        _rdry=0
+                    fi
+                    _prl_pace
+                    _prl_stops
+                done < "$PRERSLV_RETRY"
+                wait
+                _prl_feed
+                _rgot=$((_rgot + _np))
+            fi
+            # The resolver can also die in the last chunk(s), after the in-loop check ran for the
+            # last time — then the run must pause like mid-list instead of recording the whole
+            # list as fed (it would be skipped for a day). The saved cursor already lags at the
+            # last productive chunk; confirm the resolver once and only then mark the list
+            # complete.
+            if [ "$_tried" -gt 0 ] || [ -s "$PRERSLV_RETRY" ]; then
+                if ! dns_ok; then
+                    _state "$_prodfrom"
+                    log_msg "Geo domain pre-resolve: the router's resolver stopped answering near the end ($_ln/$_total) — paused; it resumes from $((_saved + 1)) at the next dnsmasq reload"
+                    _dr_done
+                fi
+            fi
+            # Names that got no answer twice: usually names without a working answer (a dead
+            # authoritative server, an upstream slower than nslookup's timeout) — counted as done,
+            # or every later reload would re-resolve the tail forever. But dns_ok's names are the
+            # ones the LAN keeps hot in the caches: during an UPSTREAM outage they still answer
+            # while every uncached name times out. So count them as done only with evidence that
+            # uncached names do resolve (some retry answered), or on the second completion in a
+            # row that ends the same way; otherwise pause once and try again at the next reload.
+            if [ -s "$PRERSLV_RETRY" ]; then
+                _rk=$(wc -l < "${_prl}.retry2" 2>/dev/null); _rk=$(( ${_rk:-0} + 0 ))
+                if [ "$_rk" -gt 0 ] && [ "$_rgot" -eq 0 ] && [ ! -f "$PRERSLV_RETRY.strike" ]; then
+                    true 2>/dev/null > "$PRERSLV_RETRY.strike"
+                    mv -f "${_prl}.retry2" "$PRERSLV_RETRY" 2>/dev/null
+                    _state "$_prodfrom"
+                    log_msg "Geo domain pre-resolve: $_rk name(s) got no answer twice and no retried name answered (an upstream outage?) — paused; they are retried at the next dnsmasq reload"
+                    # What this run DID get must not wait for that reload: re-arm its EEXIST
+                    # entries now (the resumed chunk builds a fresh list).
+                    _prl_refresh
+                    _dr_done
+                fi
+                if [ "$_rk" -gt 0 ]; then
+                    log_msg "Geo domain pre-resolve: $_rk of $_rn name(s) got no answer twice (e.g. $(awk 'NR <= 3 { printf "%s%s", (NR > 1 ? " " : ""), $1 }' "${_prl}.retry2" 2>/dev/null)) — counted as done; they fill when clients resolve them"
+                fi
+                rm -f "$PRERSLV_RETRY" "$PRERSLV_RETRY.strike"
+            fi
+            _prl_refresh
+            _post_ips=$(geo_ipset_total)
+            _dr_up; _dur=$((_ux - _t0))
+            if [ "$_tried" -gt 0 ]; then
+                _state "$_total" complete
+                # _fed = entries the add actually created; the rest of _tried already existed
+                # (EEXIST — now refreshed) — e.g. a second run right after a successful one
+                # legitimately logs "0 new of N". Live count ("Firewall configured: N IPs" is a
+                # build-time tally, not proof of population — THIS line is the proof).
+                log_msg "Geo domain pre-resolve: self-fed $_fed new of $_tried resolved set entries for $((_total - _from + 1)) name(s)$([ "$_rn" -gt 0 ] && echo " + $_rn retried") in ${_dur}s (ipset ${_pre_ips} -> ${_post_ips}) — cache-proof, domain routing active without a dnsmasq restart"
+            elif dns_ok; then
+                _state "$_total" complete
+                if [ "$_from" -gt 1 ]; then
+                    log_msg "Geo domain pre-resolve: completed — the re-resolved rest of the list ($((_total - _from + 1)) name(s)) had no usable IPv4"
+                else
+                    log_msg "Geo domain pre-resolve: resolver answers real names but returned no usable IPv4 for any geo domain (upstream blocking/empty answers?) — domains will fill on later client queries"
+                fi
+            else
+                _state "$_prodfrom"
                 log_msg "Geo domain pre-resolve: router DNS not resolving real names yet (WAN/upstream/DoT not ready); domains will fill on later client queries"
             fi
         fi
+        _dr_done
     ) </dev/null >/dev/null 2>&1 &
 }
 
@@ -3546,7 +4285,14 @@ setup_firewall(){
     # routing survives the rebuild with no gap at all. Shared-base semantics preserved: a
     # pre-existing set we don't own is loaded IN PLACE for id 1 (documented shared behavior —
     # we must never destroy/swap another tool's set) and skipped for id>=2 (foreign collision).
-    local gid gset tset _ldt _staged _desired_sets=""
+    local gid gset tset _ldt _staged _desired_sets="" _prs_before _ssig
+    # The staged swap below keeps what an earlier pre-resolve fed (replay), so it keeps
+    # GEOSET_GEN and the pre-resolve cursor stays valid — but only for feeds that happened
+    # BEFORE the replay snapshot. Let a running pre-resolve reach its batch boundary and yield
+    # first, remember the cursor, and let geo_swap_window_close judge the window afterwards.
+    geo_preresolve_quiesce
+    _prs_before="$(cat "$GEOSET_GEN" 2>/dev/null)|$(cat "$PRERSLV_STATE" 2>/dev/null)"
+    _ssig=$(geo_static_sig)
     for gid in $(geo_ids); do
         gset=$(geo_ipset "$gid")
         local _cerr _crc
@@ -3663,6 +4409,7 @@ setup_firewall(){
         [ -n "$_ent" ] && [ "$_ent" -ge "$maxelem" ] 2>/dev/null && \
             log_msg "WARNING: ipset $gset full ($_ent/$maxelem) for geo policy $gid — raise RAM or trim its lists"
     done
+    geo_swap_window_close "$_prs_before" "$_ssig"
 
     # --- Build dnsmasq config for domain-based routing ---
     local domain_count=0
@@ -3692,13 +4439,13 @@ setup_firewall(){
     # as `ipset=/dom/setA,setB,...` — a comma-set line fans the resolved IP to EVERY listed set.
     local dgid dgset f _cat _uk _dfiles _efiles _chan _cset _cfiles
     local _ds_tmp="$GEO_DIR/.dnsmasq_ds.$$"
-    : > "$_ds_tmp"
+    true 2>/dev/null > "$_ds_tmp"   # not `:` — a failed redirect on that special builtin exits the shell
     for dgid in $(geo_ids); do
         dgset=$(geo_ipset "$dgid")
         # INC domain files for this policy (route via its main set).
         _dfiles=""
         for _cat in $(get_setting "$(geo_key "$dgid" v2fly)" | tr ',' ' '); do
-            _cat=$(echo "$_cat" | sed 's/[^A-Za-z0-9_.-]//g'); [ -z "$_cat" ] && continue
+            _cat=$(echo "$_cat" | sed 's/[^A-Za-z0-9_.!-]//g'); [ -z "$_cat" ] && continue   # same charset as geo_union_geosite
             _dfiles="$_dfiles $GEO_DIR/domains/v2fly_${_cat}.txt"
         done
         _dfiles="$_dfiles $GEO_DIR/domains/custom_p${dgid}.txt"
@@ -4979,17 +5726,56 @@ do_diag(){
                 # Holder age makes a wedged job visible at a glance (the 2026-08-24 field diag
                 # showed only "alive" — the 6-minute hang had to be inferred from timestamps).
                 _la2=$(proc_age_s "$_lp2")
-                echo "  $_L : held by pid $_lp2 (alive${_la2:+, ${_la2}s old})"
+                # The reload job's progress beat (1.5.27): phase + how long since it last moved.
+                # A long-running job in "preresolve" that keeps moving is healthy; one that has
+                # not moved for DNSRELOAD_STALL_S is what the watchdog reaps.
+                _lb2=""
+                if [ "$_L" = /tmp/.awg_dnsreload ]; then
+                    _bph=""; _bts=""; { read -r _bph _bts < "$_L/beat"; } 2>/dev/null
+                    case "$_bph" in *[!a-z]*) _bph="?" ;; esac
+                    case "$_bts" in ''|*[!0-9]*) ;; *)
+                        _lb2=", phase $_bph, last progress $(( $(cut -d. -f1 /proc/uptime) - _bts ))s ago" ;;
+                    esac
+                    [ -f "$_L/preempt" ] && _lb2="$_lb2, a newer reload is waiting"
+                    [ -f "$_L/owed" ] && _lb2="$_lb2, OWES a reload"
+                    [ -f "$_L/unloaded" ] && _lb2="$_lb2, its restart never took"
+                fi
+                echo "  $_L : held by pid $_lp2 (alive${_la2:+, ${_la2}s old}$_lb2)"
             elif [ -n "$_lp2" ]; then echo "  $_L : held by pid $_lp2 (DEAD — stale lock!)"
             else echo "  $_L : held (no pid recorded)"; fi
         else
             echo "  $_L : free"
         fi
     done
+    # Geo pre-resolve cursor (1.5.27): how much of the domain list has been fed into the sets
+    # under the CURRENT set generation. A stale generation means the sets were rebuilt since
+    # and the next reload feeds from line 1; done < total means the next reload resumes.
+    if [ -f "$PRERSLV_STATE" ]; then
+        _psg=""; _psm=""; _psd=""; _pst=""; _pss=""
+        { read -r _psg _psm _psd _pst _pss _psrest < "$PRERSLV_STATE"; } 2>/dev/null
+        _pgen=""; { read -r _pgen < "$GEOSET_GEN"; } 2>/dev/null
+        case "$_pss" in ''|*[!0-9]*) _pss="" ;; esac
+        case "$_psd" in ''|*[!0-9]*) _psd="?" ;; esac
+        case "$_pst" in ''|*[!0-9]*) _pst="?" ;; esac
+        echo "geo pre-resolve state: ${_psd:-?}/${_pst:-?} names fed$([ -n "$_pss" ] && echo ", run started $(( ($(cut -d. -f1 /proc/uptime) - _pss) / 60 )) min ago"), set generation $([ "$_psg" = "${_pgen:-0}" ] && echo current || echo 'STALE (sets rebuilt since — next reload feeds from line 1)')"
+    else
+        _bph=""; { read -r _bph _bts < /tmp/.awg_dnsreload/beat; } 2>/dev/null
+        if [ "$_bph" = preresolve ]; then
+            echo "geo pre-resolve state: none yet (a run is in progress — the cursor is first saved after 50 names)"
+        else
+            echo "geo pre-resolve state: none (no feed recorded since the sets were last built)"
+        fi
+    fi
+    # Pending work carried across jobs: names to retry (strike = the last completion found no
+    # retried name answering and paused once), and EEXIST entries to re-arm at completion.
+    _prn=$(wc -l < "$PRERSLV_RETRY" 2>/dev/null); _pen=$(wc -l < "$PRERSLV_EEX" 2>/dev/null)
+    [ -n "$_prn$_pen" ] && echo "geo pre-resolve pending: retry list $(( ${_prn:-0} + 0 )) name(s)$([ -f "$PRERSLV_RETRY.strike" ] && echo ' (strike: paused once already — the next completion counts them as done)'), refresh list $(( ${_pen:-0} + 0 )) entr(y/ies)"
+    _pleg=$(ls /tmp/.awg_prerslv.* 2>/dev/null | wc -l)
+    [ "$_pleg" -gt 0 ] 2>/dev/null && echo "legacy pre-resolve scratch: $_pleg file(s) in /tmp/.awg_prerslv.* (leaked by a pre-1.5.27 job; swept by the next reload)"
     # Updater flags: a FRESH one during an update is normal; one older than ~15 min means the
     # updater died mid-flight (both self-reclaim on TTL, but show them so the window is visible).
     for _F in /tmp/.awg_no_autostart "$DNSRELOAD_DEFER" "$DNSRELOAD_PENDING"; do
-        [ -f "$_F" ] && echo "updater flag: $_F ($([ -n "$(find "$_F" -mmin +15 2>/dev/null)" ] && echo 'STALE >15min — updater died?' || echo 'fresh'))"
+        [ -f "$_F" ] && echo "updater flag: $_F ($(file_older_than "$_F" 900 && echo 'STALE >15min — updater died?' || echo 'fresh'))"
     done
     # Boot/Entware-init forensics (1.5.8, field: RT-BE92U @ 3006.102.8): when the firmware's
     # native Entware starter and the amtm/post-mount hook collide, NEITHER runs the
@@ -6644,53 +7430,141 @@ proc_age_s(){
     echo $(( up - $1 / 100 ))
 }
 
-# --- Stale dnsmasq-reload-job reaper (1.5.21) --------------------------------------------
+# --- Stale dnsmasq-reload-job reaper (1.5.21, progress-based since 1.5.27) ----------------
 # Second incarnation of the wedged-`nvram get` disease (see reap_stale_status above): the
 # DETACHED reload_dnsmasq job polls a bare `nvram get rc_service` once a second inside
-# _rc_settle, and ONE lost envrams reply parks the whole job in the kernel forever — while it
-# HOLDS /tmp/.awg_dnsreload. Every later reload then waits its 240 s and self-skips ("another
-# reload job still running"), so dnsmasq never picks up refreshed DOMAIN geo rules again until
-# a reboot. Field-caught 2026-08-24 (TUF-AX3000_V2 @1.5.20 diag): holder alive 6+ minutes, rc
-# idle the whole time, not one further journal/syslog line from the job — parked before its
-# `service` call, i.e. inside the nvram read. Unlike a status run, this job's lifetime is
-# LEGITIMATELY minutes (up to 240 s in the lock queue, a 150 s rc-settle budget, and up to 30
-# notify_rc attempts that can each block ~15 s on a busy rc), so the threshold sits far above
-# all of that combined. Age is measured on the holder PROCESS (proc_age_s), not on a lock
-# file — so locks taken by a pre-1.5.21 addon are covered the moment this version lands.
+# _rc_settle, and ONE lost reply parks the whole job in the kernel forever — while it HOLDS
+# /tmp/.awg_dnsreload. Every later reload then queued behind it and skipped, so dnsmasq never
+# picked up refreshed DOMAIN geo rules again until a reboot. Field-caught 2026-08-24
+# (TUF-AX3000_V2 @1.5.20 diag): holder alive 6+ minutes, rc idle the whole time, not one further
+# journal/syslog line from the job.
+# 1.5.21 judged the holder by AGE (> 1200 s), budgeting the lock queue + settle + restarts and
+# forgetting that the same job then runs the geo pre-resolve, whose length scales with the
+# domain count and resolver latency. A big list behind AdGuardHome is legitimately older than
+# that: it was reaped mid-lookup, the log blamed nvram (hard-coded), the requeued job skipped the
+# restart (md5) and started the pre-resolve over from line 1 — reaped again ~1490 s later, every
+# ~25 min, forever, with the resolver under constant load (field report 2026-09-28, GT-AX6000
+# + AGH @1.5.25). Now the job writes a progress beat (reload_dnsmasq's _beat: phase + uptime)
+# before every step that can block, and a holder is reaped only when that beat is older than
+# DNSRELOAD_STALL_S — however long it has been running. The longest legitimate gap between
+# beats is one notify_rc block (~15 s), one lookup batch (a few timeouts) or 100 ipset adds.
+# Holders without a beat were started by a pre-1.5.27 script (an upgrade under a running job)
+# and keep the old age rule.
+DNSRELOAD_STALL_S=180
 DNSRELOAD_STALE_S=1200
 
 reap_stale_dnsreload(){
-    local hp age victims kids more d p sline v pass
+    local hp age victims kids more d p sline v pass ph ts up ux stall comms why rph _bf _ba
     [ -d /tmp/.awg_dnsreload ] || return 0
     hp=$(cat /tmp/.awg_dnsreload/pid 2>/dev/null)
+    ph=""; ts=""
+    { read -r ph ts < /tmp/.awg_dnsreload/beat; } 2>/dev/null
+    case "$ph" in *[!a-z]*) ph="" ;; esac
+    case "$ts" in ''|*[!0-9]*) ts="" ;; esac
     if [ -z "$hp" ]; then
         # mkdir won but the pid write never landed (writer killed in that instant). The
         # queue's dead-holder reclaim keys on the pid FILE, so a pidless dir blocks every
         # reload forever. Same age discipline as the watchdog's LOCKDIR reclaim: touch it
         # only once the dir is demonstrably old — mid-acquire is a moment, not minutes.
-        [ -n "$(find /tmp/.awg_dnsreload -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 0
-        rm -rf /tmp/.awg_dnsreload 2>/dev/null
-        log_msg "WATCHDOG: removed an orphaned pidless dnsmasq-reload lock (it was blocking every reload)"
+        # Re-queue: whatever it was carrying never ran (the md5 check makes a no-op cheap).
+        file_older_than /tmp/.awg_dnsreload 300 || return 0
+        dnsreload_reclaim "r0" "" || return 0
+        log_msg "WATCHDOG: removed an orphaned pidless dnsmasq-reload lock (it was blocking every reload) — re-queuing the reload"
+        reload_dnsmasq
         return 0
     fi
     case "$hp" in *[!0-9]*) return 0 ;; esac
     if ! kill -0 "$hp" 2>/dev/null; then
-        # Dead holder. The reload queue reclaims these itself, but only when the NEXT reload
-        # actually queues up behind it — clear it now so that one starts instantly instead.
-        rm -rf /tmp/.awg_dnsreload 2>/dev/null
+        # Dead holder (killed without its EXIT trap — OOM killer, kill -9). The reload queue
+        # reclaims these itself, but only when the NEXT reload actually queues up behind it —
+        # clear it now so that one starts instantly instead, and re-run the reload if the job
+        # died before dnsmasq had the conf (dnsreload_needs_requeue — a job without a beat died
+        # before it did anything, or is a pre-1.5.27 one: re-run it; the md5 check keeps a
+        # needless run cheap).
+        dnsreload_reclaim "r$hp" "$hp" dead || return 0
+        rph=${DR_PH:-$ph}
+        if [ -z "$ts" ] || dnsreload_needs_requeue "$rph" "$DR_OWED" "$DR_UNL"; then
+            log_msg "WATCHDOG: a dnsmasq-reload job died in phase ${rph:-start} (pid $hp) — re-queuing the reload"
+            reload_dnsmasq
+        else
+            log_msg "WATCHDOG: a dnsmasq-reload job died in phase ${rph:-?} (pid $hp) — lock removed; not re-queued (dnsmasq already has the current rules; the pre-resolve resumes at the next reload)"
+        fi
         return 0
+    fi
+    # Progress first — read with the `read` builtin, no fork while the job is healthy.
+    stall=""
+    if [ -n "$ts" ]; then
+        up=""; { read -r up ux < /proc/uptime; } 2>/dev/null
+        up=${up%%.*}
+        case "$up" in ''|*[!0-9]*) return 0 ;; esac
+        stall=$((up - ts))
+        [ "$stall" -gt "$DNSRELOAD_STALL_S" ] || return 0
+    elif [ -e /tmp/.awg_dnsreload/beat ] || [ -e /tmp/.awg_dnsreload/beat.t ]; then
+        # A beat exists but did not parse: it is being written this instant (or was damaged).
+        # Only a job WITHOUT any beat is a pre-1.5.27 holder — never apply the age rule to a
+        # 1.5.27 job on the strength of one unlucky read; the next tick decides. (Bounded: a
+        # beat that stays unparsable longer than a stall is treated as a stall below.)
+        for _bf in /tmp/.awg_dnsreload/beat /tmp/.awg_dnsreload/beat.t; do
+            _ba=$(file_age_s "$_bf") || continue
+            [ "$_ba" -ge -60 ] && [ "$_ba" -le "$DNSRELOAD_STALL_S" ] && return 0
+        done
+        stall="?"
     fi
     age=$(proc_age_s "$hp")
     [ -n "$age" ] || return 0
-    [ "$age" -gt "$DNSRELOAD_STALE_S" ] || return 0
+    if [ -n "$ts" ]; then
+        # A process YOUNGER than the job's last beat cannot have written it: the holder died
+        # without its EXIT trap and its pid was reused by something unrelated. 1.5.21's age
+        # gate protected such a young process implicitly; the stall rule must do it explicitly
+        # — never SIGSTOP/SIGKILL a stranger's process tree (httpd, dnsmasq, the daemon…).
+        if [ "$age" -lt "$stall" ]; then
+            dnsreload_reclaim "r$hp" "$hp" || return 0
+            rph=${DR_PH:-$ph}
+            if dnsreload_needs_requeue "$rph" "$DR_OWED" "$DR_UNL"; then
+                log_msg "WATCHDOG: removed a dead dnsmasq-reload job's lock (its pid $hp now belongs to another process; last beat ${stall}s ago in phase ${rph:-?}) — re-queuing the reload"
+                reload_dnsmasq
+            else
+                log_msg "WATCHDOG: removed a dead dnsmasq-reload job's lock (its pid $hp now belongs to another process; last beat ${stall}s ago in phase ${rph:-?}) — not re-queued (dnsmasq already has the current rules; the pre-resolve resumes at the next reload)"
+            fi
+            return 0
+        fi
+    elif [ "$stall" = "?" ]; then
+        # Same stranger test for a beat that stayed unreadable past the stall limit: a process
+        # younger than that limit cannot have written it — the holder died and its pid was reused.
+        if [ "$age" -le "$DNSRELOAD_STALL_S" ]; then
+            dnsreload_reclaim "r$hp" "$hp" || return 0
+            log_msg "WATCHDOG: removed a dead dnsmasq-reload job's lock (unreadable progress beat; its pid $hp now belongs to another process) — re-queuing the reload"
+            reload_dnsmasq
+            return 0
+        fi
+    else
+        [ "$age" -gt "$DNSRELOAD_STALE_S" ] || return 0
+        # The job may have ENDED between our reads — its release renames the whole lock dir
+        # away, and "no beat" then only means "no dir". Re-confirm the same holder still owns a
+        # beat-less lock before acting on the legacy rule.
+        { [ -d /tmp/.awg_dnsreload ] && [ "$(cat /tmp/.awg_dnsreload/pid 2>/dev/null)" = "$hp" ] \
+          && [ ! -e /tmp/.awg_dnsreload/beat ] && [ ! -e /tmp/.awg_dnsreload/beat.t ]; } || return 0
+    fi
+    # Freeze the holder, then make sure the lock is still ITS lock (it may have finished and
+    # released it between our reads and the STOP) — else let it go.
+    kill -STOP "$hp" 2>/dev/null
+    if [ "$(cat /tmp/.awg_dnsreload/pid 2>/dev/null)" != "$hp" ]; then
+        kill -CONT "$hp" 2>/dev/null
+        return 0
+    fi
     # Collect the holder's descendants TRANSITIVELY: the wedged `nvram get` runs inside a
-    # $(…) command-substitution subshell, i.e. it is usually a GRANDchild of the holder — a
-    # single-level PPid pass would kill the middle shell and orphan the nvram process, still
-    # wedged, onto init. Deepest generation lands FIRST in $kids, and children die BEFORE
-    # the holder (the reap_stale_status lesson: freeing the shell alone lets it resume and
-    # act on a world that moved on minutes ago).
-    victims=" $hp"; kids=""; pass=0
-    while [ $pass -lt 4 ]; do
+    # $(…) command-substitution subshell, i.e. it is usually a GRANDchild of the holder, and a
+    # pre-resolve lookup sits three levels down (batch subshell → $(…) → nslookup). A
+    # single-level PPid pass would kill the middle shell and orphan the wedged process onto
+    # init. Each generation is SIGSTOPped as it is found (the holder already is): a stopped
+    # task cannot fork, so nothing new appears between this scan and the kill. Deepest
+    # generation lands FIRST in $kids, and children die BEFORE the holder (the
+    # reap_stale_status lesson: freeing the shell alone lets it resume and act on a world that
+    # moved on minutes ago). The victims' comm names say WHAT was stuck — the log reports that
+    # instead of assuming nvram (1.5.21-1.5.26 blamed nvram for every reap, and sent a field
+    # user hunting a firmware bug that was really this reaper killing a live pre-resolve).
+    victims=" $hp"; kids=""; comms=""; pass=0
+    while [ $pass -lt 6 ]; do
         more=""
         for d in /proc/[0-9]*; do
             p=${d#/proc/}
@@ -6701,22 +7575,59 @@ reap_stale_dnsreload(){
             set -f; set -- $sline; set +f
             [ $# -ge 4 ] || continue    # pid (comm) state ppid — our victims' comms are never spaced
             for v in $victims; do
-                [ "$4" = "$v" ] && { more="$more $p"; break; }
+                [ "$4" = "$v" ] && { more="$more $p"; comms="$comms $2"; break; }
             done
         done
         [ -n "$more" ] || break
+        kill -STOP $more 2>/dev/null
         kids="$more$kids"
         victims="$victims$more"
         pass=$((pass + 1))
     done
+    # Release the lock while the whole tree is FROZEN, before any kill: a waiter polling now
+    # still sees a live holder (a stopped process passes kill -0), so it cannot reclaim and
+    # have its fresh lock renamed away by us; once the rename lands, its own mkdir wins. The
+    # flags come from the tomb (dnsreload_reclaim), after the rename — a waiter's give-up
+    # `owed` is either seen here or finds no dir, and that waiter then takes the lock itself.
+    if ! dnsreload_reclaim "r$hp" "$hp"; then
+        # The lock is no longer this holder's — it released it itself in the instant before the
+        # freeze (its forked `mv` is not stopped by our SIGSTOP). Let the whole tree run on: the
+        # job finishes its own release and handles `owed` itself.
+        kill -CONT $kids "$hp" 2>/dev/null
+        return 0
+    fi
+    rph=${DR_PH:-$ph}
     [ -n "$kids" ] && kill -9 $kids 2>/dev/null
     kill -9 "$hp" 2>/dev/null
-    rm -rf /tmp/.awg_dnsreload 2>/dev/null
-    log_msg "WATCHDOG: reaped a wedged dnsmasq-reload job (pid $hp, ${age}s old — a firmware 'nvram get' with no timeout had parked it; reloads were being skipped) — re-queuing the reload"
-    # The killed job's reload never happened; run a fresh one so refreshed domain rules reach
-    # dnsmasq now rather than at the next Apply. It detaches itself and self-skips via the
-    # conf md5 signature when there is genuinely nothing to load.
-    reload_dnsmasq
+    case "$comms" in
+        *'(nvram)'*)            why="a firmware 'nvram get' never answered (the firmware's nvram IPC has no timeout)" ;;
+        *'(service)'*|*'(rc)'*) why="'service restart_dnsmasq' (notify_rc) never returned" ;;
+        *'(nslookup)'*)
+            if [ "$rph" = preresolve ]; then why="a geo pre-resolve DNS lookup never returned"
+            else why="the router's own resolver (127.0.0.1) never answered a lookup"; fi ;;
+        *'(dnsmasq)'*)          why="a 'dnsmasq --test' / direct start never returned" ;;
+        *)                      why="no identifiable blocked step" ;;
+    esac
+    # Re-queue only when dnsmasq may not hold the current conf (dnsreload_needs_requeue): the
+    # job died before or in its restart, the restart never took, or a waiter gave up behind it.
+    # Past a successful restart — the DNS wait or the pre-resolve — dnsmasq already loaded the
+    # conf and the pre-resolve resumes from its saved cursor at the next reload; an automatic
+    # requeue there is exactly what turned the 1.5.21 reaper into a loop.
+    if [ "$stall" = "?" ]; then
+        log_msg "WATCHDOG: reaped a dnsmasq-reload job whose progress beat stayed unreadable for over ${DNSRELOAD_STALL_S}s (pid $hp, ${age}s old) — $why; re-queuing the reload"
+        reload_dnsmasq
+    elif [ -z "$ts" ]; then
+        log_msg "WATCHDOG: reaped a dnsmasq-reload job started by a pre-1.5.27 script (pid $hp, ${age}s old, over the ${DNSRELOAD_STALE_S}s limit for jobs without a progress beat) — $why; re-queuing the reload"
+        reload_dnsmasq
+    elif dnsreload_needs_requeue "$rph" "$DR_OWED" "$DR_UNL"; then
+        log_msg "WATCHDOG: reaped a stalled dnsmasq-reload job (pid $hp, phase ${rph:-?}, no progress for ${stall}s, ${age}s old) — $why; re-queuing the reload"
+        # The killed job's reload never (fully) happened; run a fresh one so refreshed domain
+        # rules reach dnsmasq now rather than at the next Apply. It detaches itself and
+        # self-skips via the conf md5 signature when there is genuinely nothing to load.
+        reload_dnsmasq
+    else
+        log_msg "WATCHDOG: reaped a stalled dnsmasq-reload job (pid $hp, phase $rph, no progress for ${stall}s, ${age}s old) — $why; not re-queued (dnsmasq already has the current rules; the pre-resolve resumes at the next reload)"
+    fi
 }
 
 # --- Status JSON for web UI ---
@@ -7132,6 +8043,10 @@ analyze_dns_log_on(){
     if ! grep -qF "conf-file=$ANALYZE_DNS_CONF" "$DNSMASQ_INCLUDE" 2>/dev/null; then
         echo "conf-file=$ANALYZE_DNS_CONF" >> "$DNSMASQ_INCLUDE"
     fi
+    # The md5 skip covers only the geo conf: without this the restart that loads query logging
+    # was skipped whenever the geo rules were unchanged (same for turning it off below, where a
+    # skipped restart kept dnsmasq logging into the deleted file).
+    rm -f "$DNSRELOAD_SIG"
     reload_dnsmasq
 }
 
@@ -7142,6 +8057,7 @@ analyze_dns_log_off(){
     if [ -f "$DNSMASQ_INCLUDE" ] && grep -qF "$ANALYZE_DNS_CONF" "$DNSMASQ_INCLUDE" 2>/dev/null; then
         grep -vF "$ANALYZE_DNS_CONF" "$DNSMASQ_INCLUDE" > "${DNSMASQ_INCLUDE}.awgan.tmp" 2>/dev/null \
             && mv "${DNSMASQ_INCLUDE}.awgan.tmp" "$DNSMASQ_INCLUDE"
+        rm -f "$DNSRELOAD_SIG"
         reload_dnsmasq
     fi
     rm -f "$ANALYZE_DNS_LOG"
@@ -7811,7 +8727,7 @@ do_watchdog(){
     # gone — reclaim it (like a stale lock) and proceed. NB the long post-install geo re-download
     # runs AFTER the flag is cleared, so a slow box can't legitimately hold it that long.
     if [ -f /tmp/.awg_no_autostart ]; then
-        if [ -z "$(find /tmp/.awg_no_autostart -mmin +15 2>/dev/null)" ]; then
+        if ! file_older_than /tmp/.awg_no_autostart 900; then
             return 0   # fresh flag — a genuine update is in progress; stand down
         fi
         log_msg "WATCHDOG: stale update flag (>15 min) — updater likely died mid-flight; reclaiming"
@@ -7836,7 +8752,7 @@ do_watchdog(){
         if [ -z "$_lp" ]; then
             # No pid file — either mid-acquire (mkdir happened a moment ago) or a crash in that
             # window. Only treat as stale once the dir is demonstrably old.
-            [ -n "$(find "$LOCKDIR" -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 0
+            file_older_than "$LOCKDIR" 300 || return 0
         fi
         log_msg "WATCHDOG: stale operation lock (holder ${_lp:-unknown} is gone) — reclaiming"
         rm -rf "$LOCKDIR"
@@ -8137,8 +9053,10 @@ finalize_ipk_install(){
     wait_for_pid_exit amneziawg-go 10
     # Let any PRE-update dnsmasq reload job settle before opkg runs the package prerm. Jobs
     # spawned after the defer window opened never take the lock (they mark PENDING and exit),
-    # and an older in-flight job retires itself at its next rc-settle check — so this normally
-    # clears in a second or two; the 60s cap only guards a job stuck mid-restart. (Rationale
+    # and an older in-flight job retires itself at its next rc-settle check or, in the geo
+    # pre-resolve, after its current lookup batch (1.5.27 — before, a pre-resolve never checked
+    # the defer window and opkg ran alongside its lookup fan-out) — so this normally clears in
+    # a second or two; the 60s cap only guards a job stuck mid-restart. (Rationale
     # unchanged: two concurrent `service restart_dnsmasq` storms during a memory-pressured
     # opkg can OOM/blackout the LAN on a low-RAM box — RT-AC68U, 256MB.)
     _i=0; while [ -d /tmp/.awg_dnsreload ] && [ $_i -lt 60 ]; do sleep 1; _i=$((_i + 1)); done

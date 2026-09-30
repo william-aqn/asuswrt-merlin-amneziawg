@@ -905,8 +905,17 @@ do_srv_watchdog(){
     # Stand down during a package update (same shared flag + staleness rule as the client;
     # the 15-min reclaim keeps a died updater from disabling self-heal forever).
     if [ -f /tmp/.awg_no_autostart ]; then
-        [ -z "$(find /tmp/.awg_no_autostart -mmin +15 2>/dev/null)" ] && return 0
+        file_older_than /tmp/.awg_no_autostart 900 || return 0
         rm -f /tmp/.awg_no_autostart
+    fi
+
+    # The shared dnsmasq-reload job (server start/stop reload peer DNS through it) is normally
+    # watched by the CLIENT watchdog; on a box whose client tunnel is not running (never started,
+    # or user-stopped — which drops that cron) nothing else would ever reap a wedged one.
+    # Read the crontab spool directly, NOT `cru l`: Merlin's cru starts with an unguarded
+    # `nvram get http_username` — a */5 periodic nvram read (the 1.5.10 wedge rule).
+    if [ -d /tmp/.awg_dnsreload ] && ! grep -qs '#awg_watchdog#' /var/spool/cron/crontabs/* 2>/dev/null; then
+        reap_stale_dnsreload
     fi
 
     # Busy/stale lock handling (alive holder -> busy; dead holder -> reclaim).
@@ -917,7 +926,7 @@ do_srv_watchdog(){
             return 0
         fi
         if [ -z "$_lp" ]; then
-            [ -n "$(find "$LOCKDIR" -maxdepth 0 -mmin +5 2>/dev/null)" ] || return 0
+            file_older_than "$LOCKDIR" 300 || return 0
         fi
         log_msg "WATCHDOG: stale server lock (holder ${_lp:-unknown} is gone) — reclaiming"
         rm -rf "$LOCKDIR"
