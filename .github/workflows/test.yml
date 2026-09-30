@@ -1,0 +1,66 @@
+name: Tests
+
+# Deliberately separate from release.yml. Three reasons, in order of weight:
+#
+#  1. The triggers are disjoint. release.yml fires only on `v*` tags; these checks have to run
+#     on every push and pull request, which is where they can still stop something. Folding
+#     them together would either re-run the 30-minute QEMU/dockcross matrix for a shell typo,
+#     or never run the tests on a PR at all.
+#  2. Permissions. release.yml needs `contents: write` to publish. This job runs on pull
+#     requests and declares `contents: read`, so the release token never reaches it.
+#  3. Blast radius. A broken test workflow can never block a release — the release path is
+#     untouched by this file.
+#
+# Possible follow-up, deliberately NOT done here: calling ./tests/run.sh as the first step of
+# release.yml's build job would stop a tag whose scripts do not even parse. The trade-off is
+# that a red test would then block shipping, so it is worth landing only after the suite has
+# been green across a release or two.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pinned rather than relying on whatever the runner image ships, consistent with how
+      # carefully release.yml pins everything else.
+      #
+      # Both actions are @v5, not @v4: v4 declares the node20 runtime, which the runners now
+      # warn about ("Node.js 20 is deprecated ... forced to run on Node.js 24"). v5 declares
+      # node24 and the warning goes away. NB release.yml still carries checkout@v4 and
+      # upload-artifact@v4 and logs the same warning — deliberately not touched from a tests
+      # PR, since that file is the release path.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      # busybox ash is the shell the router actually runs, so it is the parser whose verdict
+      # matters most; dash is the closest always-available stand-in. tests/run.sh turns a
+      # missing tool into a hard failure when CI is set, so this step going wrong cannot
+      # quietly narrow the run.
+      - name: Install busybox and dash
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends busybox-static dash
+          busybox --help 2>&1 | head -1
+          dash -c 'echo dash ok'
+          node --version
+
+      # NB no `paths:` filter on the triggers above: a skipped job reports no status, and if
+      # this is ever made a required check a filtered run would block every PR that does not
+      # touch addon/. The whole suite takes seconds.
+      - name: Run the suite
+        run: ./tests/run.sh
