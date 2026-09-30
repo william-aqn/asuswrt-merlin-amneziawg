@@ -1228,18 +1228,33 @@ geo_preresolve_quiesce(){
     done
 }
 
-# Fingerprint of every setting that decides a geo set's STATIC content (GeoIP, antifilter,
-# custom IPs / files / URLs, both channels). A static /32 that equals a pre-resolve-fed IP
+# Fingerprint of the settings AND downloaded CIDR content used by the static sets (GeoIP,
+# antifilter, custom IPs / files / URLs, both channels). A static /32 equal to a pre-resolved IP
 # (antifilter's ipresolve holds exactly such /32s) gets promoted to permanent by the static
 # `restore -!`; if that static source is later removed, the next swap drops the entry — and a
 # cursor that says "fed" would keep the pre-resolve from putting it back for a day.
 geo_static_sig(){
-    local id k
-    for id in $(geo_ids); do
-        for k in v2fly_ip antifilter_lists custom_ips custom_files custom_urls exc_ips exc_files exc_urls; do
-            echo "$id $k $(get_setting "$(geo_key "$id" "$k")")"
+    local id k f _inputs _sig
+    _inputs=$(
+        for id in $(geo_ids); do
+            for k in v2fly_ip antifilter_lists custom_ips custom_files custom_urls exc_ips exc_files exc_urls; do
+                echo "$id $k $(get_setting "$(geo_key "$id" "$k")")"
+            done
         done
-    done | md5sum 2>/dev/null | cut -c1-32
+        # setup_firewall prunes the shared pool first. Hash its downloaded CIDRs once each:
+        # an update of the SAME URL/list can remove a permanent /32 without changing a setting.
+        # Pasted-file CIDRs are regenerated later; their source settings are already above.
+        for f in "$GEO_DIR"/geoip/v2fly_*.cidr "$GEO_DIR"/geoip/userurl_*.cidr "$GEO_DIR"/antifilter/af_*.cidr; do
+            [ -f "$f" ] || continue
+            md5sum "$f" 2>/dev/null || exit 1
+        done
+        true
+    ) || return 1
+    _sig=$(printf '%s\n' "$_inputs" | md5sum 2>/dev/null) || return 1
+    _sig=${_sig%% *}
+    case "$_sig" in ''|*[!0-9a-f]*) return 1 ;; esac
+    [ ${#_sig} -eq 32 ] || return 1
+    echo "$_sig"
 }
 
 # Hot-Apply guard, part 2 (after the last swap). $1 = "<gen>|<state>" taken after the quiesce,
@@ -1258,9 +1273,12 @@ geo_swap_window_close(){
         fi
     fi
     _old=$(cat "$GEOSTATIC_SIG" 2>/dev/null)
-    if [ -n "$2" ] && [ "$2" != "$_old" ]; then
+    if [ -z "$2" ]; then
+        rm -f "$GEOSTATIC_SIG"
+        [ -z "$_why" ] && _why="the static geo sources could not be fingerprinted"
+    elif [ "$2" != "$_old" ]; then
         echo "$2" > "$GEOSTATIC_SIG" 2>/dev/null
-        [ -z "$_why" ] && [ -n "$_old" ] && _why="the static geo sources changed"
+        [ -z "$_why" ] && _why="the static geo sources changed"
     fi
     case "$_why" in
         ''|-) ;;
@@ -2762,7 +2780,7 @@ dns_ok(){
 # skip-to-'='; Entware BIND: documented) — half the queries of the default A+AAAA. The classic
 # applet rejects any option, so the probe fails there and the call stays dual-stack. Never
 # -type=/-port=/-timeout=: LEDE's getopt reads them as -t/-p with junk arguments.
-# Prints the marker "!R" (and no address) when the resolver REFUSED the query or never answered
+# Prints the marker "!R" (and no address) on REFUSED/SERVFAIL or when the resolver never answered
 # (LEDE: "Connection refused" / "no servers could be reached"; the classic applet prints one
 # "can't resolve" for every failure, NXDOMAIN included, so there every failure qualifies) — a
 # dnsmasq restart blip or a dropped query, not "this name has no IPv4": the pre-resolve retries
@@ -2771,6 +2789,7 @@ dns_ok(){
 resolve_domain_v4(){
     nslookup $2 "$1" 127.0.0.1 2>&1 | awk '
         /[Cc]onnection refused|[Nn]o servers could be reached|[Tt]imed out|can.t resolve/ { bad = 1 }
+        /(^|[[:space:]:])(REFUSED|SERVFAIL)($|[[:space:]])/ { bad = 1 }
         /^Name:/ { seen = 1; next }
         seen && $1 ~ /^Address/ {
             for (i = 2; i <= NF; i++) {
@@ -3857,15 +3876,22 @@ reload_dnsmasq(){
             # set and present-before-absent keep one bad line from voiding the rest. A save that
             # fails refreshes nothing for that set (fail-safe: never guess what is permanent).
             # The list outlives the job (a yield / kill resumes later) and is consumed only when
-            # the whole run completed, and only while the set generation is still ours.
+            # EVERY save/restore succeeded, and only while the set generation is still ours.
+            # Keep all pairs on any failure: retrying a successful set is safe, losing a failed
+            # set would let its old timeouts expire under a falsely completed 24-hour cursor.
             _prl_refresh(){
+                local _cg _rs _rsets _refresh_failed=0
                 [ -s "$PRERSLV_EEX" ] || return 0
                 _cg=""; { read -r _cg < "$GEOSET_GEN"; } 2>/dev/null
                 case "$_cg" in ''|*[!0-9A-Za-z.-]*) _cg=0 ;; esac
-                if [ "$_cg" != "$_gen" ]; then rm -f "$PRERSLV_EEX"; return 0; fi
-                _beat preresolve
-                for _rs in $(awk '{ print $1 }' "$PRERSLV_EEX" 2>/dev/null | sort -u); do
-                    { ipset save "$_rs" 2>/dev/null && echo "#SAVE-OK"; } | awk -v s="$_rs" '
+                [ "$_cg" = "$_gen" ] || return 1
+                _rsets=$(awk 'NF == 2 { sets[$1] = 1 } END { for (s in sets) print s }' "$PRERSLV_EEX" 2>/dev/null) || return 1
+                [ -n "$_rsets" ] || return 1
+                for _rs in $_rsets; do
+                    _beat preresolve
+                    # Stage only the refresh commands, not the full set dump. The pipeline ends
+                    # at awk so a failed save cannot be masked by a successful empty restore.
+                    if ! { ipset save "$_rs" 2> "${_prl}.refresh.err" && echo "#SAVE-OK"; } | awk -v s="$_rs" '
                         NR == FNR { if (NF == 2 && $1 == s) want[$2] = 1; next }
                         $1 == "#SAVE-OK" { ok = 1; next }
                         $1 == "create" && $2 == s { hdr = 1; next }
@@ -3873,12 +3899,24 @@ reload_dnsmasq(){
                             if ($0 ~ / timeout 0( |$)/) perm[$3] = 1; else pres[$3] = 1
                         }
                         END {
-                            if (!ok || !hdr) exit
+                            if (!ok || !hdr) exit 1
                             for (k in pres) print "add " s " " k
                             for (k in want) if (!(k in perm) && !(k in pres)) print "add " s " " k
+                            print "#REFRESH-OK"
                         }
-                    ' "$PRERSLV_EEX" - 2>/dev/null | ipset restore -! 2>/dev/null
+                    ' "$PRERSLV_EEX" - 2>/dev/null > "${_prl}.refresh"; then
+                        _refresh_failed=1
+                        log_msg "Geo domain pre-resolve: could not read ipset $_rs for refresh: $(awk 'NR == 1 { print substr($0, 1, 400); exit }' "${_prl}.refresh.err" 2>/dev/null)"
+                        continue
+                    fi
+                    # Busybox awk may exit 0 after ENOSPC: require its final marker too.
+                    if ! grep -qxF '#REFRESH-OK' "${_prl}.refresh" 2>/dev/null \
+                       || ! ipset restore -! < "${_prl}.refresh" 2> "${_prl}.refresh.err"; then
+                        _refresh_failed=1
+                        log_msg "Geo domain pre-resolve: could not finish ipset $_rs refresh (scratch write / restore): $(awk 'NR == 1 { print substr($0, 1, 400); exit }' "${_prl}.refresh.err" 2>/dev/null)"
+                    fi
                 done
+                [ "$_refresh_failed" = 0 ] || return 1
                 rm -f "$PRERSLV_EEX"
             }
             # Pacing clock, fork-free: whole seconds + centiseconds of /proc/uptime, kept apart so
@@ -4054,7 +4092,11 @@ reload_dnsmasq(){
                 fi
                 rm -f "$PRERSLV_RETRY" "$PRERSLV_RETRY.strike"
             fi
-            _prl_refresh
+            if ! _prl_refresh; then
+                _state "$_prodfrom"
+                log_msg "Geo domain pre-resolve: ipset refresh failed — paused; pending entries are kept for the next dnsmasq reload"
+                _dr_done
+            fi
             _post_ips=$(geo_ipset_total)
             _dr_up; _dur=$((_ux - _t0))
             if [ "$_tried" -gt 0 ]; then
