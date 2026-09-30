@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.28"
+AWG_VERSION="1.5.29"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -9477,8 +9477,11 @@ do_diag_publish(){
     fi
     # Keep each request's result long enough for polling/retries, then reclaim RAM on the
     # next collection. Distinct paths prevent a late old run from overwriting a newer one.
-    local _dbase="${DIAG_FILE##*/}"
-    find "${DIAG_FILE%/*}" -maxdepth 1 -type f -name "${_dbase%.htm}_*.htm" -mmin +10 -exec rm -f {} \; 2>/dev/null
+    # Firmware find lacks -mmin/-maxdepth; use the shared date-based age helper.
+    for _dold in "${DIAG_FILE%.htm}_"*.htm; do
+        [ -f "$_dold" ] || continue
+        file_older_than "$_dold" 600 && rm -f "$_dold" 2>/dev/null
+    done
     # $$ belongs to this dispatcher (not a detached subshell). Never unlink a live writer's
     # temp: a slow collection may outlive the page's 45-second timeout and a subsequent retry.
     for _dold in "${DIAG_FILE}".[0-9]* "${DIAG_FILE%.htm}_"*.htm.[0-9]*; do
