@@ -1823,7 +1823,21 @@ kill_tree(){
 # every Merlin build we know of; the fallback is a 1 s sleep.
 NV_TIMEOUT_S=5
 CRU_TIMEOUT_S=10
-RUN_BOUNDED_TMP=/tmp/.awg_rb
+RUN_BOUNDED_DIR=/tmp/.awg_rb
+
+# The capture holds whatever the command prints — `nv show` is the whole NVRAM, passwords and
+# keys included — so it lives in a root-only directory, never under a predictable name in
+# world-writable /tmp: a planted symlink there would be followed with O_TRUNC (noclobber does
+# not refuse a symlink to a device). The directory is trusted only as a real directory, mode
+# 0700, owned by root (the addon always runs as root), all judged from ONE lstat; a root-owned
+# entry cannot be swapped out from under us in sticky /tmp. Anything else is left in place and
+# refused: removing a foreign tree races its owner, and whoever can plant an entry in /tmp can
+# fill the tmpfs to the same effect anyway.
+run_bounded_dir_ok(){
+    set -- $(ls -ldn "$RUN_BOUNDED_DIR" 2>/dev/null)
+    case "$1 $3" in 'drwx------ 0') return 0 ;; esac
+    return 1
+}
 
 run_bounded()(
     # No local variables here: ash unwinds locals BEFORE the subshell EXIT trap.
@@ -1834,13 +1848,22 @@ run_bounded()(
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    # The capture is named after this subshell's own pid, read fork-free: `$$` inside a
+    # umask 077 makes mkdir land at 0700 at once (`mkdir -m` chmods after creating). Inside it
+    # the capture is named after this subshell's own pid, read fork-free: `$$` inside a
     # `( ) &` job is the parent's pid and would collide between sibling jobs, and busybox
-    # `mktemp` is not on every firmware. An unwritable /tmp makes the answer unreadable —
-    # report it as such (124 = "unavailable", the callers' fail-safe branch).
+    # `mktemp` is not on every firmware. A stale same-pid leftover is simply truncated. Without
+    # a usable capture the answer is unreadable — report it as such (124 = "unavailable", the
+    # callers' fail-safe branch).
+    if ! run_bounded_dir_ok; then
+        ( umask 077; mkdir "$RUN_BOUNDED_DIR" ) 2>/dev/null
+        run_bounded_dir_ok || {
+            log_msg "WARNING: unsafe or missing capture directory for '$*': $(ls -ldn "$RUN_BOUNDED_DIR" 2>&1)"
+            return 124
+        }
+    fi
     read -r _self _rc < /proc/self/stat
-    _tmp="$RUN_BOUNDED_TMP.$_self"
-    true 2>/dev/null > "$_tmp" || { log_msg "WARNING: cannot create $_tmp for '$*' — /tmp unwritable?"; return 124; }
+    _tmp="$RUN_BOUNDED_DIR/$_self"
+    true 2>/dev/null > "$_tmp" || { log_msg "WARNING: cannot create $_tmp for '$*' — /tmp full?"; _tmp=""; return 124; }
     "$@" > "$_tmp" 2>/dev/null < /dev/null &
     _pid=$!
     read -r _up _rc < /proc/uptime
@@ -7075,20 +7098,22 @@ do_start(){
     acquire_lock || { log_msg "Cannot acquire lock, aborting start"; flag_clear_mine; update_status; return 1; }
 
     # Deliberate-stop flag, re-read under the lock: a watchdog that passed its own check just
-    # before the user's Stop must not bring the tunnel back. Any other start clears it.
+    # before the user's Stop must not bring the tunnel back. Any other start that goes ahead
+    # clears it.
     if [ "${AWG_WATCHDOG:-0}" = 1 ] && [ -f "${LOCKDIR}.stopped" ]; then
         release_lock; flag_clear_mine; update_status
         return 0
     fi
-    rm -f "${LOCKDIR}.stopped"
 
     # The stop/start this restart was paired with is no longer the latest (a user Stop, another
-    # restart or the watchdog got the lock in between): starting now would undo THEIR outcome.
+    # restart or the watchdog got the lock in between): starting now would undo THEIR outcome —
+    # including that Stop's flag, which must survive this bail-out.
     if ! gen_current_is "$_exp_gen"; then
         log_msg "Restart superseded by a newer stop/start — not starting"
         release_lock; flag_clear_mine; update_status
         return 2
     fi
+    rm -f "${LOCKDIR}.stopped"
 
     # Re-check under the lock: the is_running test at the top ran BEFORE the (up to 30s) lock
     # wait, so a second queued start (double service event, watchdog racing a user click) used

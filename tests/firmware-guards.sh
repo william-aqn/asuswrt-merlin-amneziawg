@@ -14,12 +14,13 @@ extract(){
     awk -v name="$1" '$0 ~ "^" name "\\(\\)" {copy=1} copy {print} copy && /^[})]$/ {exit}' "$2"
 }
 : > functions.sh
-for name in lock_transition proc_start_time lock_age_s acquire_lock _acquire_lock_once release_lock _release_lock _reclaim_wedged_lock operation_lock_busy _operation_lock_busy file_age_s file_older_than kill_tree run_bounded awg_new_id awg_gen_bump gen_current_is flag_clear_mine fw_dns_redirect_active fw_dns_redirect_name setup_ipv6_block; do
+for name in lock_transition proc_start_time lock_age_s acquire_lock _acquire_lock_once release_lock _release_lock _reclaim_wedged_lock operation_lock_busy _operation_lock_busy file_age_s file_older_than kill_tree run_bounded_dir_ok run_bounded awg_new_id awg_gen_bump gen_current_is flag_clear_mine fw_dns_redirect_active fw_dns_redirect_name setup_ipv6_block; do
     extract "$name" "$SRC/addon/amneziawg.sh" >> functions.sh
     grep -q "^$name()" functions.sh || { echo "FAIL: cannot extract $name" >&2; exit 1; }
 done
+# Child scripts source functions.sh alone; they need the capture directory too.
+grep '^RUN_BOUNDED_DIR=/' "$SRC/addon/amneziawg.sh" >> functions.sh || { echo 'FAIL: cannot extract RUN_BOUNDED_DIR' >&2; exit 1; }
 . ./functions.sh
-RUN_BOUNDED_TMP=/tmp/.awg_rb
 LOCK_STALE_S=1800
 log_msg(){ echo "$*" >> "$W/log"; }
 awg_incident(){ echo "$*" >> "$W/incidents"; }
@@ -32,7 +33,7 @@ is_live(){
     case "$line" in Z\ *|X\ *) return 1 ;; *) return 0 ;; esac
 }
 no_capture_left(){
-    set -- /tmp/.awg_rb.*
+    set -- "$RUN_BOUNDED_DIR"/*
     [ ! -e "$1" ]
 }
 
@@ -76,13 +77,57 @@ pass 'concurrent sibling calls keep independent output'
     mktemp(){ echo used > "$W/mktemp-used"; return 1; }
     [ "$(run_bounded 1 echo ok)" = ok ] || fail 'capture without mktemp'
     [ ! -e "$W/mktemp-used" ] || fail 'run_bounded depends on mktemp'
-    RUN_BOUNDED_TMP=$W/missing/rb
+    RUN_BOUNDED_DIR=$W/missing/rb
     : > log
     run_bounded 1 echo forbidden > unavailable
     [ "$?" = 124 ] && [ ! -s unavailable ] || fail 'unwritable capture'
-    grep -q "^WARNING: cannot create $W/missing/rb\." log || fail 'unwritable capture not logged'
+    grep -q "^WARNING: unsafe or missing capture directory for 'echo forbidden'" log || fail 'unwritable capture not logged'
 ) || exit 1
 pass 'capture needs no mktemp; unavailable temporary storage returns 124'
+
+# `nv show` captures the whole NVRAM: the capture may live only in a root-owned 0700
+# directory, and a planted or foreign entry at that path is refused, never followed.
+(
+    umask 022
+    RUN_BOUNDED_DIR=$W/rb
+    path=$(run_bounded 3 sh -c 'readlink /proc/$$/fd/1')
+    case "$path" in "$RUN_BOUNDED_DIR"/[0-9]*) ;; *) fail "capture outside the private directory: $path" ;; esac
+    set -- $(ls -ldn "$RUN_BOUNDED_DIR")
+    [ "$1 $3" = 'drwx------ 0' ] || fail "capture directory mode/owner: $1 $3"
+    no_capture_left || fail 'capture left in the private directory'
+    rm -r "$RUN_BOUNDED_DIR"
+    mkdir -m 777 exposed
+    for planted in symlink open-mode foreign-owner; do
+        case "$planted" in
+            symlink) ln -s "$W/exposed" "$RUN_BOUNDED_DIR" ;;
+            open-mode) mkdir -m 755 "$RUN_BOUNDED_DIR" ;;
+            foreign-owner) mkdir -m 700 "$RUN_BOUNDED_DIR"; chown 1000 "$RUN_BOUNDED_DIR" ;;
+        esac
+        : > log
+        run_bounded 1 echo secret > unsafe.out
+        [ "$?" = 124 ] && [ ! -s unsafe.out ] || fail "$planted capture directory used"
+        set -- exposed/* "$RUN_BOUNDED_DIR"/*
+        [ ! -e "$1" ] && [ ! -e "$2" ] || fail "$planted capture directory written"
+        grep -q '^WARNING: unsafe or missing capture directory' log || fail "$planted capture directory not logged"
+        rm -r "$RUN_BOUNDED_DIR"
+    done
+    # A capture that cannot be created (tmpfs full) reads as unavailable too. The next pids are
+    # occupied by directories, so whichever one the supervisor gets, its capture cannot open.
+    ( umask 077; mkdir "$RUN_BOUNDED_DIR" )
+    last=$(sh -c 'echo $$')
+    i=0 planted=''
+    while :; do
+        i=$((i + 1)); planted="$planted $RUN_BOUNDED_DIR/$((last + i))"
+        case "$i" in 400) break ;; esac
+    done
+    mkdir $planted
+    : > log
+    run_bounded 1 echo secret > uncreatable.out
+    [ "$?" = 124 ] && [ ! -s uncreatable.out ] || fail 'uncreatable capture used'
+    grep -q "^WARNING: cannot create $RUN_BOUNDED_DIR/" log || fail 'uncreatable capture not logged'
+    rm -r "$RUN_BOUNDED_DIR"
+) || exit 1
+pass 'capture is private to root; planted, open or foreign capture directories are refused'
 
 # Cancellation hits the supervisor itself. Its traps must clean children and the capture;
 # the enclosing shell's own EXIT handler must stay intact.
@@ -95,7 +140,11 @@ trap 'echo parent > /tmp/fw-guards/parent-trap' EXIT
 run_bounded 2 sh -c 'echo "$PPID" > /tmp/fw-guards/supervisor; echo $$ > /tmp/fw-guards/cancel-child; sleep 30'
 CANCEL
 sh ./cancelled.sh & caller=$!
-while [ ! -s supervisor ] || [ ! -s cancel-child ]; do usleep 10000; done
+n=0
+while [ ! -s supervisor ] || [ ! -s cancel-child ]; do
+    n=$((n + 1)); [ "$n" -lt 3000 ] || fail 'cancellation fixture never started'
+    usleep 10000
+done
 kill -TERM "$(cat supervisor)"
 wait "$caller" 2>/dev/null
 [ "$?" = 143 ] || fail 'cancelled supervisor exit code'
@@ -456,6 +505,35 @@ for role in client server; do
     stop_holder
 done
 pass 'both watchdogs stand down behind a live operation and reclaim a wedged one'
+
+# A restart whose start was superseded by a user Stop (the generation moved in between)
+# must leave that Stop's flag in place; the start that does go ahead clears it.
+(
+    LOCKDIR="$W/superseded-lock"
+    STARTING_FLAG=$W/start-flag
+    IFACE=fwguard0
+    update_status(){ :; }
+    get_setting(){ :; }
+    ctf_active(){ return 1; }
+    ip(){ echo 'inet 192.0.2.1'; }
+    is_running(){ calls=$((calls + 1)); [ "$calls" -gt 1 ]; }
+    extract do_start "$SRC/addon/amneziawg.sh" > start.sh
+    . ./start.sh
+    echo current > "/tmp/.${IFACE}_gen"
+    touch "${LOCKDIR}.stopped"
+    : > log
+    calls=0; AWG_WATCHDOG=0
+    do_start stale
+    [ "$?" = 2 ] || fail 'superseded restart started'
+    [ -f "${LOCKDIR}.stopped" ] || fail 'superseded restart cleared Stop'
+    [ ! -d "$LOCKDIR" ] || fail 'superseded restart retained lock'
+    grep -q '^Restart superseded' log || fail 'superseded restart not logged'
+    calls=0
+    do_start current || fail 'current restart'
+    [ ! -f "${LOCKDIR}.stopped" ] || fail 'current restart retained Stop'
+    rm -f "/tmp/.${IFACE}_gen"
+) || exit 1
+pass 'superseded restart keeps the user Stop; the current one clears it'
 
 # The nested rc_service settling function with slow, unavailable reads.
 awk '/^        _rc_settle\(\)/{copy=1} copy{print} copy && /^        }$/{exit}' "$SRC/addon/amneziawg.sh" > settle.sh
