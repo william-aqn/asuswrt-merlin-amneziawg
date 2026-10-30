@@ -113,6 +113,38 @@ pass 'cancellation cleans descendants/capture and preserves caller trap'
 ) || exit 1
 pass 'DNS owner timeouts fail safe for each flag'
 
+# The watchdog reconcile drops our :53 DNAT (and tunnel DNS with it) only for a confirmed owner.
+(
+    LOCKDIR="$W/reconcile-lock"
+    IFACE=fwguard0
+    AWG_BIN=true
+    extract do_watchdog "$SRC/addon/amneziawg.sh" > watchdog.sh
+    . ./watchdog.sh
+    reap_stale_dnsreload(){ :; }
+    file_older_than(){ return 1; }
+    is_running(){ return 0; }
+    dns_intercept_active(){ return 0; }
+    zapret_active(){ return 1; }
+    get_setting(){ :; }
+    pidof(){ return 1; }
+    disable_tunnel_dns(){ echo tunnel-dns >> "$W/reconcile"; }
+    cleanup_dns_interception(){ echo dnat >> "$W/reconcile"; }
+    iface_exists(){ return 1; }
+    do_stop(){ return 1; }
+    nv(){ case "$mode" in unread) return 124 ;; owner) echo 1 ;; *) echo 0 ;; esac; }
+    for mode in unread none owner; do
+        rm -f "$W/reconcile" /tmp/.awg_wd_state
+        do_watchdog
+        case "$mode" in
+            owner) [ "$(cat "$W/reconcile" 2>/dev/null)" = "tunnel-dns
+dnat" ] || fail 'confirmed owner kept our interception' ;;
+            *) [ ! -e "$W/reconcile" ] || fail "reconcile dropped interception on $mode flags" ;;
+        esac
+    done
+    rm -f /tmp/.awg_wd_state
+) || exit 1
+pass 'watchdog reconcile ignores unread DNS flags and acts on a confirmed owner'
+
 (
     nv(){ printf '%s' "$value"; return "$result"; }
     ip6tables(){ echo "$*" >> ip6; [ "$1" != -C ]; }
@@ -156,6 +188,7 @@ for role in client server; do
             do_restart(){ fail 'watchdog restarted deliberately stopped client'; }
             do_stop user || fail 'client Stop'
             [ -f "${LOCKDIR}.stopped" ] || fail 'client stop intent absent'
+            rm -f /tmp/.awg_wd_state
             do_watchdog || fail 'stopped client watchdog'
         else
             extract do_srv_stop "$SRC/addon/amneziawg_server.sh" > lifecycle.sh

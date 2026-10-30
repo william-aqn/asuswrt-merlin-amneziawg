@@ -2724,8 +2724,9 @@ EOF
 # watchdog reconciler can't drift from setup_firewall's decision.
 # A flag read that TIMED OUT (rc 124 from the bounded nvram call) counts as "active": the
 # callers act on "inactive" by installing our :53 DNAT, and doing that over a DNS owner we
-# merely failed to see is the exact conflict this probe exists to prevent. On "active" they at
-# most drop our DNAT — the fail-open direction — and the next watchdog tick re-reads.
+# merely failed to see is the exact conflict this probe exists to prevent. The watchdog's
+# removal branch must not take that answer as evidence: it reads fw_dns_redirect_name, which
+# names the unread case "unknown", and drops our DNAT only for a confirmed owner.
 fw_dns_redirect_active(){
     local _v _k
     pidof AdGuardHome >/dev/null 2>&1 && return 0
@@ -8973,11 +8974,22 @@ do_watchdog(){
     # cheap, idempotent — and catch the br0-side ":53 collision" that dns_ok (which probes
     # 127.0.0.1, bypassing the DNAT) can't see, WITHOUT a full VPN restart.
     if is_running; then
-        if dns_intercept_active && { zapret_active || fw_dns_redirect_active || [ "$(get_setting awg_no_dns_intercept)" = "1" ]; }; then
-            log_msg "WATCHDOG: co-resident DNS owner detected — removing our :53 interception (coexist)"
-            disable_tunnel_dns   # tunnel-DNS is intercept-gated — drop it together (no-op if off)
-            cleanup_dns_interception
-        elif ! dns_intercept_active && intercept_wanted && dns_ok; then
+        local _drop=0
+        if dns_intercept_active; then
+            if zapret_active || [ "$(get_setting awg_no_dns_intercept)" = "1" ]; then
+                _drop=1
+            else
+                # Only a CONFIRMED owner counts. A firmware flag read that timed out names an
+                # "unknown" one — no evidence, and dropping on it would also drop tunnel DNS,
+                # which the install branch below never restores. The next tick re-reads.
+                case "$(fw_dns_redirect_name)" in ''|unknown*) ;; *) _drop=1 ;; esac
+            fi
+            if [ "$_drop" = 1 ]; then
+                log_msg "WATCHDOG: co-resident DNS owner detected — removing our :53 interception (coexist)"
+                disable_tunnel_dns   # tunnel-DNS is intercept-gated — drop it together (no-op if off)
+                cleanup_dns_interception
+            fi
+        elif intercept_wanted && dns_ok; then
             # dns_ok gate: only (re)install the hijack when the router actually resolves —
             # otherwise this would flap against the DNS fail-open below (install → fail-open
             # remove → install) every 5 minutes while the resolver is broken.
