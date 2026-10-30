@@ -1817,26 +1817,30 @@ kill_tree(){
 # printed and rc is 124 — callers already treat an empty read as "unset" — except the
 # decisions where "unset" would ACT unsafely (fw_dns_redirect_active, setup_ipv6_block,
 # _rc_settle, the rc_support install gate, the user-stop cron removal): those test for rc 124
-# and fail safe. Cost per call on an aarch64 box: ~20 ms (mktemp + fork + the poll
+# and fail safe. Cost per call on an aarch64 box: ~20 ms (fork + the poll
 # granularity; measured on an RT-AX88U PRO: 20 × `nv get` = 0.39 s) against ~3 ms for a bare
 # nvram — fine for the */1 status cron's two or three reads. `usleep` is a busybox applet on
 # every Merlin build we know of; the fallback is a 1 s sleep.
 NV_TIMEOUT_S=5
 CRU_TIMEOUT_S=10
+RUN_BOUNDED_TMP=/tmp/.awg_rb
 
 run_bounded()(
     # No local variables here: ash unwinds locals BEFORE the subshell EXIT trap.
     # This function already has its own subshell, so assignments cannot escape it.
-    _secs="$1" _tmp="" _pid="" _up="" _deadline="" _rc=""
+    _secs="$1" _self="" _tmp="" _pid="" _up="" _deadline="" _rc=""
     shift
     trap '[ -z "$_pid" ] || { kill_tree "$_pid"; wait "$_pid" 2>/dev/null; }; [ -z "$_tmp" ] || rm -f "$_tmp"' EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    # No fallback name: `$$` inside a `( ) &` subshell is the parent's pid, so a `$$`-based
-    # name collides between sibling jobs. An unwritable /tmp makes the answer unreadable —
+    # The capture is named after this subshell's own pid, read fork-free: `$$` inside a
+    # `( ) &` job is the parent's pid and would collide between sibling jobs, and busybox
+    # `mktemp` is not on every firmware. An unwritable /tmp makes the answer unreadable —
     # report it as such (124 = "unavailable", the callers' fail-safe branch).
-    _tmp=$(mktemp /tmp/.awg_rb.XXXXXX 2>/dev/null) || { log_msg "WARNING: mktemp failed for '$*' — /tmp unwritable?"; return 124; }
+    read -r _self _rc < /proc/self/stat
+    _tmp="$RUN_BOUNDED_TMP.$_self"
+    true 2>/dev/null > "$_tmp" || { log_msg "WARNING: cannot create $_tmp for '$*' — /tmp unwritable?"; return 124; }
     "$@" > "$_tmp" 2>/dev/null < /dev/null &
     _pid=$!
     read -r _up _rc < /proc/uptime

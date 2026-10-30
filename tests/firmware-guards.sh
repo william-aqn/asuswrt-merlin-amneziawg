@@ -19,6 +19,7 @@ for name in lock_transition proc_start_time lock_age_s acquire_lock _acquire_loc
     grep -q "^$name()" functions.sh || { echo "FAIL: cannot extract $name" >&2; exit 1; }
 done
 . ./functions.sh
+RUN_BOUNDED_TMP=/tmp/.awg_rb
 LOCK_STALE_S=1800
 log_msg(){ echo "$*" >> "$W/log"; }
 awg_incident(){ echo "$*" >> "$W/incidents"; }
@@ -72,11 +73,16 @@ no_capture_left || fail 'sibling temp leaked'
 pass 'concurrent sibling calls keep independent output'
 
 (
-    mktemp(){ return 1; }
+    mktemp(){ echo used > "$W/mktemp-used"; return 1; }
+    [ "$(run_bounded 1 echo ok)" = ok ] || fail 'capture without mktemp'
+    [ ! -e "$W/mktemp-used" ] || fail 'run_bounded depends on mktemp'
+    RUN_BOUNDED_TMP=$W/missing/rb
+    : > log
     run_bounded 1 echo forbidden > unavailable
-    [ "$?" = 124 ] && [ ! -s unavailable ] || fail 'mktemp failure'
+    [ "$?" = 124 ] && [ ! -s unavailable ] || fail 'unwritable capture'
+    grep -q "^WARNING: cannot create $W/missing/rb\." log || fail 'unwritable capture not logged'
 ) || exit 1
-pass 'unavailable temporary storage returns 124'
+pass 'capture needs no mktemp; unavailable temporary storage returns 124'
 
 # Cancellation hits the supervisor itself. Its traps must clean children and the capture;
 # the enclosing shell's own EXIT handler must stay intact.
