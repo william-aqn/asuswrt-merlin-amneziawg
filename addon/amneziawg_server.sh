@@ -1083,6 +1083,20 @@ do_srv_diag(){
     echo "--- watchdog beat ---"
     echo "  $(cat /tmp/.awgs_wd_beat 2>/dev/null || echo never)"
     [ -f "${LOCKDIR}.stopped" ] && echo "  deliberate Stop: watchdog recovery disabled until Start/reboot"
+    if [ -d "$LOCKDIR" ]; then
+        _lp=$(cat "$LOCKDIR/pid" 2>/dev/null)
+        _lh=$(lock_age_s "$_lp")
+        _lb=""
+        [ -n "$_lh" ] && [ "$_lh" -gt "$LOCK_STALE_S" ] && which flock >/dev/null 2>&1 &&
+            _lb=" — WEDGED (>${LOCK_STALE_S}s; reclaimed by the next watchdog tick / acquire_lock)"
+        if [ -z "$_lp" ]; then
+            echo "  $LOCKDIR without pid (mid-acquire, or reclaimed once older than 300s)"
+        elif kill -0 "$_lp" 2>/dev/null; then
+            echo "  $LOCKDIR held by pid $_lp (alive${_lh:+, lock held ${_lh}s})$_lb"
+        else
+            echo "  $LOCKDIR held by pid $_lp (dead — reclaimed by the next watchdog tick)"
+        fi
+    fi
     echo "--- daemon log tail ---"
     tail -n 15 $DAEMON_LOG 2>/dev/null | sed 's/^/  /'
     echo "  last daemon exit: $(cat $DAEMON_RC 2>/dev/null || echo '(none — running or never exited)')"
