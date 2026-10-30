@@ -121,17 +121,17 @@ srv_peers_raw(){
 # private/CGNAT (the server can't take inbound connections behind one).
 srv_endpoint_hint(){
     local h
-    if [ "$(nvram get ddns_enable_x 2>/dev/null)" = "1" ]; then
-        h=$(nvram get ddns_hostname_x 2>/dev/null)
+    if [ "$(nv get ddns_enable_x 2>/dev/null)" = "1" ]; then
+        h=$(nv get ddns_hostname_x 2>/dev/null)
         [ -n "$h" ] && { echo "$h"; return 0; }
     fi
-    nvram get wan0_ipaddr 2>/dev/null
+    nv get wan0_ipaddr 2>/dev/null
 }
 
 # Is the WAN address private/CGNAT? (10/8, 172.16/12, 192.168/16, 100.64/10 -> "1")
 srv_wan_private(){
     local ip o2
-    ip=$(nvram get wan0_ipaddr 2>/dev/null)
+    ip=$(nv get wan0_ipaddr 2>/dev/null)
     validate_ip "$ip" || { echo 0; return; }
     case "$ip" in
         10.*|192.168.*) echo 1; return ;;
@@ -186,7 +186,7 @@ srv_xray_covers_peers(){
 srv_port_conflict(){
     local p
     p=$(srv_port)
-    if [ "$(nvram get wgs_enable 2>/dev/null)" = "1" ] && [ "$(nvram get wgs_port 2>/dev/null)" = "$p" ]; then
+    if [ "$(nv get wgs_enable 2>/dev/null)" = "1" ] && [ "$(nv get wgs_port 2>/dev/null)" = "$p" ]; then
         echo 1; return
     fi
     echo 0
@@ -607,7 +607,7 @@ srv_any_policy_peer(){
 do_srv_start(){
     [ -f /tmp/.awg_no_autostart ] && { log_msg "Server start blocked: update in progress"; return 0; }
 
-    if is_running; then
+    if is_running && [ ! -f "${LOCKDIR}.stopped" ]; then
         log_msg "Server already running"
         srv_update_status
         return 0
@@ -630,6 +630,11 @@ do_srv_start(){
     fi
 
     acquire_lock || { log_msg "Cannot acquire server lock, aborting start"; srv_update_status; return 1; }
+    if [ "${AWG_WATCHDOG:-0}" = 1 ] && [ -f "${LOCKDIR}.stopped" ]; then
+        release_lock
+        return 0
+    fi
+    rm -f "${LOCKDIR}.stopped"
     if is_running; then
         log_msg "Server already running (a concurrent start finished first)"
         release_lock
@@ -741,13 +746,13 @@ do_srv_start(){
     reload_dnsmasq
 
     # Self-heal + live status (mirrors the client cron lifecycle: removed on user stop).
-    cru a awgs_watchdog "*/5 * * * * '$ADDON_DIR/amneziawg_server.sh' watchdog"
-    cru a awgs_status "*/1 * * * * '$ADDON_DIR/amneziawg_server.sh' status"
+    awg_cru a awgs_watchdog "*/5 * * * * '$ADDON_DIR/amneziawg_server.sh' watchdog"
+    awg_cru a awgs_status "*/1 * * * * '$ADDON_DIR/amneziawg_server.sh' status"
 
     # Per-peer policies live in the CLIENT's firewall — poke it to re-read the peer store.
     srv_any_policy_peer && srv_poke_policies
 
-    [ "$(srv_wan_private)" = "1" ] && log_msg "WARNING: WAN address $(nvram get wan0_ipaddr 2>/dev/null) is private/CGNAT — peers from the internet will NOT reach this server (need a public IP or port forwarding on the upstream router)"
+    [ "$(srv_wan_private)" = "1" ] && log_msg "WARNING: WAN address $(nv get wan0_ipaddr 2>/dev/null) is private/CGNAT — peers from the internet will NOT reach this server (need a public IP or port forwarding on the upstream router)"
     [ "$(srv_port_conflict)" = "1" ] && log_msg "WARNING: firmware WireGuard server is enabled on the same UDP port $(srv_port) — change one of the ports"
     if xray_redirect_active && ! srv_xray_covers_peers; then
         log_msg "NOTE: xray/XRAYUI is capturing traffic, but its TPROXY rules do NOT cover the peer subnet $(srv_subnet) — peers bypass xray straight to WAN (no DPI bypass). Restart XRAYUI so it picks up awgs0, or add the subnet to its transparent-proxy settings."
@@ -761,14 +766,19 @@ do_srv_start(){
 do_srv_stop(){
     local user_stop="$1"
     acquire_lock || { log_msg "Cannot acquire server lock, aborting stop"; return 1; }
+    if [ "$user_stop" = user ]; then
+        touch "${LOCKDIR}.stopped" || { release_lock; return 1; }
+    fi
     rm -f "$STARTING_FLAG"
     touch "$STOPPING_FLAG"
     srv_update_status
 
     srv_cleanup_firewall
 
-    [ "$user_stop" = "user" ] && cru d awgs_watchdog 2>/dev/null
-    [ "$user_stop" = "user" ] && cru d awgs_status 2>/dev/null
+    if [ "$user_stop" = "user" ]; then
+        awg_cru d awgs_watchdog 2>/dev/null || log_msg "WARNING: server watchdog cron removal failed — deliberate-stop flag keeps recovery disabled until Start/reboot"
+        awg_cru d awgs_status 2>/dev/null || log_msg "WARNING: server status cron removal failed — a read-only status job may remain scheduled"
+    fi
 
     local pid
     pid=$(pidof awgs-go 2>/dev/null)
@@ -900,6 +910,7 @@ do_srv_apply(){
 # =============================================================
 
 do_srv_watchdog(){
+    local AWG_WATCHDOG=1
     date '+%Y-%m-%d %H:%M:%S' > /tmp/.awgs_wd_beat 2>/dev/null
 
     # Stand down during a package update (same shared flag + staleness rule as the client;
@@ -917,6 +928,8 @@ do_srv_watchdog(){
     if [ -d /tmp/.awg_dnsreload ] && ! grep -qs '#awg_watchdog#' /var/spool/cron/crontabs/* 2>/dev/null; then
         reap_stale_dnsreload
     fi
+
+    [ -f "${LOCKDIR}.stopped" ] && return 0
 
     # Busy/stale lock handling (alive holder -> busy; dead holder -> reclaim).
     if [ -d "$LOCKDIR" ]; then
@@ -1026,7 +1039,7 @@ srv_update_status(){
     iface_exists awg0 && client_running=true
 
     local pref_lang
-    pref_lang=$(nvram get preferred_lang 2>/dev/null)
+    pref_lang=$(nv get preferred_lang 2>/dev/null)
     [ -z "$pref_lang" ] && pref_lang="EN"
 
     local ep_hint wan_priv port_conf nat_lan autostart
@@ -1081,6 +1094,7 @@ do_srv_diag(){
     echo "  interface=$IFACE in effective conf: $(grep -c "^interface=$IFACE" /etc/dnsmasq.conf 2>/dev/null)"
     echo "--- watchdog beat ---"
     echo "  $(cat /tmp/.awgs_wd_beat 2>/dev/null || echo never)"
+    [ -f "${LOCKDIR}.stopped" ] && echo "  deliberate Stop: watchdog recovery disabled until Start/reboot"
     echo "--- daemon log tail ---"
     tail -n 15 $DAEMON_LOG 2>/dev/null | sed 's/^/  /'
     echo "  last daemon exit: $(cat $DAEMON_RC 2>/dev/null || echo '(none — running or never exited)')"
