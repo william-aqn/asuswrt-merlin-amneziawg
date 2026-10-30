@@ -931,19 +931,7 @@ do_srv_watchdog(){
 
     [ -f "${LOCKDIR}.stopped" ] && return 0
 
-    # Busy/stale lock handling (alive holder -> busy; dead holder -> reclaim).
-    if [ -d "$LOCKDIR" ]; then
-        local _lp
-        _lp=$(cat "$LOCKDIR/pid" 2>/dev/null)
-        if [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null; then
-            return 0
-        fi
-        if [ -z "$_lp" ]; then
-            file_older_than "$LOCKDIR" 300 || return 0
-        fi
-        log_msg "WATCHDOG: stale server lock (holder ${_lp:-unknown} is gone) — reclaiming"
-        rm -rf "$LOCKDIR"
-    fi
+    operation_lock_busy WATCHDOG && return 0
 
     if ! iface_exists "$IFACE" || ! pidof awgs-go >/dev/null 2>&1; then
         log_msg "WATCHDOG: server down ($IFACE missing or awgs-go dead), restarting"

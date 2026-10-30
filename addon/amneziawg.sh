@@ -1614,39 +1614,160 @@ wait_for_uapi(){
 # NB on pids: `$$` inside a `( ) &` subshell is the PARENT shell's pid (POSIX), and several
 # lock takers run exactly there (ensure_geo's rebuild, the health check's do_stop, dnsmasq
 # reload jobs). Writing `echo $$` from those recorded a pid that dies seconds later — every
-# liveness probe (acquire_lock reclaim, watchdog stale-reclaim, reload serialization) then
-# misread a LIVE lock as stale and stole it (observed in the field: two pre-resolve jobs
-# running unserialized with the lock dir gone). `sh -c 'echo $PPID' > file` — a DIRECT child
-# with plain redirection, no command substitution — yields the true pid of the current
-# (sub)shell in every context.
+# liveness probe then misread a LIVE lock as stale and stole it (observed in the field: two
+# pre-resolve jobs running unserialized with the lock dir gone). acquire_lock reads
+# /proc/self/stat with the builtin `read` instead: no fork, so it names the current (sub)shell.
+#
+# A LIVE holder can wedge too (a firmware call parked forever inside the lock — field case:
+# `cru d` → `nvram get` hung for ten hours mid-firewall-rebuild, base rules and geo sets gone,
+# every Apply/restart/watchdog tick bounced off "lock timeout" while the watchdog stood aside
+# because the holder was alive). The owner record therefore carries PID, kernel start ticks and
+# the uptime of ACQUISITION, so a holder past LOCK_STALE_S can be killed without ever
+# signalling a reused PID.
+#
+# lock_transition serializes the short lock-directory transitions (acquire, release, reclaim),
+# not the operation itself. The guard inode is permanent for this boot: unlinking it would let
+# two flock users lock different inodes. The subshell closes fd 9 before a daemon/background job
+# can inherit it. Firmware without flock keeps the plain mkdir lock but never force-reaps a live
+# holder (LOCK_REAP_SAFE=0): without the guard a reclaim could remove a lock acquired a moment
+# after the check.
+lock_transition(){
+    if which flock >/dev/null 2>&1; then
+        (
+            flock -xn 9 || exit 2
+            LOCK_REAP_SAFE=1
+            "$@"
+        ) 9>>"${LOCKDIR}.guard"
+    else
+        ( LOCK_REAP_SAFE=0; "$@" )
+    fi
+}
+
+# Field 22 of /proc/PID/stat (start time in clock ticks). The (comm) field is stripped first —
+# a spaced comm must not shift the columns.
+proc_start_time(){
+    local _line
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    { read -r _line < "/proc/$1/stat"; } 2>/dev/null || return 1
+    _line=${_line##*) }
+    set -f; set -- $_line; set +f
+    [ $# -ge 20 ] || return 1
+    shift 19
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    echo "$1"
+}
+
+# Seconds the operation lock has been held by PID $1. Never infer it from process age: geo
+# downloads happen BEFORE acquiring the operation lock.
+lock_age_s(){
+    local _pid _start _since _up _rest
+    { read -r _pid _start _since < "$LOCKDIR/owner"; } 2>/dev/null || return 1
+    [ "$_pid" = "$1" ] || return 1
+    case "$_since" in ''|*[!0-9]*) return 1 ;; esac
+    read -r _up _rest < /proc/uptime || return 1
+    echo $(( ${_up%%.*} - _since ))
+}
+
 acquire_lock(){
-    local tries=0
-    while ! mkdir "$LOCKDIR" 2>/dev/null; do
-        if [ -f "$LOCKDIR/pid" ]; then
-            local old_pid
-            old_pid=$(cat "$LOCKDIR/pid" 2>/dev/null)
-            if [ -n "$old_pid" ] && ! kill -0 "$old_pid" 2>/dev/null; then
-                rm -rf "$LOCKDIR"
-                continue
-            fi
-        fi
+    local tries=0 _self
+    read -r _self < /proc/self/stat || return 1
+    AWG_LOCK_PID=${_self%% *}
+    AWG_LOCK_START=$(proc_start_time "$AWG_LOCK_PID") || return 1
+    while ! lock_transition _acquire_lock_once; do
         tries=$((tries + 1))
         [ $tries -ge 30 ] && { log_msg "ERROR: lock timeout"; return 1; }
         sleep 1
     done
-    sh -c 'echo $PPID' > "$LOCKDIR/pid" 2>/dev/null
-    # Cache our recorded identity for release_lock — re-deriving it there could legitimately
-    # differ (command-substitution forks), the file read-back cannot.
-    AWG_LOCK_PID=$(cat "$LOCKDIR/pid" 2>/dev/null)
+}
+_acquire_lock_once(){
+    local _up _rest
+    if [ -d "$LOCKDIR" ]; then
+        _operation_lock_busy acquire_lock && return 1
+    fi
+    mkdir "$LOCKDIR" 2>/dev/null || return 1
+    read -r _up _rest < /proc/uptime
+    if ! printf '%s %s %s\n' "$AWG_LOCK_PID" "$AWG_LOCK_START" "${_up%%.*}" > "$LOCKDIR/owner" ||
+       ! echo "$AWG_LOCK_PID" > "$LOCKDIR/pid"; then
+        rm -rf "$LOCKDIR"
+        return 1
+    fi
 }
 
+# Owner-aware: only free the lock if WE hold it (pid + start ticks match what WE recorded), so
+# a stray release on an error path can't free a lock another concurrent actor acquired.
 release_lock(){
-    # Owner-aware: only free the lock if WE hold it (pid matches what WE recorded), so a
-    # stray release on an error path can't free a lock another concurrent actor acquired.
-    local p
-    p=$(cat "$LOCKDIR/pid" 2>/dev/null)
-    [ -n "$p" ] && [ "$p" != "${AWG_LOCK_PID:-$$}" ] && return 0
+    local _tries=0 _rc
+    while :; do
+        lock_transition _release_lock; _rc=$?
+        [ "$_rc" -eq 2 ] || return "$_rc"
+        _tries=$((_tries + 1))
+        [ "$_tries" -lt 30 ] || return 1
+        sleep 1
+    done
+}
+_release_lock(){
+    local _p _start _since
+    _p=$(cat "$LOCKDIR/pid" 2>/dev/null)
+    [ "$_p" = "${AWG_LOCK_PID:-$$}" ] || return 0
+    if [ -f "$LOCKDIR/owner" ]; then
+        read -r _p _start _since < "$LOCKDIR/owner" || return 1
+        [ "$_start" = "$AWG_LOCK_START" ] || return 0
+    fi
     rm -rf "$LOCKDIR"
+}
+
+LOCK_STALE_S=1800
+# Runs under the transition guard only. Returns 0 when the lock was retired.
+_reclaim_wedged_lock(){
+    local _hp="$1" _who="$2" _age _p _start _since _live
+    [ "$LOCK_REAP_SAFE" = 1 ] || return 1
+    case "$_hp" in ''|*[!0-9]*|0|1) return 1 ;; esac
+    [ "$(cat "$LOCKDIR/pid" 2>/dev/null)" = "$_hp" ] || return 1
+    # PID-only records from older versions cannot prove ownership; leave a live legacy
+    # holder alone. A reboot or its normal release retires that record safely.
+    { read -r _p _start _since < "$LOCKDIR/owner"; } 2>/dev/null || return 1
+    [ "$_p" = "$_hp" ] || return 1
+    case "$_start" in ''|*[!0-9]*) return 1 ;; esac
+    _live=$(proc_start_time "$_hp") || return 1
+    if [ "$_live" != "$_start" ]; then
+        # The recorded process died and its PID was reused. Remove only its stale lock.
+        rm -rf "$LOCKDIR"
+        return 0
+    fi
+    _age=$(lock_age_s "$_hp") || return 1
+    [ "$_age" -gt "$LOCK_STALE_S" ] || return 1
+    kill_tree "$_hp"
+    rm -rf "$LOCKDIR"
+    log_msg "$_who: operation lock held by pid $_hp for ${_age}s (>${LOCK_STALE_S}s) — holder and descendants killed, lock reclaimed"
+    awg_incident "wedged operation lock holder (pid $_hp, held ${_age}s) killed by $_who"
+}
+
+# True while an operation legitimately holds the lock. A dead holder's lock (a process killed
+# between acquire and release) and a wedged live holder's are reclaimed instead: a leaked lock
+# used to silence the watchdog FOREVER, which is precisely when self-heal matters most. Runs
+# under the transition guard, so a dead-holder cleanup cannot race the live-holder reaper or
+# remove a freshly acquired directory. $1 names the caller for the journal.
+operation_lock_busy(){
+    lock_transition _operation_lock_busy "$1"
+    # A contended/unreadable transition guard also means busy, never permission to heal.
+    [ "$?" -ne 1 ]
+}
+_operation_lock_busy(){
+    local _p
+    [ -d "$LOCKDIR" ] || return 1
+    _p=$(cat "$LOCKDIR/pid" 2>/dev/null)
+    if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then
+        _reclaim_wedged_lock "$_p" "$1" && return 1
+        return 0
+    fi
+    if [ -z "$_p" ]; then
+        # No pid file — either mid-acquire (mkdir happened a moment ago) or a crash in that
+        # window. Only treat as stale once the dir is demonstrably old.
+        file_older_than "$LOCKDIR" 300 || return 0
+    fi
+    [ "$1" = acquire_lock ] || log_msg "$1: stale operation lock $LOCKDIR (holder ${_p:-unknown} is gone) — reclaiming"
+    rm -rf "$LOCKDIR"
+    return 1
 }
 
 # Kill PID and every descendant, SIGKILL, deepest generation first. Fork-free /proc scan (the
@@ -5899,6 +6020,11 @@ do_diag(){
     else
         echo "stale status runs    : none"
     fi
+    if which flock >/dev/null 2>&1; then
+        echo "lock forced reclaim  : available for owners with a verified start-time record"
+    else
+        echo "lock forced reclaim  : disabled (flock unavailable; live holders are preserved)"
+    fi
     echo "locks (a DEAD holder = operation crashed mid-flight):"
     for _L in "$LOCKDIR" "$GEOLOCK" /tmp/.awg_dnsreload; do
         if [ -d "$_L" ]; then
@@ -5911,6 +6037,14 @@ do_diag(){
                 # A long-running job in "preresolve" that keeps moving is healthy; one that has
                 # not moved for DNSRELOAD_STALL_S is what the watchdog reaps.
                 _lb2=""
+                if [ "$_L" = "$LOCKDIR" ]; then
+                    _lh2=$(lock_age_s "$_lp2")
+                    if [ -n "$_lh2" ]; then
+                        _lb2=", lock held ${_lh2}s"
+                        [ "$_lh2" -gt "$LOCK_STALE_S" ] && which flock >/dev/null 2>&1 &&
+                            _lb2="$_lb2 — WEDGED (>${LOCK_STALE_S}s; reclaimed by the next watchdog tick / acquire_lock)"
+                    fi
+                fi
                 if [ "$_L" = /tmp/.awg_dnsreload ]; then
                     _bph=""; _bts=""; { read -r _bph _bts < "$_L/beat"; } 2>/dev/null
                     case "$_bph" in *[!a-z]*) _bph="?" ;; esac
@@ -8949,24 +9083,8 @@ do_watchdog(){
     # not remove this cron. Housekeeping above still runs; recovery below does not.
     [ -f "${LOCKDIR}.stopped" ] && return 0
 
-    # Skip if another operation is mid-flight — but only if its holder is ALIVE. A leaked lock
-    # (a process killed between acquire and release) used to silence the watchdog FOREVER
-    # (every tick returned here), which is precisely when self-heal matters most. acquire_lock
-    # already knows how to reclaim a dead holder's lock; give the watchdog the same knowledge.
-    if [ -d "$LOCKDIR" ]; then
-        local _lp
-        _lp=$(cat "$LOCKDIR/pid" 2>/dev/null)
-        if [ -n "$_lp" ] && kill -0 "$_lp" 2>/dev/null; then
-            return 0   # genuinely busy
-        fi
-        if [ -z "$_lp" ]; then
-            # No pid file — either mid-acquire (mkdir happened a moment ago) or a crash in that
-            # window. Only treat as stale once the dir is demonstrably old.
-            file_older_than "$LOCKDIR" 300 || return 0
-        fi
-        log_msg "WATCHDOG: stale operation lock (holder ${_lp:-unknown} is gone) — reclaiming"
-        rm -rf "$LOCKDIR"
-    fi
+    # Skip if another operation is mid-flight; a dead or wedged holder's lock is reclaimed.
+    operation_lock_busy WATCHDOG && return 0
 
     # DNS-interception coexistence reconcile (only while the tunnel is up). Our one-shot
     # decision at setup_firewall time goes stale when a DPI/proxy tool starts AFTER us, when

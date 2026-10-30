@@ -14,11 +14,12 @@ extract(){
     awk -v name="$1" '$0 ~ "^" name "\\(\\)" {copy=1} copy {print} copy && /^[})]$/ {exit}' "$2"
 }
 : > functions.sh
-for name in acquire_lock release_lock kill_tree run_bounded awg_new_id awg_gen_bump gen_current_is flag_clear_mine fw_dns_redirect_active fw_dns_redirect_name setup_ipv6_block; do
+for name in lock_transition proc_start_time lock_age_s acquire_lock _acquire_lock_once release_lock _release_lock _reclaim_wedged_lock operation_lock_busy _operation_lock_busy file_age_s file_older_than kill_tree run_bounded awg_new_id awg_gen_bump gen_current_is flag_clear_mine fw_dns_redirect_active fw_dns_redirect_name setup_ipv6_block; do
     extract "$name" "$SRC/addon/amneziawg.sh" >> functions.sh
     grep -q "^$name()" functions.sh || { echo "FAIL: cannot extract $name" >&2; exit 1; }
 done
 . ./functions.sh
+LOCK_STALE_S=1800
 log_msg(){ echo "$*" >> "$W/log"; }
 awg_incident(){ echo "$*" >> "$W/incidents"; }
 fail(){ echo "FAIL: $*" >&2; exit 1; }
@@ -96,6 +97,167 @@ is_live "$(cat cancel-child)" && fail 'cancelled child survived'
 [ "$(cat parent-trap)" = parent ] || fail 'caller trap overwritten'
 no_capture_left || fail 'cancelled capture leaked'
 pass 'cancellation cleans descendants/capture and preserves caller trap'
+
+# A separate process holding LOCKDIR (plus one child), never this shell: a reaper aimed at $$
+# would kill the suite itself and hide the failure.
+cat > holder.sh <<HOLDER
+#!/bin/sh
+. $W/functions.sh
+log_msg(){ :; }
+LOCKDIR=\$1
+acquire_lock || exit 1
+sh -c 'echo \$\$ > $W/holder-child; exec sleep 30' &
+echo ready > $W/holder-ready
+wait
+HOLDER
+start_holder(){
+    rm -f "$W/holder-ready" "$W/holder-child"
+    sh "$W/holder.sh" "$1" & holder=$!
+    while [ ! -f "$W/holder-ready" ] || [ ! -s "$W/holder-child" ]; do
+        is_live "$holder" || fail 'lock holder fixture died'
+        usleep 10000
+    done
+}
+stop_holder(){ kill_tree "$holder"; wait "$holder" 2>/dev/null; }
+
+LOCKDIR=$W/lock
+acquire_lock || fail 'initial lock'
+read -r owner_pid owner_start owner_since < "$LOCKDIR/owner"
+[ "$owner_pid" = "$$" ] || fail 'wrong owner pid'
+[ "$owner_start" = "$(proc_start_time "$$")" ] || fail 'wrong process identity'
+lock_transition _reclaim_wedged_lock "$$" test && fail 'fresh lock reclaimed'
+[ -d "$LOCKDIR" ] || fail 'fresh lock missing'
+# A long-lived downloading process: its actual age is irrelevant to this just-acquired lock;
+# the persisted acquisition uptime controls the decision.
+(
+    proc_age_s(){ echo 1900; }
+    lock_transition _reclaim_wedged_lock "$$" test && fail 'process age used as lock age'
+    exit 0
+) || exit 1
+release_lock || fail 'release own lock'
+[ ! -d "$LOCKDIR" ] || fail 'own lock not released'
+pass 'owner identity and acquisition time are recorded; fresh lock survives'
+
+# A recycled numeric PID must not cause ANY signal to the new process.
+acquire_lock || fail 'recycled-PID fixture'
+printf '%s %s 0\n' "$$" 1 > "$LOCKDIR/owner"
+(
+    kill_tree(){ fail 'signalled reused PID'; }
+    lock_transition _reclaim_wedged_lock "$$" test || fail 'recycled-PID stale lock not retired'
+) || exit 1
+[ ! -d "$LOCKDIR" ] || fail 'recycled-PID stale lock retained'
+pass 'reused PID retires stale lock without signalling the new process'
+
+# Legacy PID-only records do not authorize signals to an unidentified live owner.
+sleep 30 & legacy=$!
+mkdir "$LOCKDIR"; echo "$legacy" > "$LOCKDIR/pid"
+(
+    LOCK_STALE_S=-1
+    lock_transition _reclaim_wedged_lock "$legacy" test && fail 'legacy live owner reaped'
+    operation_lock_busy test || fail 'legacy live owner treated as free'
+    exit 0
+) || exit 1
+is_live "$legacy" || fail 'legacy owner signalled'
+[ -d "$LOCKDIR" ] || fail 'legacy lock removed'
+kill "$legacy"; wait "$legacy" 2>/dev/null
+rm -rf "$LOCKDIR"
+pass 'live legacy PID-only owner is preserved'
+
+# Dead and pidless locks: the watchdog's busy-gate semantics.
+mkdir "$LOCKDIR"
+operation_lock_busy WATCHDOG || fail 'young pidless lock treated as free'
+(
+    file_older_than(){ return 0; }
+    operation_lock_busy WATCHDOG && fail 'old pidless lock kept'
+    exit 0
+) || exit 1
+[ ! -d "$LOCKDIR" ] || fail 'old pidless lock retained'
+sh -c 'exit 0' & dead=$!; wait "$dead"
+mkdir "$LOCKDIR"; echo "$dead" > "$LOCKDIR/pid"
+: > log
+operation_lock_busy WATCHDOG && fail 'dead holder treated as busy'
+[ ! -d "$LOCKDIR" ] || fail 'dead holder lock retained'
+grep -q "^WATCHDOG: stale operation lock $LOCKDIR (holder $dead is gone)" log || fail 'dead holder reclaim not logged'
+pass 'dead holder reclaimed; young pidless lock is busy, old one reclaimed'
+
+# A wedged live holder (and its children) is killed once its lock is older than LOCK_STALE_S.
+start_holder "$LOCKDIR"
+: > log; : > incidents
+operation_lock_busy WATCHDOG || fail 'fresh live holder treated as free'
+(
+    LOCK_STALE_S=-1
+    operation_lock_busy WATCHDOG && fail 'wedged holder kept the lock'
+    exit 0
+) || exit 1
+wait "$holder" 2>/dev/null
+is_live "$holder" && fail 'wedged holder survived'
+is_live "$(cat holder-child)" && fail 'wedged holder child survived'
+[ ! -d "$LOCKDIR" ] || fail 'wedged lock retained'
+grep -q "^WATCHDOG: operation lock held by pid $holder " log || fail 'wedged reclaim not logged'
+grep -q "pid $holder" incidents || fail 'wedged reclaim not recorded'
+pass 'wedged live holder and descendants killed, lock reclaimed'
+
+# Force the original race with two reclaimers and a competing acquire. All three
+# directory mutations must share the guard; only the original generation is removed.
+rm -f new-owner
+start_holder "$LOCKDIR"
+read -r p st since < "$LOCKDIR/owner"
+printf '%s %s 0\n' "$p" "$st" > "$LOCKDIR/owner"
+(
+    LOCK_STALE_S=-1
+    kill_tree(){ sleep 1; kill -9 "$1"; }
+    lock_transition _reclaim_wedged_lock "$holder" first
+) & first=$!
+usleep 100000
+( LOCK_STALE_S=-1; lock_transition _reclaim_wedged_lock "$holder" second ) & second=$!
+(
+    acquire_lock || exit 1
+    echo "$AWG_LOCK_PID" > "$W/new-owner"
+    sleep 1
+    [ "$(cat "$LOCKDIR/pid")" = "$AWG_LOCK_PID" ] || exit 1
+    release_lock
+) & fresh=$!
+wait "$first" || fail 'first reclaim'
+wait "$second" 2>/dev/null
+wait "$fresh" || fail 'new lock lost during competing reclaim'
+stop_holder
+[ -s new-owner ] || fail 'new acquisition never finished'
+pass 'concurrent reclaim/acquire preserves new ownership'
+
+# A held transition guard means the watchdog must stand down, and a killed guard
+# holder must release its kernel lock without manual filesystem cleanup.
+rm -f guard-ready
+(
+    flock -x 9 || exit 1
+    echo ready > "$W/guard-ready"
+    sleep 30
+) 9>"${LOCKDIR}.guard" & guard=$!
+while [ ! -f guard-ready ]; do usleep 10000; done
+operation_lock_busy test || fail 'contended guard treated as idle'
+kill_tree "$guard"; wait "$guard" 2>/dev/null
+acquire_lock || fail 'guard stayed locked after process death'
+release_lock || fail 'guard recovery release'
+pass 'guard contention fails safe and kernel releases dead holder'
+
+# Missing optional flock preserves ordinary operation but disables forced live reap.
+start_holder "$LOCKDIR"
+(
+    which(){ return 1; }
+    LOCK_STALE_S=-1
+    lock_transition _reclaim_wedged_lock "$holder" test && fail 'unsafe reap without flock'
+    operation_lock_busy test || fail 'live holder free without flock'
+    exit 0
+) || exit 1
+is_live "$holder" || fail 'holder signalled without flock'
+stop_holder
+rm -rf "$LOCKDIR"
+(
+    which(){ return 1; }
+    acquire_lock || fail 'lock without flock'
+    release_lock || fail 'unlock without flock'
+    [ ! -d "$LOCKDIR" ] || fail 'lock retained without flock'
+) || exit 1
+pass 'legacy firmware without flock keeps normal acquire/release'
 
 (
     pidof(){ return 1; }
@@ -251,6 +413,43 @@ for role in client server; do
     ) || exit 1
 done
 pass 'in-flight watchdog honors Stop under lock; explicit Start clears it for both roles'
+
+# Both watchdogs stand down behind a live operation and take over from a wedged one.
+for role in client server; do
+    LOCKDIR="$W/$role-busy-lock"
+    start_holder "$LOCKDIR"
+    (
+        IFACE=fwguard0
+        AWG_BIN=true
+        for name in reap_stale_dnsreload wait_for_pid_exit; do eval "$name(){ :; }"; done
+        is_running(){ return 1; }
+        iface_exists(){ return 1; }
+        if [ "$role" = client ]; then
+            extract do_watchdog "$SRC/addon/amneziawg.sh" > busy.sh
+            . ./busy.sh
+            do_stop(){ echo restart >> "$W/busy-restart"; return 1; }
+            run(){ rm -f /tmp/.awg_wd_state; do_watchdog; }
+        else
+            extract do_srv_watchdog "$SRC/addon/amneziawg_server.sh" > busy.sh
+            . ./busy.sh
+            do_srv_stop(){ :; }
+            do_srv_start(){ echo restart >> "$W/busy-restart"; }
+            run(){ do_srv_watchdog; }
+        fi
+        rm -f "$W/busy-restart"
+        run
+        [ ! -e "$W/busy-restart" ] || fail "$role watchdog restarted behind a live operation"
+        is_live "$holder" || fail "$role watchdog killed a live operation"
+        LOCK_STALE_S=-1
+        run
+        [ -s "$W/busy-restart" ] || fail "$role watchdog did not take over from a wedged operation"
+        is_live "$holder" && fail "$role wedged operation survived"
+        rm -f /tmp/.awg_wd_state
+        exit 0
+    ) || exit 1
+    stop_holder
+done
+pass 'both watchdogs stand down behind a live operation and reclaim a wedged one'
 
 # The nested rc_service settling function with slow, unavailable reads.
 awk '/^        _rc_settle\(\)/{copy=1} copy{print} copy && /^        }$/{exit}' "$SRC/addon/amneziawg.sh" > settle.sh
