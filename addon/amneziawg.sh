@@ -83,10 +83,12 @@ PRERSLV_RETRY="/tmp/.awg_preresolve_retry"      # "domain sets" whose lookup was
 GEOSET_GEN="/tmp/.awg_geoset_gen"               # token that changes whenever our geo sets lose their fed entries (destroyed, or created empty)
 PRERSLV_FRESH_S=86400                           # = the sets' default entry timeout: a feed older than this has aged out of the sets and is redone
 GEOSTATIC_SIG="/tmp/.awg_geostatic_sig"         # geo_static_sig of the last rebuild: a change invalidates the pre-resolve cursor (see geo_swap_window_close)
-GEODYN_STASH="/tmp/.awg_geodyn_stash"           # DNS-learned entries of the geo sets a stop destroyed, "add <set> <ip> timeout <left>" — taken back by the next start (1.5.30, see geodyn_stash_save)
+GEODYN_STASH="/tmp/.awg_geodyn_stash"           # DNS-learned entries of the geo sets a stop destroyed: a "# sig <md5>" line, then "add <set> <ip> timeout <left>" — taken back by the next start (1.5.30, see geodyn_stash_save)
+GEODYN_BORN="/tmp/.awg_geodyn_born"             # geo_cfg_sig under which the live sets' DNS-learned entries began accumulating — a stop parks them only while it still matches
 GEODYN_STASH_TTL=3600                           # a stash older than this is ignored: a VPN that stayed off for hours starts clean
 GEODYN_STASH_MAX=30000                          # entries kept (about 1.2 MB of tmpfs, i.e. RAM)
 PROBE_STATE="/tmp/.awg_probe_state"             # how the running tunnel last proved itself: probe (ICMP) | tcp (HTTPS connect) | handshake (nothing answered through it)
+TCPMSS_IN_STATE="/tmp/.awg_mss_in"               # the MSS value our "-i awg0 … --set-mss" rule was installed with (see tcpmss_in_assert): teardown removes exactly that one
 SCRIPT_NAME="amneziawg"
 RT_TABLE=300
 AWG_CHAIN="AWG"
@@ -1575,7 +1577,11 @@ restore_rp_filter(){
 # were fine, which is what kept this hidden.
 # Fix: clamp the SYN-ACK direction with an EXPLICIT value, the tunnel's link MTU minus 40.
 # TCPMSS never raises an MSS (oldmss <= newmss leaves the option alone), so --set-mss is a
-# pure clamp. The rule text now depends on the MTU, hence the enumerate-and-drain helpers.
+# pure clamp. The rule text now depends on the MTU, so the value we installed is remembered
+# in $TCPMSS_IN_STATE (tmpfs — it dies with the rules at a reboot) and teardown removes
+# exactly that value, the current one and the old pmtu form. A --set-mss rule of the same
+# shape with ANOTHER value is someone else's (a lower clamp added by hand in firewall-start)
+# and is never touched — with two clamps the lower one wins anyway.
 
 # Link MTU of $IFACE as the kernel enforces it (not the setting). Nothing + rc 1 when the
 # link is absent or the value is not a sane MTU.
@@ -1587,42 +1593,61 @@ tun_link_mtu(){
     echo "$_m"
 }
 
-# Every MSS value our inbound clamp rule is currently installed with, one per line: normally
-# one; none after a firmware firewall rebuild; a stale one if the MTU changed under a rule.
-# Read through mangle_dump (the firmware binary lists what Entware iptables cannot).
+# Every MSS value an inbound clamp of our shape is installed with right now, one per line,
+# read through mangle_dump (the firmware binary lists what Entware iptables cannot). A second
+# opinion for the one case the -C probe cannot answer — never a list of things to delete.
 tcpmss_in_values(){
     mangle_dump | sed -n "s/^-A FORWARD -i $IFACE -p tcp .*-j TCPMSS --set-mss \([0-9][0-9]*\)[[:space:]]*\$/\1/p" | sort -u
 }
 
-# Remove the inbound clamp in every form: the pre-1.5.30 pmtu rule (so the first stop after
-# an upgrade clears it), the rule for the current MTU (works even when the table cannot be
-# listed) and every other value the dump shows.
+# The MSS value OUR inbound clamp was last installed with ('' when none is recorded).
+tcpmss_in_recorded(){
+    local _v=""
+    { read -r _v < "$TCPMSS_IN_STATE"; } 2>/dev/null
+    case "$_v" in ''|*[!0-9]*) return 1 ;; esac
+    echo "$_v"
+}
+
+# Remove the inbound clamp in every form that is OURS: the pre-1.5.30 pmtu rule (so the first
+# stop after an upgrade clears it), the value we recorded and the value for the current MTU
+# (the same one unless the record was lost).
 tcpmss_in_drain(){
-    local _v _cur=""
+    local _v _cur="" _old=""
     _cur=$(tun_link_mtu) && _cur=$((_cur - 40))
+    _old=$(tcpmss_in_recorded)
     ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    for _v in $_cur $(tcpmss_in_values); do
+    for _v in $_cur $_old; do
         ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_v"
     done
+    rm -f "$TCPMSS_IN_STATE" 2>/dev/null
     return 0
 }
 
-# Assert exactly ONE inbound clamp carrying the current tunnel MSS: the right rule is added
-# once (ipt_add_once: never on a sick probe), then stale values and the legacy pmtu form are
-# drained. With no readable link MTU the legacy form is kept rather than leaving the
+# Assert our inbound clamp with the current tunnel MSS: add it once, record the value, then
+# drop the value we had installed before (the MTU changed across a restart) and the legacy
+# pmtu form. With no readable link MTU the legacy form is kept rather than leaving the
 # direction bare.
 tcpmss_in_assert(){
-    local _mtu _mss _v
+    local _mtu _mss _old=""
     if ! _mtu=$(tun_link_mtu); then
         ipt_add_once mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
         return $?
     fi
     _mss=$((_mtu - 40))
-    ipt_add_once mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_mss" || return 1
-    for _v in $(tcpmss_in_values); do
-        [ "$_v" = "$_mss" ] && continue
-        ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_v"
-    done
+    _old=$(tcpmss_in_recorded)
+    if ! ipt_add_once mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_mss"; then
+        # The -C probe stayed sick for three tries (the xtables lock held by someone else).
+        # ipt_add_once rightly refuses to add blind; the table LISTING is an independent
+        # read, so when it shows no such rule add it — a start must not leave the direction
+        # bare until the next watchdog tick (which would then report a "wipe" that never was).
+        tcpmss_in_values | grep -qx "$_mss" \
+            || iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_mss" 2>/dev/null \
+            || return 1
+    fi
+    echo "$_mss" 2>/dev/null > "$TCPMSS_IN_STATE"
+    if [ -n "$_old" ] && [ "$_old" != "$_mss" ]; then
+        ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_old"
+    fi
     ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     return 0
 }
@@ -1635,7 +1660,8 @@ tcpmss_in_assert(){
 # grow a packet past the largest unpadded one.
 tun_overhead(){
     local _s4 _ip=20
-    _s4=$(awk -F'[ =]+' '$1 == "S4" { print $2; exit }' "$CONF" 2>/dev/null)
+    # "+ 0": awk reads the number as decimal — shell arithmetic would take 08 for bad octal.
+    _s4=$(awk -F'[ =]+' '$1 == "S4" { print $2 + 0; exit }' "$CONF" 2>/dev/null)
     case "$_s4" in ''|*[!0-9]*) _s4=0 ;; esac
     grep -q '^Endpoint[ =]*\[' "$CONF" 2>/dev/null && _ip=40
     echo $((_ip + 8 + 32 + _s4))
@@ -3118,47 +3144,114 @@ ipset_replay_dynamic(){
 # excluded host riding the tunnel. Field case 2026-11 (RT-AC86U @1.5.29): five restarts in
 # twenty minutes, the sets never got warm. The hot Apply has kept these entries since 1.4.5
 # (ipset_replay_dynamic); a stop did not.
-# So destroy_owned_sets parks the dynamic (timeout > 0) entries with their remaining timeouts,
+# So destroy_owned_sets parks the dynamic (timeout > 0) entries with their remaining timeouts
 # and the next FIRST build of a set of the same name takes them back, minus the time they
 # spent parked. Statics load after the replay and re-promote overlaps to permanent, exactly
 # as in the hot Apply. tmpfs: a reboot starts clean, like the sets themselves.
-# A stop that finds no dynamic entries leaves an earlier stash alone (restart loops: the sets
-# of a run that lasted a minute hold less than the stash it was started from).
+#
+# What must NOT survive: entries learned under ANOTHER geo configuration. Nobody records which
+# rule an address came from, so a removed exclusion's addresses are indistinguishable from the
+# rest — and "edit the lists, then restart" has always been the way to get clean sets (a hot
+# Apply carries everything). Hence three guards, all on a fingerprint of the geo settings:
+#   * GEODYN_BORN = the fingerprint the current entries began accumulating under: written when
+#     a start builds EVERY set from scratch, left alone by a hot rebuild. A stop parks only
+#     while it still equals the current settings — any geo edit since then, applied hot or
+#     not, makes the next restart a clean one;
+#   * the stash carries the fingerprint it was parked under; a replay needs it to match again
+#     (settings edited while the tunnel was down);
+#   * a USER stop (the Stop button, `stop` on the CLI) drops the stash: Stop -> Start is the
+#     manual flush. «Перезапустить», a profile switch, a failover hop, the watchdog and a
+#     firewall re-apply keep the entries.
+# The stash is consumed by the build that reads it (geodyn_stash_settle) — never replayed twice.
+
+# Fingerprint of every setting that decides WHAT the geo sets hold (per-policy lists,
+# exclusions, custom domains/IPs/files/URLs, antifilter, the set name). Matched anywhere in
+# the line, not at its start: a record the firmware glued onto the previous one (see
+# get_setting) still counts. Over-inclusive on purpose (the geo toggles count too): a spurious
+# mismatch costs one clean start, a missed change would resurrect stale routes.
+geo_cfg_sig(){
+    local _s
+    _s=$(grep -E 'awg_(geo|antifilter|ipset)' "$SETTINGS" 2>/dev/null | md5sum 2>/dev/null) || return 1
+    _s=${_s%% *}
+    case "$_s" in ''|*[!0-9a-f]*) return 1 ;; esac
+    [ ${#_s} -eq 32 ] || return 1
+    echo "$_s"
+}
+
 geodyn_stash_save(){
-    local _s _t="${GEODYN_STASH}.$$"
+    local _s _t="${GEODYN_STASH}.$$" _sig _born="" _pass
     [ -s "$OWNED_SETS" ] || return 0
-    while read -r _s; do
-        case "$_s" in ''|*_t) continue ;; esac     # staging leftovers hold nothing live
-        ipset save "$_s" 2>/dev/null | awk -v o="$_s" '
-            $1 == "add" && $2 == o && $3 ~ "^[0-9./]+$" {
-                for (i = 4; i < NF; i++) if ($i == "timeout") {
-                    if ($(i + 1) ~ "^[0-9]+$" && $(i + 1) + 0 > 0) print "add", o, $3, "timeout", $(i + 1)
-                    break
-                }
-            }'
-    done < "$OWNED_SETS" 2>/dev/null | head -n "$GEODYN_STASH_MAX" > "$_t" 2>/dev/null
-    if [ -s "$_t" ]; then
-        mv -f "$_t" "$GEODYN_STASH" 2>/dev/null || rm -f "$_t"
-    else
-        rm -f "$_t"
+    _sig=$(geo_cfg_sig) || return 0
+    { read -r _born < "$GEODYN_BORN"; } 2>/dev/null
+    # Entries that lived through a geo edit (or whose origin is unknown) are not carried.
+    [ "$_born" = "$_sig" ] || return 0
+    # Exclusion sets first ("<set>_x": small, and a lost exclusion is a leak INTO the tunnel),
+    # so the cap can only ever cut the tail of the big sets. A "<name>_t" whose "<name>" is
+    # registered too is that set's staging twin — a crashed build's leftover, nothing live.
+    # `timeout 0` lines (the statics: up to 150 K of them) are dropped by one literal regex
+    # before anything else is looked at — busybox awk recompiles a STRING regex on every line.
+    for _pass in x main; do
+        while read -r _s; do
+            [ -n "$_s" ] || continue
+            case "$_s" in
+                *_x) [ "$_pass" = x ] || continue ;;
+                *)   [ "$_pass" = main ] || continue ;;
+            esac
+            case "$_s" in *_t) grep -qxF "${_s%_t}" "$OWNED_SETS" 2>/dev/null && continue ;; esac
+            ipset save "$_s" 2>/dev/null | awk -v o="$_s" '
+                / timeout 0( |$)/ { next }
+                $1 == "add" && $2 == o && $3 ~ /^[0-9.]+(\/[0-9]+)?$/ {
+                    for (i = 4; i < NF; i++) if ($i == "timeout") {
+                        if ($(i + 1) ~ /^[0-9]+$/) print "add", o, $3, "timeout", $(i + 1)
+                        break
+                    }
+                }'
+        done < "$OWNED_SETS"
+    done 2>/dev/null | head -n "$GEODYN_STASH_MAX" > "$_t.b" 2>/dev/null
+    # Nothing dynamic in these sets (a start that never got as far as a build): whatever an
+    # earlier stop parked is still the best there is — leave it.
+    if [ -s "$_t.b" ]; then
+        { echo "# sig $_sig"; cat "$_t.b"; } > "$_t" 2>/dev/null && mv -f "$_t" "$GEODYN_STASH" 2>/dev/null
     fi
+    rm -f "$_t" "$_t.b" 2>/dev/null
     return 0
 }
 
-# Load the parked entries of set $1 (its final name, as parked) into set $2. Only lines of
-# the exact shape geodyn_stash_save writes reach `ipset restore` (it aborts at the first
-# line it cannot parse); entries with under a minute left are not worth carrying.
+# Load the parked entries of set $1 (its final name, as parked) into set $2 — when the stash
+# is fresh and was parked under the settings in force now. Only lines of the exact shape
+# geodyn_stash_save writes reach `ipset restore` (it aborts at the first line it cannot
+# parse); entries with under a minute left are not worth carrying.
 geodyn_stash_replay(){
-    local _age
+    local _age _h1="" _h2="" _sig=""
     [ -s "$GEODYN_STASH" ] || return 0
     _age=$(file_age_s "$GEODYN_STASH") || return 0
     case "$_age" in ''|*[!0-9]*) return 0 ;; esac    # dated in the future (clock stepped) -> skip
     [ "$_age" -le "$GEODYN_STASH_TTL" ] || return 0
+    { read -r _h1 _h2 _sig < "$GEODYN_STASH"; } 2>/dev/null
+    [ "$_h1" = "#" ] && [ "$_h2" = sig ] && [ -n "$_sig" ] && [ "$_sig" = "$(geo_cfg_sig)" ] || return 0
     awk -v o="$1" -v n="$2" -v age="$_age" '
-        NF == 5 && $1 == "add" && $2 == o && $4 == "timeout" && $3 ~ "^[0-9./]+$" && $5 ~ "^[0-9]+$" {
+        NF == 5 && $1 == "add" && $2 == o && $4 == "timeout" && $3 ~ /^[0-9.]+(\/[0-9]+)?$/ && $5 ~ /^[0-9]+$/ {
             left = $5 - age
             if (left >= 60) print "add", n, $3, "timeout", left
         }' "$GEODYN_STASH" 2>/dev/null | ipset restore -! 2>/dev/null
+    return 0
+}
+
+# End of setup_firewall's set build. $1 = 1 when a set was built from scratch in this run,
+# $2 = 1 when a live set was carried over (ipset_replay_dynamic). Only a run that built
+# EVERYTHING from scratch starts a new "born" epoch — a hot rebuild keeps the old one, so an
+# edit applied hot still makes the next restart a clean one. The stash has served (or failed
+# its checks) either way: gone.
+geodyn_stash_settle(){
+    local _sig
+    if [ "$1" = 1 ] && [ "$2" != 1 ]; then
+        if _sig=$(geo_cfg_sig); then
+            echo "$_sig" 2>/dev/null > "$GEODYN_BORN"
+        else
+            rm -f "$GEODYN_BORN" 2>/dev/null
+        fi
+    fi
+    rm -f "$GEODYN_STASH" 2>/dev/null
     return 0
 }
 
@@ -4517,6 +4610,9 @@ setup_firewall(){
     # pre-existing set we don't own is loaded IN PLACE for id 1 (documented shared behavior —
     # we must never destroy/swap another tool's set) and skipped for id>=2 (foreign collision).
     local gid gset tset _ldt _staged _desired_sets="" _prs_before _ssig
+    # Did this run build a set from scratch / carry a live one over? geodyn_stash_settle
+    # (after the loop) needs both to decide whether a new "born" epoch starts.
+    local _gd_first=0 _gd_carried=0
     # The staged swap below keeps what an earlier pre-resolve fed (replay), so it keeps
     # GEOSET_GEN and the pre-resolve cursor stays valid — but only for feeds that happened
     # BEFORE the replay snapshot. Let a running pre-resolve reach its batch boundary and yield
@@ -4552,8 +4648,10 @@ setup_firewall(){
             # A live set carries it over itself; on a FIRST build (after a stop destroyed
             # the sets) it comes from what that stop parked — see geodyn_stash_save.
             if ipset list "$gset" -t >/dev/null 2>&1; then
+                _gd_carried=1
                 ipset_replay_dynamic "$gset" "$tset"
             else
+                _gd_first=1
                 geodyn_stash_replay "$gset" "$tset"
             fi
             _ldt="$tset"
@@ -4617,8 +4715,10 @@ setup_firewall(){
                 if ipset create "$_etmp" hash:net family inet hashsize 1024 maxelem 8192 timeout 86400 2>/dev/null; then
                     register_owned_set "$_etmp"
                     if ipset list "$_exset" -t >/dev/null 2>&1; then
+                        _gd_carried=1
                         ipset_replay_dynamic "$_exset" "$_etmp"
                     else
+                        _gd_first=1
                         geodyn_stash_replay "$_exset" "$_etmp"
                     fi
                     _exldt="$_etmp"
@@ -4650,6 +4750,9 @@ setup_firewall(){
         [ -n "$_ent" ] && [ "$_ent" -ge "$maxelem" ] 2>/dev/null && \
             log_msg "WARNING: ipset $gset full ($_ent/$maxelem) for geo policy $gid — raise RAM or trim its lists"
     done
+    # The parked DNS-learned entries have been taken back (or failed their checks): consume
+    # the stash and, when everything was built from scratch, start a new "born" epoch.
+    geodyn_stash_settle "$_gd_first" "$_gd_carried"
     geo_swap_window_close "$_prs_before" "$_ssig"
 
     # --- Build dnsmasq config for domain-based routing ---
@@ -5878,10 +5981,11 @@ _probe_wait(){
 _curl_rc(){
     case "$1" in
         0) echo "ok" ;;
-        6) echo "FAILED: could not resolve the host (curl 6)" ;;
+        6) echo "FAILED: the router could not resolve the host name (curl 6)" ;;
         7) echo "FAILED: could not connect (curl 7)" ;;
         28) echo "FAILED: timed out (curl 28)" ;;
         35) echo "FAILED: TLS handshake error (curl 35)" ;;
+        51|58|59|60|77) echo "FAILED: the server certificate was not accepted (curl $1) — is the router clock right?" ;;
         52|56) echo "FAILED: connection dropped mid-transfer (curl $1)" ;;
         '?'|'') echo "FAILED: did not finish in time (killed)" ;;
         *) echo "FAILED: curl exit $1" ;;
@@ -5907,76 +6011,125 @@ _probe_ping_line(){   # $1 = job name, $2 = label
     esac
 }
 
-# One HTTPS/transfer result line from a finished curl job. The job's -w output is
-# "<http> <connect s> <tls s> <total s> <bytes down> <bytes up>".
-_probe_curl_line(){   # $1 = job name, $2 = label, $3 = kind (web|base|down|up), $4 = expected bytes (down/up)
-    local _rc="?" _h="" _tc="" _ta="" _tt="" _bd="" _bu="" _v _b _conn _tls
+# One HTTPS/transfer result line from a finished curl job, and what it adds to the verdict.
+# The job's -w output is "<http> <connect s> <tls s> <total s> <bytes down> <bytes up>
+# <name lookup s>"; a phase's time prints as 0.000000 until that phase completes, so any
+# non-zero digit in it means it did.
+# $3 = kind: ip (HTTPS to an IP-literal check address through the tunnel), web (by name
+# through the tunnel), base (by name, straight out of the WAN), down / up (the bulk pair).
+# A failure counts against the TUNNEL only when it can be the tunnel's doing:
+#   * the router's own DNS did not resolve the name — curl 6, or a timeout whose name lookup
+#     never finished — and 51/58/59/60/77 (the certificate was not accepted: typically a
+#     router whose clock never synced) say nothing about the data plane: tallied apart
+#     (_p_dns_fail / _p_cert_fail) and named in a NOTE;
+#   * "TCP connected, then the TLS exchange TIMED OUT" is the signature of full-size packets
+#     dying on the path (_p_tls_stall) — a timeout, not an error code;
+#   * a bulk transfer is an MTU signal (_p_bulk_stall) only when its TLS session came up and
+#     it then stalled near zero. One that ran out of time with plenty transferred is a slow
+#     link (_p_bulk_slow — full-size packets evidently pass); one that never got a session,
+#     or ended any other way, could not run and proves nothing. The upload threshold is
+#     higher: curl counts bytes handed to the kernel, and a socket buffer swallows the first
+#     64 KB or so of a black-holed upload.
+_probe_curl_line(){   # $1 = job name, $2 = label, $3 = kind (ip|web|base|down|up), $4 = expected bytes (down/up)
+    local _rc="?" _h="" _tc="" _ta="" _tt="" _bd="" _bu="" _tn="" _v _b _thr _conn=0 _tls=0 _cls="" _tun=0
     { read -r _rc < "$_pd/$1.rc"; } 2>/dev/null
-    { read -r _h _tc _ta _tt _bd _bu < "$_pd/$1.out"; } 2>/dev/null
+    { read -r _h _tc _ta _tt _bd _bu _tn < "$_pd/$1.out"; } 2>/dev/null
     _v=$(_curl_rc "$_rc")
+    case "$3" in ip|web) _tun=1 ;; esac
+    case "$_tc" in *[1-9]*) _conn=1 ;; esac
+    case "$_ta" in *[1-9]*) _tls=1 ;; esac
+    case "$_rc" in
+        6) _cls=dns ;;
+        51|58|59|60|77) _cls=cert ;;
+        28) # Timed out before any connection, and the name lookup itself never completed:
+            # the router's resolver is the one that did not answer (never for an IP literal).
+            if [ "$3" != ip ] && [ "$_conn" = 0 ]; then
+                case "$_tn" in
+                    *[1-9]*) ;;
+                    *) _cls=dns; _v="FAILED: the router's DNS did not answer the name lookup in time (curl 28)" ;;
+                esac
+            fi ;;
+    esac
+    if [ "$3" != base ]; then
+        if [ "$_cls" = dns ]; then _p_dns_fail=$((_p_dns_fail + 1)); fi
+        if [ "$_cls" = cert ]; then _p_cert_fail=$((_p_cert_fail + 1)); fi
+    fi
     case "$3" in
         down|up)
-            if [ "$3" = down ]; then _b=${_bd%%.*}; else _b=${_bu%%.*}; fi
+            if [ "$3" = down ]; then _b=${_bd%%.*}; _thr=65536; else _b=${_bu%%.*}; _thr=131072; fi
             case "$_b" in ''|*[!0-9]*) _b=0 ;; esac
             if [ "$_rc" = 0 ] && [ "$_b" -ge "$4" ]; then
                 echo "  $2 : ok, $_b B in ${_tt:-?} s (http ${_h:-?})"
                 _p_bulk_ok=$((_p_bulk_ok + 1))
             elif [ "$_rc" = 0 ]; then
                 echo "  $2 : inconclusive — the test server answered http ${_h:-?} with $_b of $4 B (the exchange itself worked)"
+            elif [ -n "$_cls" ] || [ "$_tls" != 1 ]; then
+                echo "  $2 : could not run — $_v"
+            elif [ "$_rc" = 28 ] && [ "$_b" -ge "$_thr" ]; then
+                echo "  $2 : slow — $_b of $4 B within the time limit; full-size packets do pass"
+                _p_bulk_slow=$((_p_bulk_slow + 1))
+            elif [ "$_rc" = 28 ]; then
+                echo "  $2 : STALLED after $_b of $4 B — the TLS session came up, then the transfer stopped"
+                _p_bulk_stall=$((_p_bulk_stall + 1))
             else
-                echo "  $2 : $_v after $_b of $4 B (connect ${_tc:-?} s, tls ${_ta:-?} s)"
-                _p_bulk_fail=$((_p_bulk_fail + 1))
+                echo "  $2 : inconclusive — $_v after $_b of $4 B"
             fi ;;
         *)
-            # A phase's time prints as 0.000000 until that phase completes, so any non-zero
-            # digit means it did: connect done + TLS not = TCP got through and the TLS
-            # exchange stalled, the signature of full-size packets dying on the path.
-            _conn=0; case "$_tc" in *[1-9]*) _conn=1 ;; esac
-            _tls=0;  case "$_ta" in *[1-9]*) _tls=1 ;; esac
             if [ "$_rc" = 0 ]; then
                 echo "  $2 : ok, http ${_h:-?} (connect ${_tc:-?} s, tls ${_ta:-?} s, total ${_tt:-?} s)"
-                if [ "$3" = web ]; then _p_tcp_ok=$((_p_tcp_ok + 1)); _p_tcp_conn=$((_p_tcp_conn + 1)); fi
+                if [ "$_tun" = 1 ]; then _p_tcp_ok=$((_p_tcp_ok + 1)); _p_tcp_conn=$((_p_tcp_conn + 1)); fi
                 if [ "$3" = base ]; then _p_wan_ok=1; fi
             else
-                if [ "$_conn" = 1 ] && [ "$_tls" = 0 ]; then
+                if [ -n "$_cls" ]; then
+                    echo "  $2 : $_v"
+                elif [ "$_rc" = 28 ] && [ "$_conn" = 1 ] && [ "$_tls" = 0 ]; then
                     echo "  $2 : $_v — TCP connected in ${_tc} s, the TLS exchange never completed"
                 else
                     echo "  $2 : $_v (connect ${_tc:-?} s, tls ${_ta:-?} s)"
                 fi
-                if [ "$3" = web ]; then
-                    _p_tcp_fail=$((_p_tcp_fail + 1))
+                if [ "$_tun" = 1 ] && [ -z "$_cls" ]; then
                     if [ "$_conn" = 1 ]; then _p_tcp_conn=$((_p_tcp_conn + 1)); fi
-                    if [ "$_conn" = 1 ] && [ "$_tls" = 0 ]; then _p_tls_stall=$((_p_tls_stall + 1)); fi
+                    if [ "$_rc" = 28 ] && [ "$_conn" = 1 ] && [ "$_tls" = 0 ]; then _p_tls_stall=$((_p_tls_stall + 1)); fi
                 fi
             fi ;;
     esac
 }
 
+# One mangle chain with its packet counters (`-L -v -n -x`): firmware binary first, for the
+# same reason as mangle_dump. Nothing + rc 1 when the chain cannot be listed.
+mangle_chain_counters(){
+    local _b _out
+    for _b in /usr/sbin/iptables /sbin/iptables; do
+        [ -x "$_b" ] || continue
+        if _out=$("$_b" -t mangle -L "$1" -v -n -x 2>/dev/null) && [ -n "$_out" ]; then
+            printf '%s\n' "$_out"
+            return 0
+        fi
+    done
+    _out=$(iptables -t mangle -L "$1" -v -n -x 2>/dev/null) && [ -n "$_out" ] || return 1
+    printf '%s\n' "$_out"
+}
+
 # The AWG chain in full, with packet counters. `-S` prints the exact rule text (what a
 # setup bug shows up in) but no counters; `-L -v -x` has the counters. Both are capped (240
 # rule lines, 60 rules with hits) WITH a note — a diag must never cut silently again.
-# Firmware binary first, like mangle_dump (Entware iptables cannot list a table holding
-# firmware-proprietary targets).
+# Only MARKED traffic has rows: geo devices and the default geo policy. An "all traffic"
+# device keyed by IP is routed by its prio-99 ip rule and is never marked, so it has no row.
 diag_marks(){
-    local _b _dump _n _cnt=""
+    local _dump _n _cnt
     _dump=$(mangle_dump | grep -iE 'awg|0x100|MARK')
     _n=$(printf '%s\n' "$_dump" | grep -c .)
     echo "mangle marks ($_n rule line(s)):"
     if [ -n "$_dump" ]; then printf '%s\n' "$_dump" | head -n 240 | sed 's/^/  /'; fi
     if [ "$_n" -gt 240 ]; then echo "  ... ($((_n - 240)) more line(s) not shown)"; fi
-    for _b in /usr/sbin/iptables /sbin/iptables iptables; do
-        case "$_b" in /*) [ -x "$_b" ] || continue ;; esac
-        _cnt=$("$_b" -t mangle -L "$AWG_CHAIN" -v -n -x 2>/dev/null) && [ -n "$_cnt" ] && break
-        _cnt=""
-    done
-    if [ -z "$_cnt" ]; then
+    if ! _cnt=$(mangle_chain_counters "$AWG_CHAIN"); then
         echo "marked packets       : (chain $AWG_CHAIN not listable — tunnel stopped?)"
         return 0
     fi
     # Counters restart whenever the chain is rebuilt (a policy change), so read them as
     # "since the last Apply/start". Rules that never matched are not listed. Counters print
     # as text (%s) and totals as %.0f: an old busybox awk formats %d through a 32-bit int.
-    echo "marked packets since the chain was built (MARK rules with hits only):"
+    echo "marked packets since the chain was built (MARK rules with hits only; 'all traffic' devices are routed by an ip rule, not marked, and have no row):"
     printf '%s\n' "$_cnt" | awk '
         $3 == "MARK" && $1 + 0 > 0 {
             tail = ""; for (i = 10; i <= NF; i++) tail = tail " " $i
@@ -5985,7 +6138,7 @@ diag_marks(){
             tp += $1; tb += $2
         }
         END {
-            if (!n) { print "  NONE — no packet has matched a tunnel rule yet (devices idle, nothing resolved into the geo sets, or the traffic does not cross this chain: IPv6, another gateway)"; exit }
+            if (!n) { print "  NONE — no packet has matched a MARK rule yet (geo devices idle, nothing resolved into the geo sets, or the traffic does not cross this chain: IPv6, another gateway)"; exit }
             printf "  total: %.0f packet(s), %.0f B marked for the tunnel by %d rule(s)\n", tp, tb, n
             for (i = 1; i <= n && i <= 60; i++) print line[i]
             if (n > 60) printf "  ... (%d more rule(s) with hits not shown)\n", n - 60
@@ -6058,11 +6211,13 @@ _diag_rule_state(){
 # boxes), every tool under its own time limit plus _probe_wait's backstop, and the bulk wave
 # only when something got through before it — a dead tunnel with a dead resolver costs about
 # a quarter of a minute, a healthy one a few seconds. The report must stay inside the page's
-# wait (70 s; a tab opened before 1.5.30 still waits 45), and the whole diag runs inside a
-# service event (rc is busy meanwhile) — keep every limit here tight.
+# wait (70 s; a tab opened before 1.5.30 still waits 45) — keep every limit here tight. (The
+# web collection runs detached from its service event, see do_diag_publish, so these seconds
+# no longer hold rc.)
 diag_tunnel_probes(){
-    local _addr _hosts _h _n _k _mtu _big _pd _pjobs _cw _curl=0 _dom _q _ln _sets _s _ip
-    local _p_icmp_ok=0 _p_icmp_fail=0 _p_tcp_ok=0 _p_tcp_fail=0 _p_tcp_conn=0 _p_tls_stall=0 _p_big_fail=0 _p_bulk_ok=0 _p_bulk_fail=0 _p_wan_ok=0
+    local _addr _hosts _h _n _k _mtu _big _pd _pjobs _cw _curl=0 _dom _q _ln _sets _s _ip _side _bulk
+    local _p_icmp_ok=0 _p_icmp_fail=0 _p_tcp_ok=0 _p_tcp_conn=0 _p_tls_stall=0 _p_dns_fail=0 _p_cert_fail=0
+    local _p_big_fail=0 _p_bulk_ok=0 _p_bulk_slow=0 _p_bulk_stall=0 _p_wan_ok=0
     echo "--- live probes THROUGH the tunnel (from the router; every line is one real test) ---"
     if ! is_running; then
         echo "  (tunnel not running — nothing to probe)"
@@ -6077,6 +6232,13 @@ diag_tunnel_probes(){
         echo "  (the 'from $_addr lookup $RT_TABLE' rule is missing — router-originated probes cannot be steered into the tunnel; see the routing section)"
         return 0
     fi
+    # A report interrupted mid-probe (Ctrl+C on the CLI, a killed collection) leaves its
+    # scratch behind and nothing else would sweep it. By AGE, not by the pid in the name:
+    # that pid is the dispatcher's, gone long before a detached collection finishes.
+    for _s in /tmp/.awg_diagprobe.*; do
+        [ -d "$_s" ] || continue
+        if file_older_than "$_s" 600; then rm -rf "$_s" 2>/dev/null; fi
+    done
     _pd="/tmp/.awg_diagprobe.$$"
     rm -rf "$_pd" 2>/dev/null
     mkdir "$_pd" 2>/dev/null || { echo "  (cannot create $_pd)"; return 0; }
@@ -6084,7 +6246,7 @@ diag_tunnel_probes(){
     _hosts=$(watchdog_hosts)
     _mtu=$(tun_link_mtu) || _mtu=1280
     _big=$((_mtu - 28))
-    _cw='%{http_code} %{time_connect} %{time_appconnect} %{time_total} %{size_download} %{size_upload}'
+    _cw='%{http_code} %{time_connect} %{time_appconnect} %{time_total} %{size_download} %{size_upload} %{time_namelookup}'
 
     # Wave 1: ICMP to every probe host (plus one packet of exactly the tunnel MTU) and an
     # HTTPS connect to the first two — the hosts the health check and the watchdog judge by.
@@ -6115,7 +6277,7 @@ diag_tunnel_probes(){
         _n=0
         for _h in $_hosts; do
             _n=$((_n + 1)); [ "$_n" -le 2 ] || break
-            _probe_curl_line "tcp$_n" "HTTPS $_h" web
+            _probe_curl_line "tcp$_n" "HTTPS $_h" ip
         done
 
         # Wave 2: two well-known names (router DNS + TLS + a real HTTP answer) through the
@@ -6191,6 +6353,17 @@ diag_tunnel_probes(){
     fi
     rm -rf "$_pd" 2>/dev/null
 
+    # Things on the ROUTER that make the by-name probes meaningless — said first, so the
+    # verdict below is read with them in mind (and never blames the tunnel for them).
+    if [ "$_p_dns_fail" -gt 0 ]; then
+        echo "  NOTE: the router itself could not resolve the test hosts' names — its own DNS did not answer (see the lines above). The probes by name could not run and say nothing about the tunnel."
+    fi
+    if [ "$_p_cert_fail" -gt 0 ]; then
+        echo "  NOTE: server certificates were not accepted (curl 60) — almost always a router clock that never synced (check the date at the top of this report). The verified HTTPS probes could not run and say nothing about the tunnel."
+    fi
+    _side="If a LAN device still fails, look on its side of the router: its policy, its DNS (DoH/DoT past the router), IPv6, a DPI-bypass tool or a firewall on the device — a geo device also has a row in the marked-packets list above."
+    if [ $((_p_bulk_ok + _p_bulk_slow)) -gt 0 ]; then _bulk=" and bulk traffic"; else _bulk=" (the bulk transfer could not be completed — see its lines)"; fi
+
     # One line a human can act on. Conservative: it names what the probes above showed and
     # nothing they did not.
     if [ "$_curl" != 1 ]; then
@@ -6199,22 +6372,28 @@ diag_tunnel_probes(){
         else
             echo "  VERDICT: no ICMP reply through the tunnel (TCP not tested — no curl on this router). A provider may simply filter ping; if sites do not open through the VPN either, the tunnel carries no traffic."
         fi
-    elif [ "$_p_tcp_ok" -eq 0 ] && [ "$_p_tcp_conn" -gt 0 ]; then
-        echo "  VERDICT: TCP connects through the tunnel but no TLS/HTTP exchange completes — the small packets pass, the full-size ones do not (path MTU), or the server side filters TLS. Lower the profile MTU (try 1280), restart the tunnel and run this again."
-    elif [ "$_p_tcp_ok" -eq 0 ] && [ "$_p_icmp_ok" -eq 0 ] && [ "$_p_wan_ok" != 1 ]; then
-        # The baseline died too: with no working WAN/DNS on the router nothing here says
-        # anything about the tunnel — do not blame the server for it.
-        echo "  VERDICT: nothing came back through the tunnel — and the direct WAN probe failed as well: the router itself has no working internet or DNS right now. Fix that first; the tunnel cannot be judged from these probes."
-    elif [ "$_p_tcp_ok" -eq 0 ] && [ "$_p_icmp_ok" -eq 0 ]; then
+    elif [ "$_p_tcp_ok" -eq 0 ] && [ "$_p_tls_stall" -gt 0 ]; then
+        echo "  VERDICT: TCP connects through the tunnel but the TLS exchange times out — the small packets pass, the full-size ones do not (path MTU), or TLS is filtered on the server side. Lower the profile MTU (try 1280), restart the tunnel and run this again."
+    elif [ "$_p_tcp_ok" -eq 0 ] && [ "$_p_icmp_ok" -eq 0 ] && [ "$_p_tcp_conn" -eq 0 ] && [ "$_p_wan_ok" != 1 ]; then
+        # The baseline died too: with no working WAN/DNS/clock on the router nothing here
+        # says anything about the tunnel — do not blame the server for it.
+        echo "  VERDICT: nothing came back through the tunnel — and the direct WAN probe failed as well: the router itself has no working internet, DNS or clock right now. Fix that first; the tunnel cannot be judged from these probes."
+    elif [ "$_p_tcp_ok" -eq 0 ] && [ "$_p_icmp_ok" -eq 0 ] && [ "$_p_tcp_conn" -eq 0 ]; then
         echo "  VERDICT: NOTHING came back through the tunnel (the handshake aside) while the direct WAN works — a client routed into the tunnel gets no internet. This is not a routing/ipset problem on this router: the probes leave through the tunnel and no reply returns. Look at the server side — forwarding/NAT, a provider that only serves selected destinations, a config meant for split tunnelling — and check the same config in the provider's own client."
+    elif [ "$_p_tcp_ok" -eq 0 ] && [ $((_p_dns_fail + _p_cert_fail)) -gt 0 ]; then
+        echo "  VERDICT: HTTPS through the tunnel could not be tested — see the NOTE above (the tunnel check addresses themselves do not serve HTTPS). Fix the router's DNS/clock, or put addresses that answer HTTPS into the tunnel check list, and run this again."
+    elif [ "$_p_tcp_ok" -eq 0 ] && [ "$_p_tcp_conn" -gt 0 ]; then
+        echo "  VERDICT: TCP connects through the tunnel but the HTTPS exchange is cut short (a reset or a handshake error, not a timeout) — filtering on the server side or on the path."
     elif [ "$_p_tcp_ok" -eq 0 ]; then
-        echo "  VERDICT: ICMP passes but TCP does not even connect through the tunnel — TCP is filtered on the server side or on the path."
-    elif [ "$_p_bulk_fail" -gt 0 ] || [ "$_p_big_fail" -gt 0 ]; then
-        echo "  VERDICT: small exchanges pass, full-size packets do NOT (see the bulk / tunnel-MTU lines above) — a path-MTU problem. Lower the profile MTU (try 1280), restart the tunnel and run this again."
+        echo "  VERDICT: ICMP passes but no TCP connection could be made through the tunnel — TCP is filtered on the server side or on the path."
+    elif [ "$_p_bulk_stall" -gt 0 ]; then
+        echo "  VERDICT: small exchanges pass, full-size packets do NOT (a bulk transfer stalled right after its TLS session came up) — a path-MTU problem. Lower the profile MTU (try 1280), restart the tunnel and run this again."
+    elif [ "$_p_big_fail" = 1 ] && [ $((_p_bulk_ok + _p_bulk_slow)) -eq 0 ]; then
+        echo "  VERDICT: small exchanges pass; a ping of the tunnel MTU got no answer and no bulk transfer could confirm that full-size packets pass — possibly a path-MTU problem. If pages hang, lower the profile MTU (try 1280), restart the tunnel and run this again."
     elif [ "$_p_icmp_ok" -eq 0 ]; then
-        echo "  VERDICT: the tunnel passes TCP and bulk traffic from the router; ping is not answered through it (the provider filters ICMP — harmless). If a LAN device still fails, look on its side of the router: its policy, its DNS (DoH/DoT past the router), IPv6, a DPI-bypass tool or a firewall on the device — and its row in the marked-packets list."
+        echo "  VERDICT: the tunnel passes HTTPS$_bulk from the router; ping is not answered through it (the provider filters ICMP — harmless). $_side"
     else
-        echo "  VERDICT: the tunnel passes ICMP, HTTPS and bulk traffic from the router. If a LAN device still fails, look on its side of the router: its policy, its DNS (DoH/DoT past the router), IPv6, a DPI-bypass tool or a firewall on the device — and its row in the marked-packets list."
+        echo "  VERDICT: the tunnel passes ICMP, HTTPS$_bulk from the router. $_side"
     fi
 }
 
@@ -7698,6 +7877,10 @@ do_start(){
     printf '%s %s\n' "$AWG_CFG_SLOT" "$AWG_CFG_FP" > "$RUNNING_PF"
 
     conn_record_start
+    # A verdict about a PREVIOUS run must not be shown for this one (a start over a crashed
+    # daemon never went through do_stop, which is what normally removes it): the health
+    # check below writes this run's own.
+    rm -f "$PROBE_STATE" 2>/dev/null
     log_msg "Started, verifying tunnel connectivity (probing: $(watchdog_hosts))..."
     update_status
     release_lock
@@ -7896,6 +8079,10 @@ do_stop(){
     ipt_drain -t nat -D POSTROUTING -o "$IFACE" -j MASQUERADE
 
     cleanup_firewall
+    # cleanup_firewall parked the sets' DNS-learned entries for the next start (see
+    # geodyn_stash_save). A deliberate user stop is the manual flush: Stop -> Start begins
+    # with clean sets, exactly as before 1.5.30; every other stop keeps them.
+    [ "$user_stop" = "user" ] && rm -f "$GEODYN_STASH" 2>/dev/null
     # On a deliberate user stop/uninstall, also drop the self-heal watchdog so the VPN stays
     # down. Auto-rollbacks (health-check, deadman) call do_stop withOUT "user", so the
     # watchdog survives and can still recover the tunnel on its own.
@@ -9130,7 +9317,7 @@ do_uninstall(){
     rm -f "$ANALYZE_FILE" "$ANALYZE_DNS_CONF" "$ANALYZE_DNS_LOG" /tmp/.awg_analyze_*
 
     rm -f "$AWG_INCIDENTS"
-    rm -f "$GEODYN_STASH" "$PROBE_STATE"   # nothing to take back after an uninstall
+    rm -f "$GEODYN_STASH" "$GEODYN_BORN" "$PROBE_STATE" "$TCPMSS_IN_STATE"   # nothing to take back after an uninstall
     rm -f "$CONN_HIST_BAK"   # update-time stash lives OUTSIDE $AWG_DIR — the package rm -rf misses it
     rm -rf "$ADDON_DIR"
 
@@ -10170,7 +10357,7 @@ do_firewall_restart(){
 # Publish one web diagnostic. Request IDs travel in the service-event name, not settings:
 # a stale page must never write its custom_settings snapshot just to collect a report.
 do_diag_publish(){
-    local _dtoken="$1" _dout="$DIAG_FILE" _dtmp _dold _dpid
+    local _dtoken="$1" _dout="$DIAG_FILE" _dold _dpid
     if [ -n "$_dtoken" ]; then
         # The token becomes a filename and a footer. Refuse paths, whitespace and unbounded
         # input before touching files; the browser emits lowercase base36 with hyphens.
@@ -10190,25 +10377,41 @@ do_diag_publish(){
         [ -f "$_dold" ] || continue
         file_older_than "$_dold" 600 && rm -f "$_dold" 2>/dev/null
     done
-    # $$ belongs to this dispatcher (not a detached subshell). Never unlink a live writer's
-    # temp: a slow collection may outlive the page's wait (70 s; 45 s before 1.5.30) and a subsequent retry.
+    # Never unlink a live writer's temp: a slow collection may outlive the page's wait (70 s;
+    # 45 s before 1.5.30) and a subsequent retry. A temp's suffix is its WRITER's own pid (see
+    # below), so an existing /proc/<suffix> means it is still being written.
     for _dold in "${DIAG_FILE}".[0-9]* "${DIAG_FILE%.htm}_"*.htm.[0-9]*; do
         [ -e "$_dold" ] || continue
         _dpid=${_dold##*.}
         [ -d "/proc/$_dpid" ] && continue
         rm -f "$_dold" 2>/dev/null
     done
-    _dtmp="${_dout}.$$"
-    # Sanitize ASP openers as a stream: httpd interprets them even in /www/user .htm files.
-    # A newline before the footer also handles a probe that emitted no trailing newline.
-    if do_diag 2>&1 | sed 's/<\([%#]\)/< \1/g' > "$_dtmp" &&
-        printf '\n[DIAG_DONE %s]\n[DIAG_DONE]\n' "$_dtoken" >> "$_dtmp" &&
-        mv "$_dtmp" "$_dout" 2>/dev/null; then
-        return 0
-    fi
-    log_msg "ERROR: diag dump could not be written or published to $_dout"
-    rm -f "$_dtmp" 2>/dev/null
-    return 1
+    # Collect and publish DETACHED (1.5.30). The report now also probes the tunnel live, and
+    # when those probes have to run into their limits it takes well past the 15 s notify_rc
+    # waits before it DROPS the next event — a Restart pressed right after the report, a
+    # firmware event. The page polls for the token file anyway, so nothing needs this handler
+    # to stay: validate and sweep above, hand the collection off, let rc go.
+    # The temp is named after the writer's REAL pid. $$ inside the subshell is still the
+    # dispatcher's, which exits at once — the sweep above, run by the NEXT request, would
+    # take a live writer's temp for a dead one's and delete it. /proc/self/stat is opened by
+    # the subshell's own builtin, so its first field is that pid, fork-free.
+    (
+        _dself=""
+        { read -r _dself _dx < /proc/self/stat; } 2>/dev/null || true
+        case "$_dself" in ''|*[!0-9]*) _dself=$$ ;; esac
+        _dtmp="${_dout}.$_dself"
+        # Sanitize ASP openers as a stream: httpd interprets them even in /www/user .htm files.
+        # A newline before the footer also handles a probe that emitted no trailing newline.
+        if do_diag 2>&1 | sed 's/<\([%#]\)/< \1/g' > "$_dtmp" &&
+            printf '\n[DIAG_DONE %s]\n[DIAG_DONE]\n' "$_dtoken" >> "$_dtmp" &&
+            mv "$_dtmp" "$_dout" 2>/dev/null; then
+            exit 0
+        fi
+        log_msg "ERROR: diag dump could not be written or published to $_dout"
+        rm -f "$_dtmp" 2>/dev/null
+        exit 1
+    ) </dev/null >/dev/null 2>&1 &
+    return 0
 }
 
 do_service_event(){
