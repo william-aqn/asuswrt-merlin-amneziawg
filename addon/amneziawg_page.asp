@@ -575,7 +575,7 @@ en: {
     DHCP_ADD_SELECTED: "Add selected",
     // ---- diagnostics ----
     DIAG_COLLECTING: "Collecting data…",
-    DIAG_COLLECTING_WAIT: "Collecting diagnostic data… Please wait.",
+    DIAG_COLLECTING_WAIT: "Collecting diagnostic data and testing the tunnel live… This can take up to half a minute.",
     DIAG_TIMEOUT: "Could not get diagnostics (timeout). Try again.",
     DIAG_EMPTY: "Diagnostics are empty.",
     DIAG_TIMEOUT_NOTE: "⚠ Collection did not finish before the timeout — the data may be incomplete.",
@@ -616,6 +616,7 @@ en: {
     MEM_SQUEEZE_NOSWAP: "⚠ <b>The router is short on memory for this tunnel.</b> This firmware uses strict memory accounting (<code>vm.overcommit_memory=2</code>), and so little of that budget is left that the VPN daemon runs at its minimum settings: heap ceiling {0} MiB, packet buffer pool {1} × 64 KB. Under sustained load — video through the tunnel above all — the daemon can run out of memory, crash and be restarted by the watchdog, which looks like «the VPN drops every few minutes». <b>What helps:</b> a <b>swap file on the USB drive</b> (amtm → swap, 1 GB) — under strict accounting swap raises the memory budget one-to-one, and the next tunnel start gets a higher ceiling. Use a healthy drive: if it fails or is unplugged, programs whose memory was moved to swap will crash. Stopping unused addons and Entware services also frees budget, but usually far less.",
     MEM_SQUEEZE_SWAP: "⚠ <b>The router is short on memory for this tunnel.</b> Even with swap ({2} MiB), strict memory accounting (<code>vm.overcommit_memory=2</code>) leaves so little budget that the VPN daemon runs at its minimum settings: heap ceiling {0} MiB, packet buffer pool {1} × 64 KB. Under sustained load the daemon can run out of memory and be restarted by the watchdog — it looks like «the VPN drops every few minutes». <b>What helps:</b> enlarge the swap file (e.g. to 1 GB), or stop other memory consumers — unused addons and Entware services, and firmware features such as AiProtection, Traffic Analyzer or Adaptive QoS (their background services count against this budget). The next tunnel start picks up the higher ceiling.",
     CONF_PENDING: "⚠ The saved connection config differs from the one the tunnel is <b>currently running</b>. «Apply» updates routing/geo on the fly but never restarts the tunnel — press <b>«Restart»</b> to switch to the new config (keys, endpoint, obfuscation, DNS, MTU).",
+    PROBE_SILENT: "⚠ The tunnel is up (the handshake completes), but <b>nothing answers through it</b>: the tunnel check addresses ({0}) return neither a ping nor an HTTPS connection. Either the VPN provider filters such checks, or the tunnel carries no traffic at all — routing/NAT on the server side, a config meant only for split tunnelling, or an MTU that does not fit. If sites do not open through the VPN, this is the reason: press <b>«Diagnostics»</b> — it tests the tunnel live and shows what exactly does not pass. If everything opens fine, put addresses that do answer into «Tunnel check addresses».",
     GEO_MATCHALL: "⛔ A rule in your <b>custom dnsmasq config</b> is routing <b>every</b> domain into a geo set, so Geo mode sends <b>all</b> traffic through the VPN (every site shows the VPN IP and geo-restricted services stop working). The offending line:<div style=\"margin:6px 0;\"><code>{0}</code></div>The <code>https://</code> (or a stray <code>//</code>) leaves an empty segment, which dnsmasq treats as “match everything”. Fix it in your custom dnsmasq config (<code>/jffs/configs/dnsmasq.conf.add</code>): keep only the bare domain — e.g. <code>ipset=/example.com/awg_dst</code> — then restart dnsmasq or reboot. AmneziaWG's own generated rules are fine; this is a hand-added line.",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">After the changes, click <b>«Apply»</b>. GeoIP routing by IP keeps working in the meantime.</span>",
     XRAY_CAP_HEADER: "ℹ <b>XRAYUI / Xray</b> is running in <b>transparent-proxy mode (TPROXY, «redirect all traffic»)</b>, capturing the router's LAN traffic. AmneziaWG now automatically gives the devices you assigned to it (<b>«VPN: all traffic»</b> / <b>«VPN: Geo only»</b>) <b>priority into the tunnel, ahead of Xray</b> — those devices go through AmneziaWG, while the rest of the LAN keeps using Xray. Both run side by side; no action is needed for this.",
@@ -1027,7 +1028,7 @@ ru: {
     DHCP_ADD_SELECTED: "Добавить выбранные",
     // ---- diagnostics ----
     DIAG_COLLECTING: "Сбор данных…",
-    DIAG_COLLECTING_WAIT: "Сбор диагностических данных… Подождите.",
+    DIAG_COLLECTING_WAIT: "Сбор диагностических данных и живая проверка туннеля… Это может занять до полуминуты.",
     DIAG_TIMEOUT: "Не удалось получить диагностику (таймаут). Попробуйте ещё раз.",
     DIAG_EMPTY: "Диагностика пуста.",
     DIAG_TIMEOUT_NOTE: "⚠ Сбор не завершился по таймауту — данные могут быть неполными.",
@@ -1068,6 +1069,7 @@ ru: {
     MEM_SQUEEZE_NOSWAP: "⚠ <b>Роутеру не хватает памяти для этого туннеля.</b> Прошивка использует строгий учёт памяти (<code>vm.overcommit_memory=2</code>), и свободного бюджета осталось так мало, что VPN-демон работает на минимальных настройках: потолок памяти {0} МиБ, пул пакетных буферов {1} × 64 КБ. Под нагрузкой — прежде всего при просмотре видео через туннель — демону может не хватить памяти: он падает, и его поднимает watchdog, а со стороны это выглядит как «VPN отваливается каждые несколько минут». <b>Что помогает:</b> <b>файл подкачки на USB-накопителе</b> (amtm → swap, 1 ГБ) — при строгом учёте swap один к одному увеличивает бюджет памяти, и при следующем запуске туннель получит потолок выше. Нужен исправный накопитель: если он откажет или его извлекут, программы, чья память ушла в подкачку, упадут. Отключение неиспользуемых аддонов и служб Entware тоже освобождает бюджет, но обычно намного меньше.",
     MEM_SQUEEZE_SWAP: "⚠ <b>Роутеру не хватает памяти для этого туннеля.</b> Даже с подкачкой ({2} МиБ) строгий учёт памяти (<code>vm.overcommit_memory=2</code>) оставляет так мало бюджета, что VPN-демон работает на минимальных настройках: потолок памяти {0} МиБ, пул пакетных буферов {1} × 64 КБ. Под нагрузкой демону может не хватить памяти, и его перезапускает watchdog — выглядит это как «VPN отваливается каждые несколько минут». <b>Что помогает:</b> увеличьте файл подкачки (например, до 1 ГБ) или отключите другие потребители памяти — неиспользуемые аддоны и службы Entware, а также функции прошивки вроде AiProtection, анализатора трафика или адаптивного QoS (их фоновые службы расходуют этот же бюджет). Туннель получит потолок выше при следующем запуске.",
     CONF_PENDING: "⚠ Сохранённая конфигурация подключения отличается от той, на которой туннель <b>работает сейчас</b>. «Применить» обновляет маршрутизацию/гео на лету, но туннель не перезапускает — нажмите <b>«Перезапустить»</b>, чтобы перейти на новую конфигурацию (ключи, endpoint, обфускация, DNS, MTU).",
+    PROBE_SILENT: "⚠ Туннель поднят (рукопожатие проходит), но <b>через него никто не отвечает</b>: адреса проверки туннеля ({0}) не дают ни ответа на ping, ни HTTPS-соединения. Либо провайдер VPN фильтрует такие проверки, либо туннель вообще не пропускает трафик — маршрутизация/NAT на стороне сервера, конфиг только для раздельного туннелирования или неподходящий MTU. Если сайты через VPN не открываются — причина в этом: нажмите <b>«Диагностика»</b> — она проверит туннель вживую и покажет, что именно не проходит. Если всё открывается — укажите в «Адреса проверки туннеля» адреса, которые отвечают.",
     GEO_MATCHALL: "⛔ Правило в вашем <b>пользовательском конфиге dnsmasq</b> отправляет в гео-набор <b>все</b> домены, поэтому в режиме Гео через VPN уходит <b>весь</b> трафик (на всех сайтах виден IP VPN, гео-сервисы перестают работать). Проблемная строка:<div style=\"margin:6px 0;\"><code>{0}</code></div>Из-за <code>https://</code> (или лишнего <code>//</code>) появляется пустой сегмент, а его dnsmasq трактует как «совпадает со всем». Исправьте в своём конфиге dnsmasq (<code>/jffs/configs/dnsmasq.conf.add</code>): оставьте только домен — например <code>ipset=/example.com/awg_dst</code> — и перезапустите dnsmasq или перезагрузите роутер. Правила, которые генерирует сам AmneziaWG, тут ни при чём — строка добавлена вручную.",
     COEX_FOOTER: "<span style=\"opacity:0.85;\">После изменений нажмите <b>«Применить»</b>. Geo-маршрутизация по IP при этом продолжает работать.</span>",
     XRAY_CAP_HEADER: "ℹ <b>XRAYUI / Xray</b> работает в режиме <b>прозрачного проксирования (TPROXY, «перенаправить весь трафик»)</b> и забирает LAN-трафик роутера. Теперь AmneziaWG автоматически даёт устройствам, назначенным на него (<b>«VPN: весь трафик»</b> / <b>«VPN: только Geo»</b>), <b>приоритет в туннель, впереди Xray</b> — такие устройства идут через AmneziaWG, а остальная сеть продолжает работать через Xray. Оба работают вместе, никаких действий не требуется.",
@@ -4189,6 +4191,10 @@ function awgCopyText(text, done){
 // current log, wrapped for Telegram — the copy happens inside the click, so it's reliable.
 var awgDiagText = '';
 var awgDiagSeq = 0;
+// How long the page waits for the report. 70 s since 1.5.30 (was 45): the report now also
+// tests the tunnel live (pings, HTTPS and bulk transfers through it), which adds a few
+// seconds on a healthy tunnel and up to about twenty on one where every probe has to time out.
+var AWG_DIAG_WAIT_MS = 70000;
 // Require the completion footer, not a marker quoted somewhere in the diagnostic body.
 function awgDiagMarkOf(txt){
     var m = /(?:^|\r?\n)\[DIAG_DONE ([a-z0-9-]+)\]\r?\n\[DIAG_DONE\]\s*$/.exec(String(txt || ''));
@@ -4221,11 +4227,11 @@ function awgRunDiag(btn){
             var txt = x.responseText || '';
             if(x.status === 200 && awgDiagMarkOf(txt) === token){ awgDiagFinish(btn, txt, false); return; }
             // Missing files, HTTP errors, partial bodies and other runs never become a report.
-            if(Date.now() - t0 > 45000){ awgDiagFinish(btn, null, true); return; }
+            if(Date.now() - t0 > AWG_DIAG_WAIT_MS){ awgDiagFinish(btn, null, true); return; }
             setTimeout(tick, 1500);
         };
         x.onerror = x.ontimeout = function(){
-            if(Date.now() - t0 > 45000){ awgDiagFinish(btn, null, true); return; }
+            if(Date.now() - t0 > AWG_DIAG_WAIT_MS){ awgDiagFinish(btn, null, true); return; }
             setTimeout(tick, 2000);
         };
         x.send();
@@ -5246,6 +5252,7 @@ function updateStatusUI(s){
     renderDnsGeoWarning(s);
     renderGeoMatchallWarning(s);
     renderNoHandshakeWarning(s);
+    renderProbeSilentWarning(s);
     renderConfPendingWarning(s);
 }
 
@@ -5457,6 +5464,24 @@ function renderConfPendingWarning(s){
         return;
     }
     el.innerHTML = T('CONF_PENDING');
+    el.style.display = '';
+}
+
+// "Connected, but nothing answers through the tunnel" (yellow, 1.5.30). Backend:
+// status.probe_state = "handshake" when the start health check or the watchdog could prove the
+// tunnel only by its fresh handshake — no tunnel check address answered through it, neither
+// ICMP nor an HTTPS connect ("probe"/"tcp" = something did; "" = stopped or not judged yet).
+// That is also exactly what a tunnel that carries no traffic looks like, and the page used to
+// show a plain «connected» for it (field 2026-11: "connected, nothing opens"). The addresses
+// (status.probe_hosts) are sanitized by the backend to host characters; escaped anyway.
+// Hidden while the no-handshake banner applies — that one already says more.
+function renderProbeSilentWarning(s){
+    var el = document.getElementById('awg_probe_warn');
+    if(!el) return;
+    if(!s || s.probe_state !== 'handshake' || !s.running || s.starting || s.stopping || s.no_handshake){
+        el.style.display = 'none'; el.innerHTML = ''; return;
+    }
+    el.innerHTML = T('PROBE_SILENT', escHtml(String(s.probe_hosts || '').replace(/ +/g, ', ')));
     el.style.display = '';
 }
 
@@ -6143,6 +6168,7 @@ function initAutocompleteIp(){
                 <div id="awg_fwvpn_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; border:1px solid; border-radius:5px; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_dnsgeo_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_nohs_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
+                <div id="awg_probe_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
                 <div id="awg_confpend_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>
                 <!-- Skipped / failed profile switch (awgSwitchWarn) -->
                 <div id="awg_switch_warn" style="display:none; margin:8px 0 2px 0; padding:9px 12px; background:#3a331a; border:1px solid #d9c34f; border-radius:5px; color:#e8dca0; font-size:12px; line-height:1.5;"></div>

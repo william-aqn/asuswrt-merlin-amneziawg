@@ -4,7 +4,7 @@
 # Userspace amneziawg-go, per-device policy routing, GeoIP/GeoSite
 # =============================================================
 
-AWG_VERSION="1.5.29"
+AWG_VERSION="1.5.30"
 ADDON_DIR="/jffs/addons/amneziawg"
 AWG_DIR="/opt/amneziawg"
 CONF="$AWG_DIR/awg0.conf"
@@ -83,6 +83,10 @@ PRERSLV_RETRY="/tmp/.awg_preresolve_retry"      # "domain sets" whose lookup was
 GEOSET_GEN="/tmp/.awg_geoset_gen"               # token that changes whenever our geo sets lose their fed entries (destroyed, or created empty)
 PRERSLV_FRESH_S=86400                           # = the sets' default entry timeout: a feed older than this has aged out of the sets and is redone
 GEOSTATIC_SIG="/tmp/.awg_geostatic_sig"         # geo_static_sig of the last rebuild: a change invalidates the pre-resolve cursor (see geo_swap_window_close)
+GEODYN_STASH="/tmp/.awg_geodyn_stash"           # DNS-learned entries of the geo sets a stop destroyed, "add <set> <ip> timeout <left>" — taken back by the next start (1.5.30, see geodyn_stash_save)
+GEODYN_STASH_TTL=3600                           # a stash older than this is ignored: a VPN that stayed off for hours starts clean
+GEODYN_STASH_MAX=30000                          # entries kept (about 1.2 MB of tmpfs, i.e. RAM)
+PROBE_STATE="/tmp/.awg_probe_state"             # how the running tunnel last proved itself: probe (ICMP) | tcp (HTTPS connect) | handshake (nothing answered through it)
 SCRIPT_NAME="amneziawg"
 RT_TABLE=300
 AWG_CHAIN="AWG"
@@ -1292,6 +1296,8 @@ geo_swap_window_close(){
 # then clear the registry. Exact names only — foreign sets are untouched.
 destroy_owned_sets(){
     local s
+    # Park what the sets learned from DNS before they go (see geodyn_stash_save).
+    geodyn_stash_save
     geoset_gen_bump
     [ -f "$OWNED_SETS" ] || return 0
     while read -r s; do
@@ -1546,6 +1552,132 @@ restore_rp_filter(){
             rm -f "$saved"
         fi
     done
+}
+
+# --- TCP MSS for traffic coming BACK from the tunnel (1.5.30) ---
+# `-j TCPMSS --clamp-mss-to-pmtu` takes min(MTU of the packet's forward route, MTU of its
+# REVERSE route), and the kernel looks that reverse route up with nothing but the packet's
+# source address: no fwmark, no source selector (net/netfilter/xt_TCPMSS.c,
+# tcpmss_reverse_mtu — only daddr is filled in; the same from 2.6.36 through 6.x). For a
+# SYN-ACK arriving from awg0 the forward route is br0, and the "reverse" route of an
+# Internet host resolves in the MAIN table — the WAN — because the tunnel is reachable only
+# through policy routing (table 300), which that lookup never consults. So the old
+# `-i awg0 … --clamp-mss-to-pmtu` rule clamped to WAN-MTU-40 (1460/1452): no clamp at all as
+# far as the tunnel is concerned. LAN clients learned the remote's full MSS, sent 1500-byte
+# packets into a 1280..1420-byte tunnel and depended on PMTUD for EVERY new destination — one
+# dropped packet plus an ICMP "fragmentation needed" per connection, which the kernel
+# rate-limits per client (a burst of 6, then one a second), and a black hole for any client
+# that does not see or honour that ICMP (a strict host firewall, a DPI-bypass tool in the
+# path). Large first flights hit it at once: a TLS ClientHello with a post-quantum key share
+# is ~1.7 KB, so desktop browsers stalled on sites that a phone opened (field 2026-11,
+# RT-AC86U @1.5.29: "opens on the phone, not on the PC; with full VPN nothing opens").
+# The SYN direction (-o awg0) was always right — its forward route IS awg0 — so downloads
+# were fine, which is what kept this hidden.
+# Fix: clamp the SYN-ACK direction with an EXPLICIT value, the tunnel's link MTU minus 40.
+# TCPMSS never raises an MSS (oldmss <= newmss leaves the option alone), so --set-mss is a
+# pure clamp. The rule text now depends on the MTU, hence the enumerate-and-drain helpers.
+
+# Link MTU of $IFACE as the kernel enforces it (not the setting). Nothing + rc 1 when the
+# link is absent or the value is not a sane MTU.
+tun_link_mtu(){
+    local _m=""
+    { read -r _m < "/sys/class/net/$IFACE/mtu"; } 2>/dev/null
+    case "$_m" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$_m" -ge 576 ] && [ "$_m" -le 65535 ] || return 1
+    echo "$_m"
+}
+
+# Every MSS value our inbound clamp rule is currently installed with, one per line: normally
+# one; none after a firmware firewall rebuild; a stale one if the MTU changed under a rule.
+# Read through mangle_dump (the firmware binary lists what Entware iptables cannot).
+tcpmss_in_values(){
+    mangle_dump | sed -n "s/^-A FORWARD -i $IFACE -p tcp .*-j TCPMSS --set-mss \([0-9][0-9]*\)[[:space:]]*\$/\1/p" | sort -u
+}
+
+# Remove the inbound clamp in every form: the pre-1.5.30 pmtu rule (so the first stop after
+# an upgrade clears it), the rule for the current MTU (works even when the table cannot be
+# listed) and every other value the dump shows.
+tcpmss_in_drain(){
+    local _v _cur=""
+    _cur=$(tun_link_mtu) && _cur=$((_cur - 40))
+    ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    for _v in $_cur $(tcpmss_in_values); do
+        ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_v"
+    done
+    return 0
+}
+
+# Assert exactly ONE inbound clamp carrying the current tunnel MSS: the right rule is added
+# once (ipt_add_once: never on a sick probe), then stale values and the legacy pmtu form are
+# drained. With no readable link MTU the legacy form is kept rather than leaving the
+# direction bare.
+tcpmss_in_assert(){
+    local _mtu _mss _v
+    if ! _mtu=$(tun_link_mtu); then
+        ipt_add_once mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+        return $?
+    fi
+    _mss=$((_mtu - 40))
+    ipt_add_once mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_mss" || return 1
+    for _v in $(tcpmss_in_values); do
+        [ "$_v" = "$_mss" ] && continue
+        ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_v"
+    done
+    ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    return 0
+}
+
+# --- Does a full-size tunnel packet fit the WAN link? ---
+# Bytes the tunnel wraps around an inner packet: IP (20, or 40 towards an IPv6 endpoint) +
+# UDP 8 + transport header 16 + auth tag 16 + the S4 transport prefix. The AmneziaWG 3.x
+# paddings (ContentPaddingAddition, random trailers) are deliberately not in it: the daemon
+# caps them by the peer's UDP window (device/send.go, randomPaddingAddition), so they never
+# grow a packet past the largest unpadded one.
+tun_overhead(){
+    local _s4 _ip=20
+    _s4=$(awk -F'[ =]+' '$1 == "S4" { print $2; exit }' "$CONF" 2>/dev/null)
+    case "$_s4" in ''|*[!0-9]*) _s4=0 ;; esac
+    grep -q '^Endpoint[ =]*\[' "$CONF" 2>/dev/null && _ip=40
+    echo $((_ip + 8 + 32 + _s4))
+}
+
+# "<dev> <mtu>" of the link the tunnel's own UDP leaves through — the default route's device
+# (do_start pins the endpoint's host route via that same gateway). rc 1 when it cannot be
+# told (no default route, a multipath default).
+wan_egress(){
+    local _dev _m=""
+    _dev=$(ip route 2>/dev/null | awk '/^default/ { for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+    [ -n "$_dev" ] || return 1
+    { read -r _m < "/sys/class/net/$_dev/mtu"; } 2>/dev/null
+    case "$_m" in ''|*[!0-9]*) return 1 ;; esac
+    echo "$_dev $_m"
+}
+
+# One line "<tunnel mtu> <overhead> <wan dev> <wan mtu> <fits|over:N>"; rc 1 = unknown.
+mtu_budget(){
+    local _m _o _w _dev _wm
+    _m=$(tun_link_mtu) || return 1
+    _o=$(tun_overhead)
+    _w=$(wan_egress) || return 1
+    _dev=${_w% *}; _wm=${_w#* }
+    if [ $((_m + _o)) -le "$_wm" ]; then
+        echo "$_m $_o $_dev $_wm fits"
+    else
+        echo "$_m $_o $_dev $_wm over:$((_m + _o - _wm))"
+    fi
+}
+
+# Journal warning at start when full-size tunnel packets cannot fit the WAN link: they leave
+# IP-fragmented, and fragmented UDP is dropped by plenty of ISPs and CGNATs — small requests
+# pass, pages and downloads hang, with a perfect handshake. Silent when it fits or is unknown.
+mtu_budget_warn(){
+    local _b _m _o _dev _wm _v
+    _b=$(mtu_budget) || return 0
+    case "$_b" in *" over:"*) ;; *) return 0 ;; esac
+    read -r _m _o _dev _wm _v <<EOF
+$_b
+EOF
+    log_msg "WARNING: tunnel MTU $_m makes outer packets of up to $((_m + _o)) bytes, but the WAN link $_dev carries only $_wm — full-size tunnel packets will be IP-fragmented, and many ISPs drop fragmented UDP (small requests work, pages and downloads hang). Set the profile MTU to $((_wm - _o)) or lower"
 }
 
 # Wait for process to exit. Usage: wait_for_pid_exit <name> <timeout>
@@ -2973,6 +3105,63 @@ ipset_replay_dynamic(){
     return 0
 }
 
+# --- DNS-learned entries across a stop -> start (1.5.30) ---
+# A stop (restart, profile switch, failover hop, watchdog restart, full firewall re-apply)
+# destroys our geo sets, and with them every address they learned from DNS answers: dnsmasq's
+# ipset hook and the pre-resolve. The next start gets the statics back from disk and the
+# list's own names back from the pre-resolve — but NOT what the clients resolved themselves:
+# hosts under a wildcard rule (rr3---sn-….googlevideo.com, *.fna.fbcdn.net, CDN nodes inside
+# the ISP's network) whose addresses lie outside every static range. Those clients keep the
+# answers in their own DNS caches and do not ask again for minutes (the record's TTL), and
+# until they do, their traffic to these addresses misses the set and leaves through the WAN:
+# "YouTube stops working after every restart" — and with exclusions the reverse leak, an
+# excluded host riding the tunnel. Field case 2026-11 (RT-AC86U @1.5.29): five restarts in
+# twenty minutes, the sets never got warm. The hot Apply has kept these entries since 1.4.5
+# (ipset_replay_dynamic); a stop did not.
+# So destroy_owned_sets parks the dynamic (timeout > 0) entries with their remaining timeouts,
+# and the next FIRST build of a set of the same name takes them back, minus the time they
+# spent parked. Statics load after the replay and re-promote overlaps to permanent, exactly
+# as in the hot Apply. tmpfs: a reboot starts clean, like the sets themselves.
+# A stop that finds no dynamic entries leaves an earlier stash alone (restart loops: the sets
+# of a run that lasted a minute hold less than the stash it was started from).
+geodyn_stash_save(){
+    local _s _t="${GEODYN_STASH}.$$"
+    [ -s "$OWNED_SETS" ] || return 0
+    while read -r _s; do
+        case "$_s" in ''|*_t) continue ;; esac     # staging leftovers hold nothing live
+        ipset save "$_s" 2>/dev/null | awk -v o="$_s" '
+            $1 == "add" && $2 == o && $3 ~ "^[0-9./]+$" {
+                for (i = 4; i < NF; i++) if ($i == "timeout") {
+                    if ($(i + 1) ~ "^[0-9]+$" && $(i + 1) + 0 > 0) print "add", o, $3, "timeout", $(i + 1)
+                    break
+                }
+            }'
+    done < "$OWNED_SETS" 2>/dev/null | head -n "$GEODYN_STASH_MAX" > "$_t" 2>/dev/null
+    if [ -s "$_t" ]; then
+        mv -f "$_t" "$GEODYN_STASH" 2>/dev/null || rm -f "$_t"
+    else
+        rm -f "$_t"
+    fi
+    return 0
+}
+
+# Load the parked entries of set $1 (its final name, as parked) into set $2. Only lines of
+# the exact shape geodyn_stash_save writes reach `ipset restore` (it aborts at the first
+# line it cannot parse); entries with under a minute left are not worth carrying.
+geodyn_stash_replay(){
+    local _age
+    [ -s "$GEODYN_STASH" ] || return 0
+    _age=$(file_age_s "$GEODYN_STASH") || return 0
+    case "$_age" in ''|*[!0-9]*) return 0 ;; esac    # dated in the future (clock stepped) -> skip
+    [ "$_age" -le "$GEODYN_STASH_TTL" ] || return 0
+    awk -v o="$1" -v n="$2" -v age="$_age" '
+        NF == 5 && $1 == "add" && $2 == o && $4 == "timeout" && $3 ~ "^[0-9./]+$" && $5 ~ "^[0-9]+$" {
+            left = $5 - age
+            if (left >= 60) print "add", n, $3, "timeout", left
+        }' "$GEODYN_STASH" 2>/dev/null | ipset restore -! 2>/dev/null
+    return 0
+}
+
 # Atomically put staging set $2 into service under final name $1. Existing final (ours) ->
 # `ipset swap` (the kernel exchanges the two sets' index slots, so rules bound to the final
 # set's index see the new content the same instant) and the old content is destroyed under the
@@ -4360,7 +4549,13 @@ setup_firewall(){
             register_owned_set "$tset"
             # Warm state first (empty set -> no -exist conflicts), statics after: their
             # `timeout 0` restore -! lines upgrade any replayed duplicate back to permanent.
-            ipset_replay_dynamic "$gset" "$tset"
+            # A live set carries it over itself; on a FIRST build (after a stop destroyed
+            # the sets) it comes from what that stop parked — see geodyn_stash_save.
+            if ipset list "$gset" -t >/dev/null 2>&1; then
+                ipset_replay_dynamic "$gset" "$tset"
+            else
+                geodyn_stash_replay "$gset" "$tset"
+            fi
             _ldt="$tset"
         fi
 
@@ -4421,7 +4616,11 @@ setup_firewall(){
                 ipset destroy "$_etmp" 2>/dev/null
                 if ipset create "$_etmp" hash:net family inet hashsize 1024 maxelem 8192 timeout 86400 2>/dev/null; then
                     register_owned_set "$_etmp"
-                    ipset_replay_dynamic "$_exset" "$_etmp"
+                    if ipset list "$_exset" -t >/dev/null 2>&1; then
+                        ipset_replay_dynamic "$_exset" "$_etmp"
+                    else
+                        geodyn_stash_replay "$_exset" "$_etmp"
+                    fi
                     _exldt="$_etmp"
                 fi
             fi
@@ -5624,9 +5823,405 @@ tail_clip(){
     fi
 }
 
+# ============================================================================================
+# Diag: "connected, but nothing opens" (1.5.30). Until now the dump described the SETUP —
+# rules, sets, routes, handshake — and never tried the data plane, so the field case that
+# prompted this (RT-AC86U @1.5.29: fresh handshake, megabytes of RX, every rule in place, and
+# a user for whom "nothing works") could not be told apart from a healthy tunnel, a provider
+# that filters ping, a server that forwards nothing, or an MTU that does not fit. Three
+# additions, all on demand only (never from cron or the watchdog):
+#   diag_marks         the whole AWG chain with per-rule packet counters — the old `head -60`
+#                      cut a 30-device chain exactly at the end, default-policy rule included;
+#   diag_net_path      MTU budget against the WAN link, the MSS rules as installed, rp_filter,
+#                      IPv6 state, the kernel's forwarding/fragmentation counters;
+#   diag_tunnel_probes live tests THROUGH the tunnel from the router: ICMP (also at full
+#                      tunnel MTU), HTTPS connects, a bulk download and upload, and whether a
+#                      resolved geo domain actually lands in its set.
+# ============================================================================================
+
+# Run "$@" in the background for diag_tunnel_probes: output -> $_pd/<name>.out, exit status
+# -> $_pd/<name>.rc (its appearance marks the job finished), pid -> $_pd/<name>.pid.
+_probe_job(){
+    local _n="$1"; shift
+    ( "$@" > "$_pd/$_n.out" 2>&1; echo $? > "$_pd/$_n.rc" ) &
+    echo $! > "$_pd/$_n.pid"
+    _pjobs=$((_pjobs + 1))
+}
+
+# Wait until every job started since the last call has written its .rc, at most $1 seconds
+# (there is no `timeout` applet on Merlin: each tool carries its own time limit, this is the
+# backstop for one that ignores it — a hostname probe stuck in the resolver). Stragglers'
+# wrappers are killed; whatever they left in .out is still reported, with rc "?".
+# SIGKILL, not TERM: a wrapper has nothing to clean up, and a TERM can stay pending forever —
+# dash forks a background subshell with signals still blocked when a sibling job has already
+# exited (caught by the test suite: the wrapper survived and `wait` sat out the whole hang).
+# The tool it was waiting on is orphaned and ends by its own limit; it writes into the scratch
+# directory, which is removed, and holds nothing of ours.
+_probe_wait(){
+    local _t=0 _f _p
+    while [ $_t -lt "$1" ]; do
+        set -- "$1" "$_pd"/*.rc
+        [ -e "$2" ] && [ $(($# - 1)) -ge "$_pjobs" ] && break
+        sleep 1; _t=$((_t + 1))
+    done
+    for _f in "$_pd"/*.pid; do
+        [ -e "$_f" ] || continue
+        [ -e "${_f%.pid}.rc" ] && continue
+        _p=""; { read -r _p < "$_f"; } 2>/dev/null
+        case "$_p" in ''|*[!0-9]*) ;; *) kill -9 "$_p" 2>/dev/null ;; esac
+    done
+    wait 2>/dev/null
+    return 0
+}
+
+# What curl's exit status means, for the handful that matter on a tunnel.
+_curl_rc(){
+    case "$1" in
+        0) echo "ok" ;;
+        6) echo "FAILED: could not resolve the host (curl 6)" ;;
+        7) echo "FAILED: could not connect (curl 7)" ;;
+        28) echo "FAILED: timed out (curl 28)" ;;
+        35) echo "FAILED: TLS handshake error (curl 35)" ;;
+        52|56) echo "FAILED: connection dropped mid-transfer (curl $1)" ;;
+        '?'|'') echo "FAILED: did not finish in time (killed)" ;;
+        *) echo "FAILED: curl exit $1" ;;
+    esac
+}
+
+# One ICMP result line from a finished ping job: "<replies>/<sent> <avg ms>" parsed from
+# both ping flavors (busybox "2 packets received", iputils "2 received"; the average is the
+# second field of "min/avg/max").
+_probe_ping_line(){   # $1 = job name, $2 = label
+    local _rx="" _tx="" _avg="" _first
+    if [ -s "$_pd/$1.out" ]; then
+        _tx=$(awk '/packets transmitted/ { print $1; exit }' "$_pd/$1.out" 2>/dev/null)
+        _rx=$(awk '/packets transmitted/ { print $4; exit }' "$_pd/$1.out" 2>/dev/null)
+        _avg=$(awk -F'= ' '/min\/avg\/max/ { split($2, a, "/"); print a[2]; exit }' "$_pd/$1.out" 2>/dev/null)
+    fi
+    case "$_rx" in
+        ''|*[!0-9]*)
+            _first=$(head -n 1 "$_pd/$1.out" 2>/dev/null | cut -c1-90)
+            echo "  $2 : no result (${_first:-no output}$([ -e "$_pd/$1.rc" ] || echo '; did not finish in time'))" ;;
+        0)  echo "  $2 : NO REPLY (0/${_tx:-?})"; _p_icmp_fail=$((_p_icmp_fail + 1)) ;;
+        *)  echo "  $2 : $_rx/${_tx:-?} replies${_avg:+, avg $_avg ms}"; _p_icmp_ok=$((_p_icmp_ok + 1)) ;;
+    esac
+}
+
+# One HTTPS/transfer result line from a finished curl job. The job's -w output is
+# "<http> <connect s> <tls s> <total s> <bytes down> <bytes up>".
+_probe_curl_line(){   # $1 = job name, $2 = label, $3 = kind (web|base|down|up), $4 = expected bytes (down/up)
+    local _rc="?" _h="" _tc="" _ta="" _tt="" _bd="" _bu="" _v _b _conn _tls
+    { read -r _rc < "$_pd/$1.rc"; } 2>/dev/null
+    { read -r _h _tc _ta _tt _bd _bu < "$_pd/$1.out"; } 2>/dev/null
+    _v=$(_curl_rc "$_rc")
+    case "$3" in
+        down|up)
+            if [ "$3" = down ]; then _b=${_bd%%.*}; else _b=${_bu%%.*}; fi
+            case "$_b" in ''|*[!0-9]*) _b=0 ;; esac
+            if [ "$_rc" = 0 ] && [ "$_b" -ge "$4" ]; then
+                echo "  $2 : ok, $_b B in ${_tt:-?} s (http ${_h:-?})"
+                _p_bulk_ok=$((_p_bulk_ok + 1))
+            elif [ "$_rc" = 0 ]; then
+                echo "  $2 : inconclusive — the test server answered http ${_h:-?} with $_b of $4 B (the exchange itself worked)"
+            else
+                echo "  $2 : $_v after $_b of $4 B (connect ${_tc:-?} s, tls ${_ta:-?} s)"
+                _p_bulk_fail=$((_p_bulk_fail + 1))
+            fi ;;
+        *)
+            # A phase's time prints as 0.000000 until that phase completes, so any non-zero
+            # digit means it did: connect done + TLS not = TCP got through and the TLS
+            # exchange stalled, the signature of full-size packets dying on the path.
+            _conn=0; case "$_tc" in *[1-9]*) _conn=1 ;; esac
+            _tls=0;  case "$_ta" in *[1-9]*) _tls=1 ;; esac
+            if [ "$_rc" = 0 ]; then
+                echo "  $2 : ok, http ${_h:-?} (connect ${_tc:-?} s, tls ${_ta:-?} s, total ${_tt:-?} s)"
+                if [ "$3" = web ]; then _p_tcp_ok=$((_p_tcp_ok + 1)); _p_tcp_conn=$((_p_tcp_conn + 1)); fi
+                if [ "$3" = base ]; then _p_wan_ok=1; fi
+            else
+                if [ "$_conn" = 1 ] && [ "$_tls" = 0 ]; then
+                    echo "  $2 : $_v — TCP connected in ${_tc} s, the TLS exchange never completed"
+                else
+                    echo "  $2 : $_v (connect ${_tc:-?} s, tls ${_ta:-?} s)"
+                fi
+                if [ "$3" = web ]; then
+                    _p_tcp_fail=$((_p_tcp_fail + 1))
+                    if [ "$_conn" = 1 ]; then _p_tcp_conn=$((_p_tcp_conn + 1)); fi
+                    if [ "$_conn" = 1 ] && [ "$_tls" = 0 ]; then _p_tls_stall=$((_p_tls_stall + 1)); fi
+                fi
+            fi ;;
+    esac
+}
+
+# The AWG chain in full, with packet counters. `-S` prints the exact rule text (what a
+# setup bug shows up in) but no counters; `-L -v -x` has the counters. Both are capped (240
+# rule lines, 60 rules with hits) WITH a note — a diag must never cut silently again.
+# Firmware binary first, like mangle_dump (Entware iptables cannot list a table holding
+# firmware-proprietary targets).
+diag_marks(){
+    local _b _dump _n _cnt=""
+    _dump=$(mangle_dump | grep -iE 'awg|0x100|MARK')
+    _n=$(printf '%s\n' "$_dump" | grep -c .)
+    echo "mangle marks ($_n rule line(s)):"
+    if [ -n "$_dump" ]; then printf '%s\n' "$_dump" | head -n 240 | sed 's/^/  /'; fi
+    if [ "$_n" -gt 240 ]; then echo "  ... ($((_n - 240)) more line(s) not shown)"; fi
+    for _b in /usr/sbin/iptables /sbin/iptables iptables; do
+        case "$_b" in /*) [ -x "$_b" ] || continue ;; esac
+        _cnt=$("$_b" -t mangle -L "$AWG_CHAIN" -v -n -x 2>/dev/null) && [ -n "$_cnt" ] && break
+        _cnt=""
+    done
+    if [ -z "$_cnt" ]; then
+        echo "marked packets       : (chain $AWG_CHAIN not listable — tunnel stopped?)"
+        return 0
+    fi
+    # Counters restart whenever the chain is rebuilt (a policy change), so read them as
+    # "since the last Apply/start". Rules that never matched are not listed. Counters print
+    # as text (%s) and totals as %.0f: an old busybox awk formats %d through a 32-bit int.
+    echo "marked packets since the chain was built (MARK rules with hits only):"
+    printf '%s\n' "$_cnt" | awk '
+        $3 == "MARK" && $1 + 0 > 0 {
+            tail = ""; for (i = 10; i <= NF; i++) tail = tail " " $i
+            src = ($8 == "0.0.0.0/0") ? "(any source)" : $8      # a MAC-keyed device or the default policy
+            n++; line[n] = sprintf("  %-18s %10s pkts %12s B %s", src, $1, $2, tail)
+            tp += $1; tb += $2
+        }
+        END {
+            if (!n) { print "  NONE — no packet has matched a tunnel rule yet (devices idle, nothing resolved into the geo sets, or the traffic does not cross this chain: IPv6, another gateway)"; exit }
+            printf "  total: %.0f packet(s), %.0f B marked for the tunnel by %d rule(s)\n", tp, tb, n
+            for (i = 1; i <= n && i <= 60; i++) print line[i]
+            if (n > 60) printf "  ... (%d more rule(s) with hits not shown)\n", n - 60
+        }'
+}
+
+# Read-only facts about the path full-size packets take.
+diag_net_path(){
+    local _b _m _o _dev _wm _v _f
+    echo "--- tunnel path: MTU / MSS / forwarding counters ---"
+    if ! is_running; then
+        echo "  (tunnel not running)"
+        return 0
+    fi
+    _m=$(tun_link_mtu) || _m=""
+    _o=$(tun_overhead)
+    if _b=$(mtu_budget); then
+        read -r _m _o _dev _wm _v <<EOF
+$_b
+EOF
+        case "$_v" in
+            fits) echo "MTU budget           : tunnel $_m + $_o overhead = $((_m + _o)) B on the wire; WAN link $_dev carries $_wm -> fits" ;;
+            *)    echo "MTU budget           : tunnel $_m + $_o overhead = $((_m + _o)) B on the wire; WAN link $_dev carries $_wm -> EXCEEDS by ${_v#over:} B — full-size tunnel packets leave IP-fragmented (often dropped: pages hang, small requests work). Set the profile MTU to $((_wm - _o)) or lower" ;;
+        esac
+    else
+        echo "MTU budget           : tunnel ${_m:-?} + $_o overhead; WAN link MTU unknown (no single default route)"
+    fi
+    echo "                       (overhead = IP + UDP 8 + AmneziaWG 32 + S4. LOCAL link only: a smaller MTU further along the path shows in the full-size and bulk probes below)"
+    echo "TCP MSS rules        : expected '-o $IFACE … --clamp-mss-to-pmtu' and '-i $IFACE … --set-mss $(( ${_m:-40} - 40 ))' (tunnel MTU - 40)"
+    _f=$(mangle_dump | grep '^-A FORWARD' | grep TCPMSS | grep -- " $IFACE ")
+    if [ -n "$_f" ]; then printf '%s\n' "$_f" | sed 's/^/  /'; else echo "  (none installed)"; fi
+    echo "rp_filter all/$IFACE/br0: $(cat /proc/sys/net/ipv4/conf/all/rp_filter 2>/dev/null)/$(cat "/proc/sys/net/ipv4/conf/$IFACE/rp_filter" 2>/dev/null)/$(cat /proc/sys/net/ipv4/conf/br0/rp_filter 2>/dev/null) (2 = loose, what policy routing needs; 1 on $IFACE would drop the replies)"
+    # -C, not a listing: a filter table holding firmware-proprietary targets cuts a listing
+    # short on Entware iptables and would read as "0 rules".
+    echo "filter accepts ($IFACE): FORWARD in $(_diag_rule_state FORWARD -i "$IFACE" -j ACCEPT), FORWARD out $(_diag_rule_state FORWARD -o "$IFACE" -j ACCEPT), INPUT $(_diag_rule_state INPUT -i "$IFACE" -j ACCEPT)"
+    echo "IPv6                 : ipv6_service=$(nvram get ipv6_service 2>/dev/null); AAAA filtered by the router DNS: $(grep -q '^filter-AAAA' "$DNSMASQ_AWG_CONF" 2>/dev/null && echo yes || echo NO) (the tunnel routes IPv4 only — with IPv6 on, a client that gets AAAA answers from its own DoH/DoT reaches such sites directly, past the tunnel)"
+    # Forwarded packets that were too big for the egress link with DF set are counted as
+    # FragFails (ip_forward): each one cost its sender a PMTUD round trip — or the whole
+    # connection, if the ICMP never arrived. Before 1.5.30 every large upload into the
+    # tunnel added to it; a number still climbing means something else sends oversized.
+    echo "kernel IP counters (since boot):"
+    awk '
+        $1 == "Ip:" {
+            if (!ih) { for (i = 2; i <= NF; i++) iname[i] = $i; ih = 1; next }
+            for (i = 2; i <= NF; i++) iv[iname[i]] = $i
+            printf "  Ip  : ForwDatagrams=%s FragFails=%s (forwarded packets too big for the next link with DF set) FragCreates=%s OutNoRoutes=%s InAddrErrors=%s\n", iv["ForwDatagrams"], iv["FragFails"], iv["FragCreates"], iv["OutNoRoutes"], iv["InAddrErrors"]
+        }
+        $1 == "Icmp:" {
+            if (!ch) { for (i = 2; i <= NF; i++) cname[i] = $i; ch = 1; next }
+            for (i = 2; i <= NF; i++) cv[cname[i]] = $i
+            printf "  Icmp: OutDestUnreachs=%s (includes every fragmentation-needed sent to a LAN client) InDestUnreachs=%s InCsumErrors=%s\n", cv["OutDestUnreachs"], cv["InDestUnreachs"], cv["InCsumErrors"]
+        }' /proc/net/snmp 2>/dev/null
+    echo "$IFACE link counters:"; ip -s link show "$IFACE" 2>/dev/null | awk 'NR > 2' | sed 's/^/  /'
+    _f=$(which fc 2>/dev/null)
+    case "$_f" in
+        /*) echo "Broadcom flow cache  : $("$_f" status 2>/dev/null | grep -iE 'flow learning|acceleration' | head -n 2 | tr -s ' \t' ' ' | tr '\n' ';')" ;;
+    esac
+}
+
+# present / ABSENT / ? for one filter-table rule (the 3-way iptables -C reading: rc 1 is the
+# only trustworthy "absent"; rc >= 2 is a lock blip or a sick binary).
+_diag_rule_state(){
+    iptables -C "$@" 2>/dev/null
+    case $? in 0) echo present ;; 1) echo ABSENT ;; *) echo '? (probe failed)' ;; esac
+}
+
+# Live tests through the tunnel, router-originated and bound to the tunnel address (the
+# prio-100 "from <tunnel ip>" rule routes them, exactly like the update/geo downloads and
+# the health check's HTTPS probe). Run in waves: at most four curl at once (RAM on 256 MB
+# boxes), every tool under its own time limit plus _probe_wait's backstop, and the bulk wave
+# only when something got through before it — a dead tunnel with a dead resolver costs about
+# a quarter of a minute, a healthy one a few seconds. The report must stay inside the page's
+# wait (70 s; a tab opened before 1.5.30 still waits 45), and the whole diag runs inside a
+# service event (rc is busy meanwhile) — keep every limit here tight.
+diag_tunnel_probes(){
+    local _addr _hosts _h _n _k _mtu _big _pd _pjobs _cw _curl=0 _dom _q _ln _sets _s _ip
+    local _p_icmp_ok=0 _p_icmp_fail=0 _p_tcp_ok=0 _p_tcp_fail=0 _p_tcp_conn=0 _p_tls_stall=0 _p_big_fail=0 _p_bulk_ok=0 _p_bulk_fail=0 _p_wan_ok=0
+    echo "--- live probes THROUGH the tunnel (from the router; every line is one real test) ---"
+    if ! is_running; then
+        echo "  (tunnel not running — nothing to probe)"
+        return 0
+    fi
+    _addr=$(ip -4 addr show "$IFACE" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')
+    if [ -z "$_addr" ]; then
+        echo "  (no IPv4 address on $IFACE — NAT and policy routing need one; nothing can pass)"
+        return 0
+    fi
+    if ! ip rule show 2>/dev/null | grep -qF "from $_addr lookup $RT_TABLE"; then
+        echo "  (the 'from $_addr lookup $RT_TABLE' rule is missing — router-originated probes cannot be steered into the tunnel; see the routing section)"
+        return 0
+    fi
+    _pd="/tmp/.awg_diagprobe.$$"
+    rm -rf "$_pd" 2>/dev/null
+    mkdir "$_pd" 2>/dev/null || { echo "  (cannot create $_pd)"; return 0; }
+    which curl >/dev/null 2>&1 && _curl=1
+    _hosts=$(watchdog_hosts)
+    _mtu=$(tun_link_mtu) || _mtu=1280
+    _big=$((_mtu - 28))
+    _cw='%{http_code} %{time_connect} %{time_appconnect} %{time_total} %{size_download} %{size_upload}'
+
+    # Wave 1: ICMP to every probe host (plus one packet of exactly the tunnel MTU) and an
+    # HTTPS connect to the first two — the hosts the health check and the watchdog judge by.
+    _pjobs=0; _n=0
+    for _h in $_hosts; do
+        _n=$((_n + 1))
+        _probe_job "icmp$_n" ping -c 2 -W 2 -I "$IFACE" "$_h"
+        if [ "$_n" = 1 ]; then _probe_job icmpbig ping -c 2 -W 2 -s "$_big" -I "$IFACE" "$_h"; fi
+        if [ "$_n" -le 2 ] && [ "$_curl" = 1 ]; then
+            _probe_job "tcp$_n" curl -k -s -o /dev/null -w "$_cw" --interface "$_addr" --connect-timeout 3 --max-time 5 "https://$_h"
+        fi
+    done
+    _probe_wait 7
+    _n=0
+    for _h in $_hosts; do
+        _n=$((_n + 1))
+        _probe_ping_line "icmp$_n" "ICMP  $_h"
+        if [ "$_n" = 1 ]; then
+            # The MTU-sized ping only means something next to a small one that was answered:
+            # small yes, full-size no = the signature of a path that drops full-size packets.
+            _k=$_p_icmp_ok
+            _probe_ping_line icmpbig "ICMP  $_h, one packet of the tunnel MTU ($_mtu B)"
+            if [ "$_k" -gt 0 ] && [ "$_p_icmp_ok" = "$_k" ]; then _p_big_fail=1; fi
+            _p_icmp_ok=$_k
+        fi
+    done
+    if [ "$_curl" = 1 ]; then
+        _n=0
+        for _h in $_hosts; do
+            _n=$((_n + 1)); [ "$_n" -le 2 ] || break
+            _probe_curl_line "tcp$_n" "HTTPS $_h" web
+        done
+
+        # Wave 2: two well-known names (router DNS + TLS + a real HTTP answer) through the
+        # tunnel, and one straight out of the WAN as the "is the internet there at all" baseline.
+        rm -f "$_pd"/*.rc "$_pd"/*.pid 2>/dev/null; _pjobs=0
+        _probe_job web1 curl -s -o /dev/null -w "$_cw" --interface "$_addr" --connect-timeout 3 --max-time 5 https://www.gstatic.com/generate_204
+        _probe_job web2 curl -s -o /dev/null -w "$_cw" --interface "$_addr" --connect-timeout 3 --max-time 5 https://www.cloudflare.com/cdn-cgi/trace
+        _probe_job wan1 curl -s -o /dev/null -w "$_cw" --connect-timeout 3 --max-time 5 https://www.gstatic.com/generate_204
+        _probe_wait 6
+        _probe_curl_line web1 "HTTPS www.gstatic.com (tunnel)" web
+        _probe_curl_line web2 "HTTPS www.cloudflare.com (tunnel)" web
+        _probe_curl_line wan1 "HTTPS www.gstatic.com (direct WAN, no tunnel — the baseline)" base
+
+        # Wave 3: sustained full-size packets in each direction — what a handshake, a ping
+        # and a 204 never exercise. Only when something got through above.
+        if [ "$_p_tcp_ok" -gt 0 ]; then
+            rm -f "$_pd"/*.rc "$_pd"/*.pid 2>/dev/null; _pjobs=0
+            dd if=/dev/zero of="$_pd/up.bin" bs=1024 count=256 2>/dev/null
+            _probe_job down curl -s -o /dev/null -w "$_cw" --interface "$_addr" --connect-timeout 3 --max-time 7 'https://speed.cloudflare.com/__down?bytes=1048576'
+            if [ -s "$_pd/up.bin" ]; then
+                _probe_job up curl -s -o /dev/null -w "$_cw" --interface "$_addr" --connect-timeout 3 --max-time 7 -H 'Expect:' -H 'Content-Type: application/octet-stream' --data-binary "@$_pd/up.bin" https://speed.cloudflare.com/__up
+            fi
+            _probe_wait 9
+            _probe_curl_line down "bulk download, 1 MiB (full-size packets towards the router)" down 1048576
+            if [ -e "$_pd/up.pid" ]; then _probe_curl_line up "bulk upload, 256 KiB (full-size packets from the router)" up 262144; fi
+        else
+            echo "  bulk download/upload : skipped (no HTTPS probe got through)"
+        fi
+    else
+        echo "  (curl not found — the HTTPS and bulk probes are skipped)"
+    fi
+
+    # The domain half of geo routing, end to end on the router: resolve a name the rules
+    # cover through the router's own DNS and look its address up in the rule's set(s).
+    # dnsmasq feeds a set only from UPSTREAM answers, so a miss on a name it had cached can
+    # be a false alarm — a miss on all of them is not. Lookups run as jobs: a dead resolver
+    # must not hold the report for a timeout per name.
+    if [ -f "$DNSMASQ_AWG_CONF" ] && grep -q '^ipset=' "$DNSMASQ_AWG_CONF" 2>/dev/null; then
+        echo "  geo domain -> ipset (the router's own DNS answer, looked up in the rule's set):"
+        rm -f "$_pd"/*.rc "$_pd"/*.pid 2>/dev/null; _pjobs=0; _n=0
+        for _dom in youtube.com:www.youtube.com googlevideo.com:redirector.googlevideo.com instagram.com:www.instagram.com whatsapp.net:g.whatsapp.net whatsapp.com:www.whatsapp.com discord.com:discord.com netflix.com:www.netflix.com facebook.com:www.facebook.com x.com:x.com telegram.org:web.telegram.org rutracker.org:rutracker.org linkedin.com:www.linkedin.com spotify.com:open.spotify.com chatgpt.com:chatgpt.com; do
+            _q=${_dom#*:}; _dom=${_dom%%:*}
+            _ln=$(grep -m 1 -F "/$_dom/" "$DNSMASQ_AWG_CONF" 2>/dev/null) || continue
+            _n=$((_n + 1))
+            printf '%s\n%s\n%s\n' "$_q" "$_dom" "${_ln##*/}" > "$_pd/dns$_n.q"
+            _probe_job "dns$_n" resolve_domain_v4 "$_q"
+            [ "$_n" -ge 3 ] && break
+        done
+        if [ "$_n" = 0 ]; then
+            echo "    (none of the well-known names is among the loaded domain rules — not checked)"
+        else
+            _probe_wait 5
+            _k=1
+            while [ "$_k" -le "$_n" ]; do
+                _q=""; _dom=""; _sets=""
+                { read -r _q; read -r _dom; read -r _sets; } < "$_pd/dns$_k.q" 2>/dev/null
+                _ip=$(head -n 1 "$_pd/dns$_k.out" 2>/dev/null)
+                case "$_ip" in
+                    ''|*[!0-9.]*)
+                        echo "    $_q : no IPv4 answer from the router DNS$([ -e "$_pd/dns$_k.rc" ] || echo ' (the lookup did not finish in 5 s)')" ;;
+                    *)  for _s in $(printf '%s' "$_sets" | tr ',' ' '); do
+                            case "$_s" in ''|*[!A-Za-z0-9_.:-]*) continue ;; esac
+                            if ipset test "$_s" "$_ip" >/dev/null 2>&1; then
+                                echo "    $_q -> $_ip : in $_s"
+                            else
+                                echo "    $_q -> $_ip : NOT in $_s (rule /$_dom/ — the address did not reach the set)"
+                            fi
+                        done ;;
+                esac
+                _k=$((_k + 1))
+            done
+        fi
+    fi
+    rm -rf "$_pd" 2>/dev/null
+
+    # One line a human can act on. Conservative: it names what the probes above showed and
+    # nothing they did not.
+    if [ "$_curl" != 1 ]; then
+        if [ "$_p_icmp_ok" -gt 0 ]; then
+            echo "  VERDICT: ICMP passes through the tunnel (TCP not tested — no curl on this router)."
+        else
+            echo "  VERDICT: no ICMP reply through the tunnel (TCP not tested — no curl on this router). A provider may simply filter ping; if sites do not open through the VPN either, the tunnel carries no traffic."
+        fi
+    elif [ "$_p_tcp_ok" -eq 0 ] && [ "$_p_tcp_conn" -gt 0 ]; then
+        echo "  VERDICT: TCP connects through the tunnel but no TLS/HTTP exchange completes — the small packets pass, the full-size ones do not (path MTU), or the server side filters TLS. Lower the profile MTU (try 1280), restart the tunnel and run this again."
+    elif [ "$_p_tcp_ok" -eq 0 ] && [ "$_p_icmp_ok" -eq 0 ] && [ "$_p_wan_ok" != 1 ]; then
+        # The baseline died too: with no working WAN/DNS on the router nothing here says
+        # anything about the tunnel — do not blame the server for it.
+        echo "  VERDICT: nothing came back through the tunnel — and the direct WAN probe failed as well: the router itself has no working internet or DNS right now. Fix that first; the tunnel cannot be judged from these probes."
+    elif [ "$_p_tcp_ok" -eq 0 ] && [ "$_p_icmp_ok" -eq 0 ]; then
+        echo "  VERDICT: NOTHING came back through the tunnel (the handshake aside) while the direct WAN works — a client routed into the tunnel gets no internet. This is not a routing/ipset problem on this router: the probes leave through the tunnel and no reply returns. Look at the server side — forwarding/NAT, a provider that only serves selected destinations, a config meant for split tunnelling — and check the same config in the provider's own client."
+    elif [ "$_p_tcp_ok" -eq 0 ]; then
+        echo "  VERDICT: ICMP passes but TCP does not even connect through the tunnel — TCP is filtered on the server side or on the path."
+    elif [ "$_p_bulk_fail" -gt 0 ] || [ "$_p_big_fail" -gt 0 ]; then
+        echo "  VERDICT: small exchanges pass, full-size packets do NOT (see the bulk / tunnel-MTU lines above) — a path-MTU problem. Lower the profile MTU (try 1280), restart the tunnel and run this again."
+    elif [ "$_p_icmp_ok" -eq 0 ]; then
+        echo "  VERDICT: the tunnel passes TCP and bulk traffic from the router; ping is not answered through it (the provider filters ICMP — harmless). If a LAN device still fails, look on its side of the router: its policy, its DNS (DoH/DoT past the router), IPv6, a DPI-bypass tool or a firewall on the device — and its row in the marked-packets list."
+    else
+        echo "  VERDICT: the tunnel passes ICMP, HTTPS and bulk traffic from the router. If a LAN device still fails, look on its side of the router: its policy, its DNS (DoH/DoT past the router), IPv6, a DPI-bypass tool or a firewall on the device — and its row in the marked-packets list."
+    fi
+}
+
 # One-shot debug dump: platform, CPU, installed package, binary architectures, live SIGILL
 # probes, plus full system state (config/settings redacted, routing, dnsmasq, syslog, dmesg).
-# Read-only — safe to run anytime. Usage: amneziawg.sh diag
+# Read-only except for the live tunnel probes (a few small requests through the tunnel) —
+# safe to run anytime. Usage: amneziawg.sh diag
 do_diag(){
     echo "================= AmneziaWG diag ================="
     echo "addon version    : $AWG_VERSION"
@@ -5930,7 +6525,7 @@ do_diag(){
     echo "--- routing (rule / table $RT_TABLE / fwmark marks) ---"
     echo "ip rule:"; ip rule show 2>/dev/null | sed 's/^/  /'
     echo "ip route table $RT_TABLE:"; ip route show table "$RT_TABLE" 2>/dev/null | sed 's/^/  /'
-    echo "mangle marks:"; mangle_dump | grep -iE 'awg|0x100|MARK' | head -60 | sed 's/^/  /'
+    diag_marks
     # Copy counters scoped to OUR rules. The old bare `grep -c TCPMSS` also counted FOREIGN
     # clamps (field RT-BE92U: xrayui_custom's PPTP MSS rule kept the counter at 1 with both
     # tunnels down), and the server role's rules matched the client substrings — its
@@ -5958,6 +6553,12 @@ do_diag(){
         _di=$(ipset list "$_ds" -t 2>/dev/null | grep -E 'Number of entries|Size in memory' | tr '\n' ';' | tr -s ' ')
         echo "  policy $_dgid ($_ds): ${_di:-(missing)}"
     done
+    # DNS-learned entries parked by the last stop for the next start (geodyn_stash_save).
+    if [ -s "$GEODYN_STASH" ]; then
+        echo "  parked DNS-learned entries: $(wc -l < "$GEODYN_STASH" 2>/dev/null | tr -d ' ') (age $(file_age_s "$GEODYN_STASH" 2>/dev/null || echo '?') s; taken back by a start within ${GEODYN_STASH_TTL} s)"
+    fi
+    diag_net_path
+    diag_tunnel_probes
     echo "--- dnsmasq ---"
     echo "args   : $(tr '\0' ' ' < /proc/$(pidof dnsmasq 2>/dev/null | awk '{print $1}')/cmdline 2>/dev/null)"
     echo "conf.add (our block):"
@@ -6372,7 +6973,10 @@ go_tune_desc(){
     else
         _gtd=$(compute_go_memlimit)
         _gtp=$(compute_pool_cap "$_gtd")
-        printf 'GOMEMLIMIT=%s GOGC=%s + buffer pool capped at %s (constrained box: MemTotal < %sMiB or strict vm.overcommit — OOM protection under load)' "${_gtd:-unset}" "$AWG_GOGC" "${_gtp:-1024}" "$AWG_GOTUNE_BELOW_MIB"
+        # Worded as a SETTING, not a symptom: the old "constrained box … OOM protection" read
+        # to a user as "the router is out of memory, so the routes did not load" (field
+        # 2026-11). It is neither: the lists live in kernel ipsets, not in the daemon heap.
+        printf 'GOMEMLIMIT=%s GOGC=%s + buffer pool capped at %s (the low-RAM GC profile of the daemon: MemTotal < %sMiB or strict vm.overcommit — a normal setting, not a memory shortage; it only keeps the daemon from an OOM under heavy load and does not affect loading the geo lists)' "${_gtd:-unset}" "$AWG_GOGC" "${_gtp:-1024}" "$AWG_GOTUNE_BELOW_MIB"
     fi
 }
 
@@ -7029,6 +7633,8 @@ do_start(){
     { [ -n "$mtu" ] && validate_uint "$mtu" && [ "$mtu" -ge 576 ] && [ "$mtu" -le 1500 ]; } || mtu=1280
     ip link set "$IFACE" mtu "$mtu"
     ip link set "$IFACE" up
+    # A tunnel MTU that does not fit the WAN link is the classic "handshake fine, pages hang".
+    mtu_budget_warn
 
     # Routing table
     local lan_net gw endpoint
@@ -7055,10 +7661,12 @@ do_start(){
     iptables -C FORWARD -i "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD -i "$IFACE" -j ACCEPT
     iptables -C FORWARD -o "$IFACE" -j ACCEPT 2>/dev/null || iptables -I FORWARD -o "$IFACE" -j ACCEPT
     setup_ipv6_block
+    # MSS: the SYN towards the tunnel clamps to its path MTU (the forward route IS awg0);
+    # the SYN-ACK coming back needs the explicit value — see tcpmss_in_assert for why the
+    # pmtu form never clamped that direction under policy routing.
     iptables -t mangle -C FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
         || iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
-        || iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    tcpmss_in_assert
     # MASQUERADE everything leaving the tunnel, NOT just the LAN subnet. The provider's
     # server accepts only our tunnel address (AllowedIPs / cryptokey routing), so ANY source
     # egressing awg0 unNATed is silently dropped on the far end — and the default
@@ -7108,24 +7716,15 @@ do_start(){
         hc_ok=false
         hc_try=0
         hc_dns_fails=0
+        HC_TCP=""
         hc_reason="not passing traffic (probed: $(watchdog_hosts))"
         while [ $hc_try -lt 30 ]; do
             gen_current_is "$hc_gen" || exit 0
-            # Reachability, cheapest first: ICMP every round; a TCP/HTTPS connect through the
-            # tunnel at ~10s and ~30s in (endpoints that pass TCP but DROP ICMP — Cloudflare
-            # WARP); and from ~6s in, a FRESH HANDSHAKE counts as proof of life — the pings we
-            # just sent force a re-key, so a live endpoint refreshes it even when the probe
-            # hosts answer nothing at all (field case: awg_watchdog_hosts=100.64.0.1, a gateway
-            # ignoring ICMP and TCP — a tunnel with 333 KiB received was rolled back while the
-            # journal itself printed "latest handshake: 4 seconds ago").
-            hc_pass=""
-            if ping_hosts_once; then
-                hc_pass="probe"
-            elif { [ $hc_try -eq 5 ] || [ $hc_try -eq 15 ]; } && tunnel_tcp_alive; then
-                hc_pass="tcp"
-            elif [ $hc_try -ge 3 ] && tunnel_handshake_fresh; then
-                hc_pass="handshake"
-            fi
+            # Reachability for this round — ICMP, an HTTPS connect through the tunnel, a
+            # fresh handshake: see hc_probe_round for the order and for why the HTTPS
+            # connect must run before a handshake-only verdict.
+            hc_probe_round "$hc_try"
+            hc_pass=$HC_PASS
             if [ -n "$hc_pass" ]; then
                 # ICMP/TCP is up. If we hijacked LAN DNS, also require it to actually resolve:
                 # an ICMP-only "verified" tunnel leaves clients pinned to a dead resolver
@@ -7160,11 +7759,18 @@ do_start(){
         done
         if [ "$hc_ok" = true ]; then
             gen_current_is "$hc_gen" || exit 0
-            if [ "$hc_pass" = "handshake" ]; then
-                log_msg "Tunnel verified: handshake completing — but the probe hosts ($(watchdog_hosts)) answer neither ICMP nor TCP; point awg_watchdog_hosts at ping-able hosts (e.g. 8.8.8.8) for faster checks"
-            else
-                log_msg "Tunnel verified: traffic passing"
-            fi
+            # Say what was actually observed. "handshake" = two-way UDP with the peer and
+            # nothing else: left up (rolling it back would bring the 100.64.0.1 case back),
+            # but named for what it is — the page turns the recorded state into a banner.
+            case "$hc_pass" in
+                handshake)
+                    log_msg "WARNING: the tunnel is UP (handshake completes) but nothing answered through it — $(watchdog_hosts): no ICMP reply and no HTTPS connect. Either the provider filters these probes, or the tunnel carries no traffic (server-side routing/NAT, a split-tunnel-only config, an MTU that does not fit). If sites do not open through the VPN, this is why; the tunnel is left up — run the diagnostics for per-probe results" ;;
+                tcp)
+                    log_msg "Tunnel verified: traffic passing (HTTPS connect through the tunnel; the probe hosts did not answer ICMP)" ;;
+                *)
+                    log_msg "Tunnel verified: traffic passing" ;;
+            esac
+            probe_state_write "$hc_pass"
             # A verified tunnel ends any failover incident: clear the circle so a LATER
             # failure starts a fresh circle from this (now proven) profile. The override
             # stays — the auto-switched profile keeps running until a reboot/manual switch.
@@ -7281,7 +7887,7 @@ do_stop(){
     ipt_drain -D FORWARD -o "$IFACE" -j ACCEPT
     cleanup_ipv6_block
     ipt_drain -t mangle -D FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    tcpmss_in_drain   # the explicit-MSS rule in every value, plus the pre-1.5.30 pmtu form
     local lan_net
     lan_net=$(get_lan_net)
     # The lan_net-scoped masq is the pre-1.3.9 layout — keep draining it so the first
@@ -7322,8 +7928,9 @@ do_stop(){
     ip link set "$IFACE" down 2>/dev/null
     ip link del "$IFACE" 2>/dev/null
     rm -f /var/run/amneziawg/"$IFACE".sock
-    # No daemon -> no "running config" (conf md5 + which profile) to compare against.
-    rm -f "$RUNNING_CONF_SIG" "$RUNNING_PF"
+    # No daemon -> no "running config" (conf md5 + which profile) to compare against, and no
+    # probe verdict about a tunnel that is gone.
+    rm -f "$RUNNING_CONF_SIG" "$RUNNING_PF" "$PROBE_STATE"
 
     reload_dnsmasq
 
@@ -7928,6 +8535,18 @@ EOF
             fi
         fi
     fi
+    # Probe verdict of the RUNNING tunnel (probe_state_write: the start health check and every
+    # watchdog tick). "handshake" = the handshake is fresh but no probe host answered through
+    # the tunnel, neither ICMP nor an HTTPS connect — what a tunnel that passes no traffic
+    # looks like while the page says "connected" (field 2026-11, RT-AC86U: "connected, nothing
+    # opens"). The page renders a yellow banner with the hosts; "probe"/"tcp" show nothing.
+    # The hosts are read only in that state — this function also runs from the minute cron.
+    local probe_state="" probe_hosts=""
+    if [ "$running" = "true" ]; then
+        { read -r probe_state < "$PROBE_STATE"; } 2>/dev/null
+        case "$probe_state" in probe|tcp|handshake) ;; *) probe_state="" ;; esac
+        [ "$probe_state" = handshake ] && probe_hosts=$(watchdog_hosts)
+    fi
     # A FOREIGN match-all dnsmasq directive (hand-written in the user's own custom config) that
     # dumps EVERY domain into one of our geo sets — dnsmasq treats the empty //-segment left by a
     # `https://` scheme (or a bare `#`) as "match all", so Geo mode routes the WHOLE LAN through the
@@ -8028,7 +8647,7 @@ EOF
     # stray tag opener hides in.
     rm -f "${STATUS_FILE}.tmp" "${STATUS_FILE}".[0-9]* 2>/dev/null
     sed 's/</\\u003c/g' > "${STATUS_FILE}.$$" << STATUSEOF
-{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conf_pending":${conf_pending},"awg3":${awg3_cap},"awg31":${awg31_cap},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"profile":{"active":${pf_active},"user":${pf_user},"auto":${pf_auto},"name":"${pf_name}","failover":${pf_failover},"list":[${pf_list}]},"switch_req":${switch_req},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"mem_squeeze":"${mem_squeeze}","mem_detail":"${mem_detail}","kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","geo_matchall_warn":"${geo_matchall_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
+{"running":${running},"starting":${starting},"stopping":${stopping},"version":"${AWG_VERSION}","lang":"${pref_lang}","public_key":"${pub_key}","listen_port":"${listen_port}","interface_addr":"${iface_addr}","peers":${peers_json},"no_handshake":${no_handshake},"conf_pending":${conf_pending},"awg3":${awg3_cap},"awg31":${awg31_cap},"conn_start":${conn_start},"conn_uptime":${conn_uptime},"conn_history":${conn_hist},"profile":{"active":${pf_active},"user":${pf_user},"auto":${pf_auto},"name":"${pf_name}","failover":${pf_failover},"list":[${pf_list}]},"switch_req":${switch_req},"default_policy":"${default_policy}","dpi_tool":"${dpi_tool}","killswitch":${killswitch},"agh":${agh},"coexist_warn":${coexist_warn},"xray_capture":${xray_capture},"xray_ctl":${xray_ctl},"fwvpn_state":"${fwvpn_state}","fwvpn_detail":"${fwvpn_detail}","ctf_block":${ctf_block},"mem_squeeze":"${mem_squeeze}","mem_detail":"${mem_detail}","kernel_unsup":${kernel_unsup},"dnsgeo_warn":"${dnsgeo_warn}","probe_state":"${probe_state}","probe_hosts":"${probe_hosts}","geo_matchall_warn":"${geo_matchall_warn}","clients":"${clients_data}","active_rules":${active_rules},"ipset_count":${ipset_count},"geo_domains":${geo_domains},"geo_stats":{${geo_stats}},"geo_downloaded":${geo_downloaded},"geo_busy":${geo_busy},"analyze_active":${analyze_active},"log":"${log_text}"}
 STATUSEOF
     mv "${STATUS_FILE}.$$" "$STATUS_FILE" 2>/dev/null
 }
@@ -8511,6 +9130,7 @@ do_uninstall(){
     rm -f "$ANALYZE_FILE" "$ANALYZE_DNS_CONF" "$ANALYZE_DNS_LOG" /tmp/.awg_analyze_*
 
     rm -f "$AWG_INCIDENTS"
+    rm -f "$GEODYN_STASH" "$PROBE_STATE"   # nothing to take back after an uninstall
     rm -f "$CONN_HIST_BAK"   # update-time stash lives OUTSIDE $AWG_DIR — the package rm -rf misses it
     rm -rf "$ADDON_DIR"
 
@@ -8611,16 +9231,78 @@ tunnel_handshake_fresh(){
 tunnel_alive(){
     local i=0
     while [ $i -lt 2 ]; do
-        ping_hosts_once && return 0
+        ping_hosts_once && { probe_state_note probe; return 0; }
         i=$((i + 1)); sleep 1
     done
     # ICMP all-miss — confirm via a TCP/HTTPS connect through the tunnel before declaring it dead,
     # so an ICMP-dropping endpoint (e.g. Cloudflare WARP) isn't torn down every watchdog tick.
-    tunnel_tcp_alive && return 0
+    tunnel_tcp_alive && { probe_state_note tcp; return 0; }
     # Probes may simply be ignored by this endpoint/hosts — the pings above already forced a
     # re-key attempt, so accept a fresh handshake as proof of life (see tunnel_handshake_fresh).
-    tunnel_handshake_fresh && return 0
+    tunnel_handshake_fresh && { probe_state_note handshake; return 0; }
     return 1
+}
+
+# One round of the start health check: sets HC_PASS to probe | tcp | handshake | "" (nothing
+# proved the tunnel this round; rc 1). $1 = the round number, HC_TCP carries the HTTPS
+# verdict across rounds ("" = not tried yet, ok, fail) — the caller clears it once.
+# Cheapest first: ICMP every round; an HTTPS connect through the tunnel (endpoints that pass
+# TCP but DROP ICMP — Cloudflare WARP); and from round 3 on a FRESH HANDSHAKE counts as proof
+# of life — a live endpoint keeps it fresh even when the probe hosts answer nothing at all
+# (field case: awg_watchdog_hosts=100.64.0.1, a gateway ignoring ICMP and TCP — a tunnel with
+# 333 KiB received was rolled back while the journal itself printed "latest handshake: 4
+# seconds ago").
+# The HTTPS connect runs at rounds 5 and 15 AND once before the first handshake-only
+# verdict. Until 1.5.30 that verdict never waited for it: a round of UNANSWERED pings lasts
+# 2 s per host plus the sleep (10 s with four hosts), so round 3 — and the handshake fallback
+# — came ~40 s in, long before round 5, and the journal then claimed the hosts "answer
+# neither ICMP nor TCP" about a TCP probe that had never run (field 2026-11, RT-AC86U). A
+# handshake-only verdict is the one that most needs the second opinion: it is also what a
+# tunnel that passes no traffic at all looks like. A passed HTTPS connect stays passed for
+# the rest of the check (the rounds that follow it only wait for the DNS gate).
+hc_probe_round(){
+    local _hs=0
+    HC_PASS=""
+    if ping_hosts_once; then
+        HC_PASS="probe"
+        return 0
+    fi
+    if [ "$1" -ge 3 ] && tunnel_handshake_fresh; then _hs=1; fi
+    if [ "$HC_TCP" != ok ] && { [ "$1" -eq 5 ] || [ "$1" -eq 15 ] || { [ "$_hs" = 1 ] && [ -z "$HC_TCP" ]; }; }; then
+        if tunnel_tcp_alive; then HC_TCP=ok; else HC_TCP=fail; fi
+    fi
+    if [ "$HC_TCP" = ok ]; then
+        HC_PASS="tcp"
+    elif [ "$_hs" = 1 ]; then
+        HC_PASS="handshake"
+    fi
+    [ -n "$HC_PASS" ]
+}
+
+# How the running tunnel last proved itself — probe (an ICMP reply) | tcp (an HTTPS connect) |
+# handshake (a fresh handshake and nothing else) — for the status JSON: "handshake" means no
+# probe host answered THROUGH the tunnel, which is also exactly what a tunnel that carries no
+# traffic looks like, so the page shows it as a banner instead of a plain "connected".
+# Written by the start health check and by every watchdog verdict; removed by do_stop.
+probe_state_write(){
+    case "$1" in probe|tcp|handshake) echo "$1" 2>/dev/null > "$PROBE_STATE" ;; esac
+}
+
+# The watchdog's variant: also journals the TRANSITIONS (not every tick) — a tunnel whose
+# probes stop answering while the handshake stays fresh is the "connected, nothing opens"
+# report in the making, and its recovery is worth a line too.
+probe_state_note(){
+    local _old=""
+    { read -r _old < "$PROBE_STATE"; } 2>/dev/null
+    [ "$_old" = "$1" ] && return 0
+    probe_state_write "$1"
+    case "$_old:$1" in
+        probe:handshake|tcp:handshake)
+            log_msg "WATCHDOG: the handshake is fresh but the probe hosts ($(watchdog_hosts)) no longer answer through the tunnel (no ICMP reply, no HTTPS connect) — it may be passing no traffic; left up, run the diagnostics for per-probe results" ;;
+        handshake:probe|handshake:tcp)
+            log_msg "WATCHDOG: the probe hosts answer through the tunnel again" ;;
+    esac
+    return 0
 }
 
 # Cheap WAN-renumber heal: if the endpoint host-route points via a stale gateway (PPPoE
@@ -8696,6 +9378,33 @@ _heal_base_rule(){
     esac
 }
 
+# heal_base_rules' check of the inbound MSS clamp (see tcpmss_in_assert). Its rule text
+# carries the tunnel MTU, so it cannot ride _heal_base_rule's fixed argument list; same rc
+# discipline (act on a confirmed rc=1 only, one re-probe on a sick read). A box whose script
+# was replaced under a running tunnel still holds the pre-1.5.30 pmtu form: that is a
+# migration, not a wipe — swapped in place with no "rules were wiped" incident.
+_heal_tcpmss_in(){
+    local _mtu _mss _rc _lrc
+    _mtu=$(tun_link_mtu) || return 0     # link gone mid-check: the tunnel checks own that
+    _mss=$((_mtu - 40))
+    iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_mss" 2>/dev/null; _rc=$?
+    if [ $_rc -ge 2 ]; then
+        sleep 1
+        iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$_mss" 2>/dev/null; _rc=$?
+    fi
+    case $_rc in
+        0) return 0 ;;
+        1) iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; _lrc=$?
+           case $_lrc in
+               0) ;;                                                    # legacy form present: migrate quietly
+               1) AWG_BASE_MISSING="${AWG_BASE_MISSING}${AWG_BASE_MISSING:+, }TCPMSS clamp in" ;;
+               *) AWG_BASE_SICK=1; return 1 ;;
+           esac
+           tcpmss_in_assert ;;
+        *) AWG_BASE_SICK=1; return 1 ;;
+    esac
+}
+
 # The client-side twin of the server watchdog's "firewall rules missing (firewall
 # restarted?)" reconcile. A firmware firewall rebuild does NOT reliably clobber what
 # awg_marks_state watches: on 3006.102.x (field: RT-BE88U @1.5.18 — the firmware's own
@@ -8728,7 +9437,7 @@ heal_base_rules(){
     _heal_base_rule "FORWARD accept in"  filter -I FORWARD -i "$IFACE" -j ACCEPT
     _heal_base_rule "FORWARD accept out" filter -I FORWARD -o "$IFACE" -j ACCEPT
     _heal_base_rule "TCPMSS clamp out"   mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    _heal_base_rule "TCPMSS clamp in"    mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    _heal_tcpmss_in
     _heal_base_rule "MASQUERADE"         nat    -I POSTROUTING -o "$IFACE" -j MASQUERADE
     if [ -n "$AWG_BASE_MISSING" ]; then
         log_msg "Base firewall rules were wiped (firmware firewall restart?) — re-added: $AWG_BASE_MISSING [$_ctx]"
@@ -9410,7 +10119,7 @@ do_firewall_restart(){
     ipt_drain -D FORWARD -o "$IFACE" -j ACCEPT
     cleanup_ipv6_block
     ipt_drain -t mangle -D FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    ipt_drain -t mangle -D FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    tcpmss_in_drain
     local lan_net_old
     lan_net_old=$(get_lan_net)
     # (lan_net-scoped variant = pre-1.3.9 layout; drained for upgrades)
@@ -9444,8 +10153,7 @@ do_firewall_restart(){
     setup_ipv6_block
     iptables -t mangle -C FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
         || iptables -t mangle -A FORWARD -o "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-    iptables -t mangle -C FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
-        || iptables -t mangle -A FORWARD -i "$IFACE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    tcpmss_in_assert   # explicit MSS for the SYN-ACK direction — see the helper
     # Unconditional masq — see do_start for why the lan_net-scoped variant broke
     # firmware-VPN-server clients (wgs1/OpenVPN subnets riding the default policy).
     iptables -t nat -C POSTROUTING -o "$IFACE" -j MASQUERADE 2>/dev/null \
@@ -9483,7 +10191,7 @@ do_diag_publish(){
         file_older_than "$_dold" 600 && rm -f "$_dold" 2>/dev/null
     done
     # $$ belongs to this dispatcher (not a detached subshell). Never unlink a live writer's
-    # temp: a slow collection may outlive the page's 45-second timeout and a subsequent retry.
+    # temp: a slow collection may outlive the page's wait (70 s; 45 s before 1.5.30) and a subsequent retry.
     for _dold in "${DIAG_FILE}".[0-9]* "${DIAG_FILE%.htm}_"*.htm.[0-9]*; do
         [ -e "$_dold" ] || continue
         _dpid=${_dold##*.}

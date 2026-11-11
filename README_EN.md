@@ -460,7 +460,18 @@ Honest limitations:
 
 **Q: `ipset` prints `Warning: Kernel support protocol versions 6-6 while userspace supports protocol versions 6-7`?**
 
-A: A harmless warning, not an error. The `ipset` tool (both the firmware's `/usr/sbin/ipset` and Entware's `/opt/sbin/ipset`) is built from newer sources and speaks protocol versions 6 and 7, while the ipset module in the router's old kernel (4.1.51) implements only version 6. The ranges overlap at version 6, so the tool automatically uses it -- everything works as intended. Nothing to do; geo routing via ipset (`awg_dst` and the geo ipsets) fully works on version 6.
+A: A harmless warning, not an error. The `ipset` tool (both the firmware's `/usr/sbin/ipset` and Entware's `/opt/sbin/ipset`) is built from newer sources and speaks protocol versions 6 and 7, while the ipset module in the router's old kernel (4.1.27 / 4.1.51) implements only version 6. The ranges overlap at version 6, so the tool automatically uses it -- everything works as intended. Nothing to do; geo routing via ipset (`awg_dst` and the geo ipsets) fully works on version 6.
+
+**Q: The journal says `Go runtime: GOMEMLIMIT=… GOGC=50 + buffer pool capped at …` -- is the router out of memory, did the lists fail to load?**
+
+A: No. It is the daemon's normal garbage-collector profile on routers with less than 768 MB of RAM (or with strict `vm.overcommit`): it keeps the daemon from crashing under heavy load and affects nothing else. The address lists live in kernel ipsets, not in the daemon's memory. Whether they loaded is shown by the journal line `Firewall configured: N IPs, M domains` and by the diagnostics (`geo ipsets`).
+
+**Q: The status says «Connected», the handshake is there, but sites do not open through the VPN?**
+
+A: Press «Diagnostics». Since 1.5.30 the report tests the tunnel live (the `live probes` section: ping, HTTPS, a download and an upload through the tunnel from the router itself) and ends with a `VERDICT` line:
+- nothing comes back through the tunnel -- the router's setup is not the cause; look at the server or the provider (and try the same config in the provider's own client);
+- small requests pass, full-size packets do not -- lower the profile MTU (1280, for example) and restart the tunnel;
+- everything passes from the router -- the cause is on the device's side: its policy, its own DoH/DoT past the router, IPv6, a DPI-bypass tool or a firewall on the device itself. The per-device counters of marked packets are in the same report, in the routing section.
 
 ## Authors
 

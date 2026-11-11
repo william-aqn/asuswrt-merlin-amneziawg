@@ -141,7 +141,9 @@ test('an in-flight settings save prevents all diagnostic requests', () => {
 });
 
 test('retry ignores a previous slow run completing before or after the new run', () => {
-    for (const firstDelay of [50000, 55000]) {
+    // The page waits AWG_DIAG_WAIT_MS (70 s) for a report: the first run publishes after
+    // that, once before and once after the retry's own report (8 s into the retry).
+    for (const firstDelay of [75000, 80000]) {
         const b = browser({ onSubmit({ token, url, later, files, number }) {
             later(() => files.set(url, dump(token, `REPORT ${number}`)), number === 1 ? firstDelay : 8000);
         } });

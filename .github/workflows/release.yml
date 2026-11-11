@@ -117,6 +117,7 @@ jobs:
           node --test .github/scripts/test-diag.js
           sh -n addon/amneziawg.sh
           sh .github/scripts/test-diag.sh
+          sh tests/tunnel-path.sh
 
       - name: Set up QEMU (ARM emulation for the static-musl awg build)
         uses: docker/setup-qemu-action@v3
